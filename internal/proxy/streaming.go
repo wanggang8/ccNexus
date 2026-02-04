@@ -160,6 +160,8 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 		return trans.(*chat.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_chat_gemini":
 		return trans.(*chat.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+	case "cx_chat_cli":
+		return trans.(*chat.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	// Codex Responses transformers
 	case "cx_resp_claude":
 		return trans.(*responses.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
@@ -169,6 +171,11 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 		return eventData, nil // passthrough
 	case "cx_resp_gemini":
 		return trans.(*responses.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+	case "cx_resp_cli":
+		return trans.(*responses.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+	// Claude Code CLI transformer
+	case "openai_to_cli":
+		return trans.(*cc.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	default:
 		return trans.TransformResponse(eventData, true)
 	}

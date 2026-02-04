@@ -335,6 +335,7 @@ export function initUI() {
                             <option value="openai">OpenAI</option>
                             <option value="openai2">OpenAI2 (Responses API)</option>
                             <option value="gemini">Gemini</option>
+                            <option value="cli">Claude CLI</option>
                         </select>
                         <p style="color: #666; font-size: 12px; margin-top: 5px;">
                             ${t('modal.transformerHelp')}

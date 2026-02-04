@@ -63,6 +63,7 @@ export default {
         modelHelpOpenAI: 'Required: Specify the OpenAI model to use',
         modelHelpOpenAI2: 'Required: Specify the OpenAI model (Responses API)',
         modelHelpGemini: 'Required: Specify the Gemini model to use',
+        modelHelpCli: 'Required: Specify the Claude model for CLI format',
         remark: 'Remark',
         remarkHelp: 'Optional: Add a remark for this endpoint',
         cancel: 'Cancel',

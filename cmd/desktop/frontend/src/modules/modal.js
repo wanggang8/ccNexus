@@ -222,6 +222,10 @@ export function handleTransformerChange() {
         modelRequired.style.display = 'inline';
         modelInput.placeholder = 'e.g., gemini-pro';
         modelHelpText.textContent = t('modal.modelHelpGemini');
+    } else if (transformer === 'cli') {
+        modelRequired.style.display = 'inline';
+        modelInput.placeholder = 'e.g., claude-sonnet-4-20250514';
+        modelHelpText.textContent = t('modal.modelHelpCli');
     }
 }
 

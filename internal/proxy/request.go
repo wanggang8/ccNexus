@@ -16,6 +16,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 	"github.com/lich0821/ccNexus/internal/transformer/cc"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/chat"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/responses"
 )
@@ -63,6 +64,11 @@ func prepareCCTransformer(endpoint config.Endpoint, endpointTransformer string) 
 			return nil, fmt.Errorf("Gemini transformer requires model field")
 		}
 		return cc.NewGeminiTransformer(endpoint.Model), nil
+	case "cli":
+		if endpoint.Model == "" {
+			return nil, fmt.Errorf("CLI transformer requires model field")
+		}
+		return cc.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer: %s", endpointTransformer)
 	}
@@ -92,6 +98,11 @@ func prepareCxChatTransformer(endpoint config.Endpoint, endpointTransformer stri
 			return nil, fmt.Errorf("Gemini transformer requires model field")
 		}
 		return chat.NewGeminiTransformer(endpoint.Model), nil
+	case "cli":
+		if endpoint.Model == "" {
+			return nil, fmt.Errorf("CLI transformer requires model field")
+		}
+		return chat.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer for Codex Chat: %s", endpointTransformer)
 	}
@@ -121,6 +132,11 @@ func prepareCxRespTransformer(endpoint config.Endpoint, endpointTransformer stri
 			return nil, fmt.Errorf("Gemini transformer requires model field")
 		}
 		return responses.NewGeminiTransformer(endpoint.Model), nil
+	case "cli":
+		if endpoint.Model == "" {
+			return nil, fmt.Errorf("CLI transformer requires model field")
+		}
+		return responses.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer for Codex Responses: %s", endpointTransformer)
 	}
@@ -144,6 +160,8 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 			return fmt.Sprintf("/v1beta/models/%s:streamGenerateContent", endpoint.Model)
 		}
 		return fmt.Sprintf("/v1beta/models/%s:generateContent", endpoint.Model)
+	case "openai_to_cli", "cx_chat_cli", "cx_resp_cli":
+		return "/v1/messages?beta=true"
 	}
 	return originalPath
 }
@@ -188,6 +206,18 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, transformedBod
 		q.Set("key", endpoint.APIKey)
 		q.Set("alt", "sse")
 		proxyReq.URL.RawQuery = q.Encode()
+	case "openai_to_cli", "cx_chat_cli", "cx_resp_cli":
+		// CLI transformer uses custom headers from convert package
+		// Parse tools from request body to build dynamic betas
+		var cliReq struct {
+			Tools []map[string]interface{} `json:"tools"`
+		}
+		json.Unmarshal(transformedBody, &cliReq)
+		betas := convert.BuildClaudeCliBetas(cliReq.Tools)
+		cliHeaders := convert.BuildClaudeCliHeaders(endpoint.APIKey, betas, true)
+		for k, v := range cliHeaders {
+			proxyReq.Header.Set(k, v)
+		}
 	default:
 		// Claude endpoints
 		proxyReq.Header.Set("x-api-key", endpoint.APIKey)

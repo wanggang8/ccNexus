@@ -63,6 +63,7 @@ export default {
         modelHelpOpenAI: '必填：指定要使用的 OpenAI 模型',
         modelHelpOpenAI2: '必填：指定 OpenAI 模型（Responses API）',
         modelHelpGemini: '必填：指定要使用的 Gemini 模型',
+        modelHelpCli: '必填：指定 Claude CLI 格式使用的模型',
         remark: '备注',
         remarkHelp: '可选：为此端点添加备注说明',
         cancel: '取消',
