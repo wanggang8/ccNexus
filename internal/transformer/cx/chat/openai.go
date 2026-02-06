@@ -44,12 +44,21 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 			// Check if it's Claude format (has "name" at top level, no "type" field)
 			if name, hasName := tool["name"].(string); hasName && name != "" && tool["type"] == nil {
 				// Convert Claude format to OpenAI format
+				// Ensure parameters is a valid object, not nil
+				parameters := tool["input_schema"]
+				if parameters == nil {
+					parameters = map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					}
+				}
+
 				openaiTool := map[string]interface{}{
 					"type": "function",
 					"function": map[string]interface{}{
 						"name":        tool["name"],
 						"description": tool["description"],
-						"parameters":  tool["input_schema"],
+						"parameters":  parameters,
 					},
 				}
 				fixedTools = append(fixedTools, openaiTool)
