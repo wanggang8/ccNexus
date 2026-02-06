@@ -2,7 +2,9 @@ package convert
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
@@ -384,7 +386,13 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		if msg, ok := data["message"].(map[string]interface{}); ok {
 			ctx.MessageID, _ = msg["id"].(string)
 		}
-		return nil, nil
+		// Send initial role chunk per OpenAI streaming spec
+		chunk := map[string]interface{}{
+			"id": ctx.MessageID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{"role": "assistant", "content": ""}, "finish_reason": nil}},
+		}
+		d, _ := json.Marshal(chunk)
+		return []byte(fmt.Sprintf("data: %s\n\n", d)), nil
 
 	case "content_block_start":
 		if block, ok := data["content_block"].(map[string]interface{}); ok {
@@ -392,6 +400,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 				ctx.ToolBlockStarted = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
+				// Send initial tool call chunk with id, type, name and empty arguments
+				return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
+						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
+				}, "")
 			}
 		}
 		return nil, nil
@@ -406,20 +419,20 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			text, _ := delta["text"].(string)
 			return buildOpenAIChunk(ctx.MessageID, model, text, nil, "")
 		case "input_json_delta":
-			ctx.ToolArguments += delta["partial_json"].(string)
+			partial, _ := delta["partial_json"].(string)
+			ctx.ToolArguments += partial
+			// Send incremental arguments delta
+			return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+				{"index": ctx.ToolCallCounter, "function": map[string]interface{}{"arguments": partial}},
+			}, "")
 		}
 		return nil, nil
 
 	case "content_block_stop":
 		if ctx.ToolBlockStarted {
-			chunk, _ := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-				{"index": ctx.ContentIndex, "id": ctx.CurrentToolID, "type": "function",
-					"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ctx.ToolArguments}},
-			}, "")
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
-			ctx.ContentIndex++
-			return chunk, nil
+			ctx.ToolCallCounter++
 		}
 		return nil, nil
 

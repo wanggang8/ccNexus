@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // cleanSchemaForGemini removes fields not supported by Gemini API
@@ -62,7 +63,7 @@ func buildOpenAIChunk(id, model, content string, toolCalls []map[string]interfac
 	}
 
 	chunk := map[string]interface{}{
-		"id": id, "object": "chat.completion.chunk", "model": model,
+		"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
 		"choices": []map[string]interface{}{{"index": 0, "delta": delta, "finish_reason": finishReason}},
 	}
 	data, _ := json.Marshal(chunk)
