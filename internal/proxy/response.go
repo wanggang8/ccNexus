@@ -32,7 +32,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 
 	logger.DebugLog("[%s] Response Body: %s", endpoint.Name, string(bodyBytes))
 
-	// Transform response back to Claude format
+	// Transform response back to client format
 	transformedResp, err := trans.TransformResponse(bodyBytes, false)
 	if err != nil {
 		logger.Error("[%s] Failed to transform response: %v", endpoint.Name, err)

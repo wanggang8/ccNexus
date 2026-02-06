@@ -70,12 +70,7 @@ func (a *App) startup(ctx context.Context) {
 
 	logger.Info("Application starting...")
 
-	if os.Getenv("DEBUG") != "" {
-		if err := logger.GetLogger().EnableDebugFile("debug.log"); err != nil {
-			logger.Warn("Failed to enable debug file: %v", err)
-		}
-	}
-
+	// Create config directory first
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		logger.Error("Failed to get home directory: %v", err)
@@ -84,6 +79,16 @@ func (a *App) startup(ctx context.Context) {
 	configDir := filepath.Join(homeDir, ".ccNexus")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		logger.Error("Failed to create config directory: %v", err)
+	}
+
+	// Enable debug file in config directory
+	if os.Getenv("DEBUG") != "" {
+		debugLogPath := filepath.Join(configDir, "debug.log")
+		if err := logger.GetLogger().EnableDebugFile(debugLogPath); err != nil {
+			logger.Warn("Failed to enable debug file: %v", err)
+		} else {
+			logger.Info("Debug logging enabled: %s", debugLogPath)
+		}
 	}
 
 	dbPath := filepath.Join(configDir, "ccnexus.db")

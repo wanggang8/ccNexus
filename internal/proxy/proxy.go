@@ -307,14 +307,13 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("=== Proxy Request ===")
 	logger.Debug("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
 	logger.Debug("Request Body Length: %d bytes", len(bodyBytes))
+
+	// Write full request body to debug.log file only
+	logger.DebugLog("=== Request Body ===")
 	if len(bodyBytes) == 0 {
-		logger.Debug("⚠️  Request Body is EMPTY!")
-	} else if len(bodyBytes) < 1000 {
-		// 只对小请求体显示完整内容
-		logger.Debug("Request Body: %s", string(bodyBytes))
+		logger.DebugLog("⚠️  Request Body is EMPTY!")
 	} else {
-		// 对大请求体只显示前200个字符
-		logger.Debug("Request Body (first 200 chars): %s...", string(bodyBytes[:200]))
+		logger.DebugLog("Request Body: %s", string(bodyBytes))
 	}
 
 	var streamReq struct {
@@ -381,7 +380,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		logger.DebugLog("[%s] Transformer: %s", endpoint.Name, transformerName)
 		logger.DebugLog("[%s] Transformed Request: %s", endpoint.Name, string(transformedBody))
-		logger.Debug("[%s] Transformed Request: %s", endpoint.Name, string(transformedBody))
 
 		cleanedBody, err := cleanIncompleteToolCalls(transformedBody)
 		if err != nil {
