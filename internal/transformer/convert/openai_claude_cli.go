@@ -171,6 +171,13 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 		return nil, nil, fmt.Errorf("CLI: apiKey is required")
 	}
 
+	// Parse as map first to handle Cursor's Claude-format tools
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(openaiReq, &reqMap); err != nil {
+		return nil, nil, fmt.Errorf("CLI: failed to parse request: %w", err)
+	}
+
+	// Also parse as struct for convenience
 	var req transformer.OpenAIRequest
 	if err := json.Unmarshal(openaiReq, &req); err != nil {
 		return nil, nil, fmt.Errorf("CLI: failed to parse request: %w", err)
@@ -203,15 +210,39 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 		messages = append(messages, convertOpenAIMessageToClaudeCLI(msg))
 	}
 
-	// 3. 转换 Tools
+	// 3. 转换 Tools - handle both OpenAI format and Cursor's Claude format
 	tools := []map[string]interface{}{} // 初始化为空数组，避免 json.Marshal 后变成 null
-	for _, tool := range req.Tools {
-		if tool.Type == "function" {
-			tools = append(tools, map[string]interface{}{
-				"name":         tool.Function.Name,
-				"description":  tool.Function.Description,
-				"input_schema": tool.Function.Parameters,
-			})
+	if reqTools, ok := reqMap["tools"].([]interface{}); ok {
+		for _, toolInterface := range reqTools {
+			rawTool, ok := toolInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			var claudeTool map[string]interface{}
+
+			// Check if it's already in Claude format (has "name" at top level)
+			if name, hasName := rawTool["name"].(string); hasName && name != "" {
+				// Claude format: {name, description, input_schema}
+				claudeTool = map[string]interface{}{
+					"name":         rawTool["name"],
+					"description":  rawTool["description"],
+					"input_schema": rawTool["input_schema"],
+				}
+			} else if rawTool["type"] == "function" {
+				// OpenAI format: {type: "function", function: {name, description, parameters}}
+				if funcObj, ok := rawTool["function"].(map[string]interface{}); ok {
+					claudeTool = map[string]interface{}{
+						"name":         funcObj["name"],
+						"description":  funcObj["description"],
+						"input_schema": funcObj["parameters"],
+					}
+				}
+			}
+
+			if claudeTool != nil {
+				tools = append(tools, claudeTool)
+			}
 		}
 	}
 
