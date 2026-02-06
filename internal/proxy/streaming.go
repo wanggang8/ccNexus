@@ -88,13 +88,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			streamDone = true
 			buffer.WriteString(line + "\n")
 			eventData := buffer.Bytes()
-			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
-			logger.Debug("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
-				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
-				logger.Debug("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
 				w.Write(transformedEvent)
 				flusher.Flush()
 			}
@@ -106,16 +102,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		if line == "" {
 			eventCount++
 			eventData := buffer.Bytes()
-			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
-			logger.Debug("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
 			} else if len(transformedEvent) > 0 {
-				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
-				logger.Debug("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
-
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
 
@@ -145,9 +136,6 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 // transformStreamEvent transforms a single SSE event
 func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transformer, transformerName string, streamCtx *transformer.StreamContext) ([]byte, error) {
-	logger.Debug("[SSE_TRANSFORM] Transformer: %s, Input length: %d bytes", transformerName, len(eventData))
-	logger.Debug("[SSE_TRANSFORM] Input data: %s", string(eventData))
-
 	var result []byte
 	var err error
 
@@ -165,7 +153,6 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 	case "cx_chat_claude":
 		result, err = trans.(*chat.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_chat_openai":
-		logger.Debug("[SSE_TRANSFORM] Passthrough mode (cx_chat_openai)")
 		result, err = eventData, nil // passthrough
 	case "cx_chat_openai2":
 		result, err = trans.(*chat.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
@@ -179,7 +166,6 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 	case "cx_resp_openai":
 		result, err = trans.(*responses.OpenAITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_resp_openai2":
-		logger.Debug("[SSE_TRANSFORM] Passthrough mode (cx_resp_openai2)")
 		result, err = eventData, nil // passthrough
 	case "cx_resp_gemini":
 		result, err = trans.(*responses.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
@@ -193,12 +179,9 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 	}
 
 	if err != nil {
-		logger.Debug("[SSE_TRANSFORM] Transform error: %v", err)
 		return nil, err
 	}
 
-	logger.Debug("[SSE_TRANSFORM] Output length: %d bytes", len(result))
-	logger.Debug("[SSE_TRANSFORM] Output data: %s", string(result))
 	return result, nil
 }
 

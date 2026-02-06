@@ -204,7 +204,7 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 	}
 
 	// 3. 转换 Tools
-	var tools []map[string]interface{}
+	tools := []map[string]interface{}{} // 初始化为空数组，避免 json.Marshal 后变成 null
 	for _, tool := range req.Tools {
 		if tool.Type == "function" {
 			tools = append(tools, map[string]interface{}{

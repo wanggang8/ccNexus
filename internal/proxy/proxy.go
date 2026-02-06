@@ -307,10 +307,14 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("=== Proxy Request ===")
 	logger.Debug("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
 	logger.Debug("Request Body Length: %d bytes", len(bodyBytes))
-	if len(bodyBytes) > 0 {
+	if len(bodyBytes) == 0 {
+		logger.Debug("⚠️  Request Body is EMPTY!")
+	} else if len(bodyBytes) < 1000 {
+		// 只对小请求体显示完整内容
 		logger.Debug("Request Body: %s", string(bodyBytes))
 	} else {
-		logger.Debug("⚠️  Request Body is EMPTY!")
+		// 对大请求体只显示前200个字符
+		logger.Debug("Request Body (first 200 chars): %s...", string(bodyBytes[:200]))
 	}
 
 	var streamReq struct {

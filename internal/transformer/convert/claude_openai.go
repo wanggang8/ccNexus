@@ -169,76 +169,98 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 
 // OpenAIReqToClaude converts OpenAI Chat request to Claude request
 func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
-	var req transformer.OpenAIRequest
-	if err := json.Unmarshal(openaiReq, &req); err != nil {
+	// Parse as generic map first to handle both OpenAI and Claude tool formats
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(openaiReq, &reqMap); err != nil {
 		return nil, err
 	}
 
 	claudeReq := map[string]interface{}{
 		"model":      model,
 		"max_tokens": 8192,
-		"stream":     req.Stream,
+		"stream":     false,
 	}
 
-	if req.MaxTokens > 0 {
-		claudeReq["max_tokens"] = req.MaxTokens
-	} else if req.MaxCompletionTokens > 0 {
-		claudeReq["max_tokens"] = req.MaxCompletionTokens
+	if stream, ok := reqMap["stream"].(bool); ok {
+		claudeReq["stream"] = stream
 	}
-	if req.Temperature != nil {
-		claudeReq["temperature"] = *req.Temperature
+	if maxTokens, ok := reqMap["max_tokens"].(float64); ok && maxTokens > 0 {
+		claudeReq["max_tokens"] = int(maxTokens)
+	} else if maxComp, ok := reqMap["max_completion_tokens"].(float64); ok && maxComp > 0 {
+		claudeReq["max_tokens"] = int(maxComp)
+	}
+	if temp, ok := reqMap["temperature"].(float64); ok {
+		claudeReq["temperature"] = temp
 	}
 
 	// Convert messages
 	var systemPrompt string
 	var messages []map[string]interface{}
 
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			if content, ok := msg.Content.(string); ok {
-				systemPrompt += content + "\n"
+	if reqMessages, ok := reqMap["messages"].([]interface{}); ok {
+		for _, msgInterface := range reqMessages {
+			msg, ok := msgInterface.(map[string]interface{})
+			if !ok {
+				continue
 			}
-			continue
-		}
 
-		claudeMsg := map[string]interface{}{"role": msg.Role}
-
-		// Handle content
-		switch content := msg.Content.(type) {
-		case string:
-			claudeMsg["content"] = content
-		case []interface{}:
-			claudeMsg["content"] = convertOpenAIContentToClaude(content)
-		}
-
-		// Handle tool_calls
-		if len(msg.ToolCalls) > 0 {
-			var blocks []map[string]interface{}
-			if text, ok := claudeMsg["content"].(string); ok && text != "" {
-				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+			role, _ := msg["role"].(string)
+			if role == "system" {
+				if content, ok := msg["content"].(string); ok {
+					systemPrompt += content + "\n"
+				}
+				continue
 			}
-			for _, tc := range msg.ToolCalls {
-				var args map[string]interface{}
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				blocks = append(blocks, map[string]interface{}{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Function.Name,
-					"input": args,
-				})
-			}
-			claudeMsg["content"] = blocks
-		}
 
-		// Handle tool message
-		if msg.Role == "tool" {
-			claudeMsg["role"] = "user"
-			claudeMsg["content"] = []map[string]interface{}{
-				{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content},
-			}
-		}
+			claudeMsg := map[string]interface{}{"role": role}
 
-		messages = append(messages, claudeMsg)
+			// Handle content
+			if content, ok := msg["content"]; ok {
+				switch c := content.(type) {
+				case string:
+					claudeMsg["content"] = c
+				case []interface{}:
+					claudeMsg["content"] = convertOpenAIContentToClaude(c)
+				}
+			}
+
+			// Handle tool_calls
+			if toolCalls, ok := msg["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+				var blocks []map[string]interface{}
+				if text, ok := claudeMsg["content"].(string); ok && text != "" {
+					blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+				}
+				for _, tcInterface := range toolCalls {
+					tc, ok := tcInterface.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					funcObj, _ := tc["function"].(map[string]interface{})
+					argsStr, _ := funcObj["arguments"].(string)
+					var args map[string]interface{}
+					json.Unmarshal([]byte(argsStr), &args)
+					blocks = append(blocks, map[string]interface{}{
+						"type":  "tool_use",
+						"id":    tc["id"],
+						"name":  funcObj["name"],
+						"input": args,
+					})
+				}
+				claudeMsg["content"] = blocks
+			}
+
+			// Handle tool message
+			if role == "tool" {
+				claudeMsg["role"] = "user"
+				toolCallID, _ := msg["tool_call_id"].(string)
+				content, _ := msg["content"].(string)
+				claudeMsg["content"] = []map[string]interface{}{
+					{"type": "tool_result", "tool_use_id": toolCallID, "content": content},
+				}
+			}
+
+			messages = append(messages, claudeMsg)
+		}
 	}
 
 	if systemPrompt != "" {
@@ -246,18 +268,42 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	}
 	claudeReq["messages"] = messages
 
-	// Convert tools
-	if len(req.Tools) > 0 {
+	// Convert tools - handle both OpenAI format and Claude format (from Cursor)
+	if reqTools, ok := reqMap["tools"].([]interface{}); ok && len(reqTools) > 0 {
 		var tools []map[string]interface{}
-		for _, tool := range req.Tools {
-			if tool.Type == "function" {
-				tools = append(tools, map[string]interface{}{
-					"name":         tool.Function.Name,
-					"description":  tool.Function.Description,
-					"input_schema": tool.Function.Parameters,
-				})
+
+		for _, toolInterface := range reqTools {
+			rawTool, ok := toolInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			var claudeTool map[string]interface{}
+
+			// Check if it's already in Claude format (has "name" at top level)
+			if name, hasName := rawTool["name"].(string); hasName && name != "" {
+				// Claude format: {name, description, input_schema}
+				claudeTool = map[string]interface{}{
+					"name":         rawTool["name"],
+					"description":  rawTool["description"],
+					"input_schema": rawTool["input_schema"],
+				}
+			} else if rawTool["type"] == "function" {
+				// OpenAI format: {type: "function", function: {name, description, parameters}}
+				if funcObj, ok := rawTool["function"].(map[string]interface{}); ok {
+					claudeTool = map[string]interface{}{
+						"name":         funcObj["name"],
+						"description":  funcObj["description"],
+						"input_schema": funcObj["parameters"],
+					}
+				}
+			}
+
+			if claudeTool != nil {
+				tools = append(tools, claudeTool)
 			}
 		}
+
 		if len(tools) > 0 {
 			claudeReq["tools"] = tools
 		}
