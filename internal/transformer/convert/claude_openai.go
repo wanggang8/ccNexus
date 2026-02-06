@@ -755,6 +755,14 @@ func convertOpenAIContentToClaude(content []interface{}) []map[string]interface{
 					}
 				}
 			}
+		case "tool_result":
+			// Cursor may send Claude-format tool_result directly
+			// Keep it as-is since it's already in Claude format
+			result = append(result, map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": m["tool_use_id"],
+				"content":     m["content"],
+			})
 		}
 	}
 	return result
