@@ -32,6 +32,41 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 		data["model"] = t.model
 	}
 
+	// Fix Cursor's Claude-format messages (tool_result)
+	if messages, ok := data["messages"].([]interface{}); ok {
+		fixedMessages := make([]interface{}, 0, len(messages))
+		for _, msgInterface := range messages {
+			msg, ok := msgInterface.(map[string]interface{})
+			if !ok {
+				fixedMessages = append(fixedMessages, msgInterface)
+				continue
+			}
+
+			// Check if message has Claude-format content blocks
+			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
+				// Check if it's a tool_result block
+				if len(content) == 1 {
+					if block, ok := content[0].(map[string]interface{}); ok {
+						if block["type"] == "tool_result" {
+							// Convert to OpenAI tool message format
+							openaiMsg := map[string]interface{}{
+								"role":         "tool",
+								"tool_call_id": block["tool_use_id"],
+								"content":      block["content"],
+							}
+							fixedMessages = append(fixedMessages, openaiMsg)
+							continue
+						}
+					}
+				}
+			}
+
+			// Keep message as-is
+			fixedMessages = append(fixedMessages, msg)
+		}
+		data["messages"] = fixedMessages
+	}
+
 	// Fix Cursor's Claude-format tool definitions to OpenAI format
 	if tools, ok := data["tools"].([]interface{}); ok && len(tools) > 0 {
 		fixedTools := make([]interface{}, 0, len(tools))
