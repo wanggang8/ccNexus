@@ -3,6 +3,7 @@ package chat
 import (
 	"encoding/json"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -67,6 +68,12 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 				fixedTools = append(fixedTools, tool)
 			}
 		}
+
+		// Log tool count for debugging
+		if len(fixedTools) > 20 {
+			logger.Warn("Large number of tools detected: %d (OpenAI recommends ≤20)", len(fixedTools))
+		}
+
 		data["tools"] = fixedTools
 	}
 
