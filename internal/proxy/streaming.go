@@ -89,10 +89,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			buffer.WriteString(line + "\n")
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
+			logger.Debug("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
+				logger.Debug("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
 				w.Write(transformedEvent)
 				flusher.Flush()
 			}
@@ -105,12 +107,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			eventCount++
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
+			logger.Debug("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
 			} else if len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
+				logger.Debug("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
 
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
@@ -141,44 +145,61 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 // transformStreamEvent transforms a single SSE event
 func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transformer, transformerName string, streamCtx *transformer.StreamContext) ([]byte, error) {
+	logger.Debug("[SSE_TRANSFORM] Transformer: %s, Input length: %d bytes", transformerName, len(eventData))
+	logger.Debug("[SSE_TRANSFORM] Input data: %s", string(eventData))
+
+	var result []byte
+	var err error
+
 	switch transformerName {
 	// Claude Code transformers
 	case "cc_claude":
-		return trans.(*cc.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*cc.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cc_openai":
-		return trans.(*cc.OpenAITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*cc.OpenAITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cc_openai2":
-		return trans.(*cc.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*cc.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cc_gemini":
-		return trans.(*cc.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*cc.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	// Codex Chat transformers
 	case "cx_chat_claude":
-		return trans.(*chat.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*chat.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_chat_openai":
-		return eventData, nil // passthrough
+		logger.Debug("[SSE_TRANSFORM] Passthrough mode (cx_chat_openai)")
+		result, err = eventData, nil // passthrough
 	case "cx_chat_openai2":
-		return trans.(*chat.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*chat.OpenAI2Transformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_chat_gemini":
-		return trans.(*chat.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*chat.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_chat_cli":
-		return trans.(*chat.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*chat.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	// Codex Responses transformers
 	case "cx_resp_claude":
-		return trans.(*responses.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*responses.ClaudeTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_resp_openai":
-		return trans.(*responses.OpenAITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*responses.OpenAITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_resp_openai2":
-		return eventData, nil // passthrough
+		logger.Debug("[SSE_TRANSFORM] Passthrough mode (cx_resp_openai2)")
+		result, err = eventData, nil // passthrough
 	case "cx_resp_gemini":
-		return trans.(*responses.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*responses.GeminiTransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	case "cx_resp_cli":
-		return trans.(*responses.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*responses.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	// Claude Code CLI transformer
 	case "openai_to_cli":
-		return trans.(*cc.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
+		result, err = trans.(*cc.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	default:
-		return trans.TransformResponse(eventData, true)
+		result, err = trans.TransformResponse(eventData, true)
 	}
+
+	if err != nil {
+		logger.Debug("[SSE_TRANSFORM] Transform error: %v", err)
+		return nil, err
+	}
+
+	logger.Debug("[SSE_TRANSFORM] Output length: %d bytes", len(result))
+	logger.Debug("[SSE_TRANSFORM] Output data: %s", string(result))
+	return result, nil
 }
 
 // extractTokensFromEvent extracts token counts from SSE event

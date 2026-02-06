@@ -33,17 +33,17 @@ type APIResponse struct {
 
 // Proxy represents the proxy server
 type Proxy struct {
-	config           *config.Config
-	stats            *Stats
-	currentIndex     int
-	mu               sync.RWMutex
-	server           *http.Server
-	activeRequests   map[string]bool              // tracks active requests by endpoint name
-	activeRequestsMu sync.RWMutex                 // protects activeRequests map
-	endpointCtx      map[string]context.Context   // context per endpoint for cancellation
-	endpointCancel   map[string]context.CancelFunc // cancel functions per endpoint
-	ctxMu            sync.RWMutex                 // protects context maps
-	onEndpointSuccess func(endpointName string)   // callback when endpoint request succeeds
+	config            *config.Config
+	stats             *Stats
+	currentIndex      int
+	mu                sync.RWMutex
+	server            *http.Server
+	activeRequests    map[string]bool               // tracks active requests by endpoint name
+	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
+	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
+	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
+	ctxMu             sync.RWMutex                  // protects context maps
+	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
 }
 
 // New creates a new Proxy instance
@@ -278,14 +278,17 @@ const (
 
 // detectClientFormat identifies the client format based on request path
 func detectClientFormat(path string) ClientFormat {
+	var format ClientFormat
 	switch {
 	case strings.HasPrefix(path, "/v1/chat/completions") || strings.HasPrefix(path, "/chat/completions"):
-		return ClientFormatOpenAIChat
+		format = ClientFormatOpenAIChat
 	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses"):
-		return ClientFormatOpenAIResponses
+		format = ClientFormatOpenAIResponses
 	default:
-		return ClientFormatClaude
+		format = ClientFormatClaude
 	}
+	logger.Debug("[CLIENT_DETECT] Path: %s → Format: %s", path, format)
+	return format
 }
 
 // handleProxy handles the main proxy logic
@@ -301,9 +304,14 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Detect client format
 	clientFormat := detectClientFormat(r.URL.Path)
 
-	logger.DebugLog("=== Proxy Request ===")
-	logger.DebugLog("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
-	logger.DebugLog("Request Body: %s", string(bodyBytes))
+	logger.Debug("=== Proxy Request ===")
+	logger.Debug("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
+	logger.Debug("Request Body Length: %d bytes", len(bodyBytes))
+	if len(bodyBytes) > 0 {
+		logger.Debug("Request Body: %s", string(bodyBytes))
+	} else {
+		logger.Debug("⚠️  Request Body is EMPTY!")
+	}
 
 	var streamReq struct {
 		Model    string      `json:"model"`
@@ -353,6 +361,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		transformerName := trans.Name()
+		logger.Debug("[%s] Using transformer: %s for client format: %s", endpoint.Name, transformerName, clientFormat)
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
@@ -368,6 +377,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		logger.DebugLog("[%s] Transformer: %s", endpoint.Name, transformerName)
 		logger.DebugLog("[%s] Transformed Request: %s", endpoint.Name, string(transformedBody))
+		logger.Debug("[%s] Transformed Request: %s", endpoint.Name, string(transformedBody))
 
 		cleanedBody, err := cleanIncompleteToolCalls(transformedBody)
 		if err != nil {

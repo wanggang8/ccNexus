@@ -28,16 +28,29 @@ func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endp
 		endpointTransformer = "claude"
 	}
 
+	logger.Debug("[TRANSFORMER_SELECT] ClientFormat: %s, EndpointTransformer: %s, EndpointName: %s", clientFormat, endpointTransformer, endpoint.Name)
+
+	var trans transformer.Transformer
+	var err error
+
 	switch clientFormat {
 	case ClientFormatClaude:
-		return prepareCCTransformer(endpoint, endpointTransformer)
+		trans, err = prepareCCTransformer(endpoint, endpointTransformer)
 	case ClientFormatOpenAIChat:
-		return prepareCxChatTransformer(endpoint, endpointTransformer)
+		trans, err = prepareCxChatTransformer(endpoint, endpointTransformer)
 	case ClientFormatOpenAIResponses:
-		return prepareCxRespTransformer(endpoint, endpointTransformer)
+		trans, err = prepareCxRespTransformer(endpoint, endpointTransformer)
+	default:
+		return nil, fmt.Errorf("unsupported client format: %s", clientFormat)
 	}
 
-	return nil, fmt.Errorf("unsupported client format: %s", clientFormat)
+	if err != nil {
+		logger.Debug("[TRANSFORMER_SELECT] Failed to create transformer: %v", err)
+		return nil, err
+	}
+
+	logger.Debug("[TRANSFORMER_SELECT] Created transformer: %s", trans.Name())
+	return trans, nil
 }
 
 // prepareCCTransformer creates transformer for Claude Code client
