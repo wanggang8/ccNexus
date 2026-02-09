@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -20,8 +21,19 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 	// Convert messages
 	var contents []map[string]interface{}
 	var systemInstruction string
-	toolCallIDToName := make(map[string]string) // Map tool_call_id to function name
 
+	// First pass: collect all tool_call_id -> function_name mappings
+	// This ensures tool messages can find their function names even if they appear before the assistant message
+	toolCallIDToName := make(map[string]string)
+	for _, msg := range req.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" && tc.Function.Name != "" {
+				toolCallIDToName[tc.ID] = tc.Function.Name
+			}
+		}
+	}
+
+	// Second pass: convert messages
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
 			if content, ok := msg.Content.(string); ok {
@@ -45,9 +57,6 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 
 		// Handle tool_calls
 		for _, tc := range msg.ToolCalls {
-			if tc.ID != "" && tc.Function.Name != "" {
-				toolCallIDToName[tc.ID] = tc.Function.Name
-			}
 			var args map[string]interface{}
 			json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			parts = append(parts, map[string]interface{}{
@@ -58,6 +67,11 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		// Handle tool message
 		if msg.Role == "tool" {
 			funcName := toolCallIDToName[msg.ToolCallID]
+			if funcName == "" {
+				// Fallback: use tool_call_id as function name if mapping not found
+				logger.Warn("Tool call ID %s not found in mapping, using ID as fallback", msg.ToolCallID)
+				funcName = msg.ToolCallID
+			}
 			parts = []map[string]interface{}{
 				{
 					"functionResponse": map[string]interface{}{
@@ -191,6 +205,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	var resp transformer.GeminiResponse
 	if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
+		logger.Debug("GeminiStreamToOpenAI: failed to parse chunk: %v", err)
 		return nil, nil
 	}
 
@@ -253,6 +268,7 @@ func OpenAIStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 	var chunk transformer.OpenAIStreamChunk
 	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+		logger.Debug("OpenAIStreamToGemini: failed to parse chunk: %v", err)
 		return nil, nil
 	}
 

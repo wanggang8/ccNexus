@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -91,7 +92,7 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 
 	claudeReq := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 8192,
+		"max_tokens": DefaultMaxTokens,
 	}
 
 	// Convert system instruction
@@ -109,6 +110,8 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 
 	// Convert contents to messages
 	var messages []map[string]interface{}
+	toolCallCounter := 0                       // Counter for generating unique tool IDs
+	toolNameToID := make(map[string]string)    // Map function_name to generated ID for tool_result matching
 	for _, content := range req.Contents {
 		role := content.Role
 		if role == "model" {
@@ -131,17 +134,27 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 				contentBlocks = append(contentBlocks, map[string]interface{}{"type": "text", "text": part.Text})
 			}
 			if part.FunctionCall != nil {
+				// Generate unique ID for each function call
+				toolID := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallCounter)
+				toolCallCounter++
+				toolNameToID[part.FunctionCall.Name] = toolID // Store latest ID for this function name
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":  "tool_use",
-					"id":    fmt.Sprintf("call_%s", part.FunctionCall.Name),
+					"id":    toolID,
 					"name":  part.FunctionCall.Name,
 					"input": part.FunctionCall.Args,
 				})
 			}
 			if part.FunctionResponse != nil {
+				// Try to find the ID from our mapping, fallback to counter-based ID
+				toolUseID := toolNameToID[part.FunctionResponse.Name]
+				if toolUseID == "" {
+					toolUseID = fmt.Sprintf("call_%s_%d", part.FunctionResponse.Name, toolCallCounter)
+					toolCallCounter++
+				}
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":        "tool_result",
-					"tool_use_id": fmt.Sprintf("call_%s", part.FunctionResponse.Name),
+					"tool_use_id": toolUseID,
 					"content":     part.FunctionResponse.Response,
 				})
 			}
@@ -252,6 +265,7 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
+	toolCallCounter := 0 // Counter for generating unique tool IDs
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
@@ -270,9 +284,12 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 				content = append(content, map[string]interface{}{"type": "text", "text": part.Text})
 			}
 			if part.FunctionCall != nil {
+				// Generate unique ID for each function call
+				toolID := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallCounter)
+				toolCallCounter++
 				content = append(content, map[string]interface{}{
 					"type":  "tool_use",
-					"id":    fmt.Sprintf("call_%s", part.FunctionCall.Name),
+					"id":    toolID,
 					"name":  part.FunctionCall.Name,
 					"input": part.FunctionCall.Args,
 				})
@@ -311,6 +328,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		logger.Debug("ClaudeStreamToGemini: failed to parse event: %v", err)
 		return nil, nil
 	}
 
@@ -362,6 +380,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 	var resp transformer.GeminiResponse
 	if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
+		logger.Debug("GeminiStreamToClaude: failed to parse chunk: %v", err)
 		return nil, nil
 	}
 

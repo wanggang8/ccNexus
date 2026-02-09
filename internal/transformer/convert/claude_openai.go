@@ -178,7 +178,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 
 	claudeReq := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 8192,
+		"max_tokens": DefaultMaxTokens,
 		"stream":     false,
 	}
 
@@ -435,6 +435,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		logger.Debug("ClaudeStreamToOpenAI: failed to parse event: %v", err)
 		return nil, nil
 	}
 
@@ -547,6 +548,7 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 	var chunk transformer.OpenAIStreamChunk
 	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+		logger.Debug("OpenAIStreamToClaude: failed to parse chunk: %v", err)
 		return nil, nil
 	}
 

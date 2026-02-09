@@ -78,7 +78,7 @@ func OpenAI2ReqToClaude(openai2Req []byte, model string) ([]byte, error) {
 
 	claudeReq := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 8192,
+		"max_tokens": DefaultMaxTokens,
 		"stream":     req.Stream,
 	}
 
