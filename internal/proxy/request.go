@@ -28,8 +28,6 @@ func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endp
 		endpointTransformer = "claude"
 	}
 
-	logger.Debug("[TRANSFORMER_SELECT] ClientFormat: %s, EndpointTransformer: %s, EndpointName: %s", clientFormat, endpointTransformer, endpoint.Name)
-
 	var trans transformer.Transformer
 	var err error
 
@@ -45,11 +43,10 @@ func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endp
 	}
 
 	if err != nil {
-		logger.Debug("[TRANSFORMER_SELECT] Failed to create transformer: %v", err)
 		return nil, err
 	}
 
-	logger.Debug("[TRANSFORMER_SELECT] Created transformer: %s", trans.Name())
+	logger.Debug("[%s] Transformer: %s (client: %s, endpoint: %s)", endpoint.Name, trans.Name(), clientFormat, endpointTransformer)
 	return trans, nil
 }
 

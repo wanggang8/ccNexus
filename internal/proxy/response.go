@@ -30,7 +30,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 	}
 	resp.Body.Close()
 
-	logger.DebugLog("[%s] Response Body: %s", endpoint.Name, string(bodyBytes))
+	logger.DebugLog("[%s] Response body: %s", endpoint.Name, string(bodyBytes))
 
 	// Transform response back to client format
 	transformedResp, err := trans.TransformResponse(bodyBytes, false)
@@ -39,7 +39,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 		return 0, 0, err
 	}
 
-	logger.DebugLog("[%s] Transformed Response: %s", endpoint.Name, string(transformedResp))
+	logger.DebugLog("[%s] Transformed response: %s", endpoint.Name, string(transformedResp))
 
 	// Extract token usage
 	inputTokens, outputTokens := extractTokenUsage(transformedResp)

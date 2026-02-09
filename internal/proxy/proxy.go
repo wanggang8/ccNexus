@@ -304,16 +304,13 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Detect client format
 	clientFormat := detectClientFormat(r.URL.Path)
 
-	logger.Debug("=== Proxy Request ===")
-	logger.Debug("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
-	logger.Debug("Request Body Length: %d bytes", len(bodyBytes))
+	logger.Debug("Proxy request: %s %s | Format: %s | Body: %d bytes", r.Method, r.URL.Path, clientFormat, len(bodyBytes))
 
 	// Write full request body to debug.log file only
-	logger.DebugLog("=== Request Body ===")
 	if len(bodyBytes) == 0 {
-		logger.DebugLog("⚠️  Request Body is EMPTY!")
+		logger.DebugLog("Request body is EMPTY")
 	} else {
-		logger.DebugLog("Request Body: %s", string(bodyBytes))
+		logger.DebugLog("Request body: %s", string(bodyBytes))
 	}
 
 	var streamReq struct {
@@ -364,7 +361,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		transformerName := trans.Name()
-		logger.Debug("[%s] Using transformer: %s for client format: %s", endpoint.Name, transformerName, clientFormat)
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
@@ -378,8 +374,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		logger.DebugLog("[%s] Transformer: %s", endpoint.Name, transformerName)
-		logger.DebugLog("[%s] Transformed Request: %s", endpoint.Name, string(transformedBody))
+		logger.DebugLog("[%s] Transformer: %s | Transformed request: %s", endpoint.Name, transformerName, string(transformedBody))
 
 		cleanedBody, err := cleanIncompleteToolCalls(transformedBody)
 		if err != nil {
@@ -469,7 +464,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				errMsg = errMsg[:200] + "..."
 			}
 			logger.Warn("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
-			logger.DebugLog("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= 2 {
@@ -494,7 +488,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				errMsg = errMsg[:500] + "..."
 			}
 			logger.Warn("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, errMsg)
-			logger.DebugLog("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, errMsg)
 		}
 		// Remove Content-Encoding header since we've decompressed
 		for key, values := range resp.Header {
