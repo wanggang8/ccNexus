@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -238,7 +239,10 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 					funcObj, _ := tc["function"].(map[string]interface{})
 					argsStr, _ := funcObj["arguments"].(string)
 					var args map[string]interface{}
-					json.Unmarshal([]byte(argsStr), &args)
+					if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+						logger.Warn("Failed to unmarshal tool arguments: %v, using empty object", err)
+						args = map[string]interface{}{}
+					}
 					blocks = append(blocks, map[string]interface{}{
 						"type":  "tool_use",
 						"id":    tc["id"],
@@ -329,7 +333,11 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		}
 		switch blockMap["type"] {
 		case "text":
-			textContent += blockMap["text"].(string)
+			if text, ok := blockMap["text"].(string); ok {
+				textContent += text
+			} else {
+				logger.Warn("Invalid text content type: %T", blockMap["text"])
+			}
 		case "thinking":
 			// Skip thinking blocks in response
 			continue
@@ -388,7 +396,10 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 		}
 		for _, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
-			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				logger.Warn("Failed to unmarshal tool arguments: %v, using empty object", err)
+				args = map[string]interface{}{}
+			}
 			content = append(content, map[string]interface{}{
 				"type":  "tool_use",
 				"id":    tc.ID,
@@ -567,6 +578,8 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			}
 			result = append(result, buildClaudeEvent("message_delta", msgDelta)...)
 		}
+		// Add message_stop event to complete the stream
+		result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
 		return result, nil
 	}
 
@@ -648,10 +661,11 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			// Close previous tool block if open
 			if ctx.ToolBlockStarted {
 				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
-				ctx.ContentIndex++
+				ctx.ToolBlockStarted = false
 			}
 			ctx.ToolBlockStarted = true
 			ctx.ToolIndex = ctx.ContentIndex
+			ctx.ContentIndex++
 			ctx.CurrentToolID = tc.ID
 			ctx.CurrentToolName = tc.Function.Name
 			ctx.ToolArguments = ""
@@ -709,19 +723,26 @@ func convertClaudeContentToOpenAI(content []interface{}) (interface{}, []transfo
 		}
 		switch m["type"] {
 		case "text":
-			textParts = append(textParts, m["text"].(string))
+			if text, ok := m["text"].(string); ok {
+				textParts = append(textParts, text)
+			}
 		case "thinking":
 			// Skip thinking blocks
 			continue
 		case "tool_use":
+			id, okID := m["id"].(string)
+			name, okName := m["name"].(string)
+			if !okID || !okName {
+				continue
+			}
 			args, _ := json.Marshal(m["input"])
 			toolCalls = append(toolCalls, transformer.OpenAIToolCall{
-				ID:   m["id"].(string),
+				ID:   id,
 				Type: "function",
 				Function: struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
-				}{Name: m["name"].(string), Arguments: string(args)},
+				}{Name: name, Arguments: string(args)},
 			})
 		}
 	}

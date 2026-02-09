@@ -172,7 +172,7 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 	case "cx_resp_cli":
 		result, err = trans.(*responses.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	// Claude Code CLI transformer
-	case "openai_to_cli":
+	case "cc_cli":
 		result, err = trans.(*cc.CLITransformer).TransformResponseWithContext(eventData, true, streamCtx)
 	default:
 		result, err = trans.TransformResponse(eventData, true)

@@ -322,7 +322,10 @@ func convertOpenAIMessageToClaudeCLI(msg transformer.OpenAIMessage) map[string]i
 		}
 		for _, tc := range msg.ToolCalls {
 			var input interface{}
-			json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
+				logger.Warn("Failed to unmarshal tool arguments: %v, using empty object", err)
+				input = map[string]interface{}{}
+			}
 			content = append(content, map[string]interface{}{
 				"type":  "tool_use",
 				"id":    tc.ID,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -209,7 +210,10 @@ func OpenAI2RespToClaude(openai2Resp []byte) ([]byte, error) {
 			}
 		case "function_call":
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args)
+			if err := json.Unmarshal([]byte(item.Arguments), &args); err != nil {
+				logger.Warn("Failed to unmarshal function_call arguments: %v, using empty object", err)
+				args = map[string]interface{}{}
+			}
 			content = append(content, map[string]interface{}{
 				"type":  "tool_use",
 				"id":    item.CallID,

@@ -17,7 +17,7 @@ func NewCLITransformer(model, apiKey string) *CLITransformer {
 }
 
 func (t *CLITransformer) Name() string {
-	return "openai_to_cli"
+	return "cc_cli"
 }
 
 // TransformRequest 转换请求（返回 body）

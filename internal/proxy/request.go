@@ -173,7 +173,7 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 			return fmt.Sprintf("/v1beta/models/%s:streamGenerateContent", endpoint.Model)
 		}
 		return fmt.Sprintf("/v1beta/models/%s:generateContent", endpoint.Model)
-	case "openai_to_cli", "cx_chat_cli", "cx_resp_cli":
+	case "cc_cli", "cx_chat_cli", "cx_resp_cli":
 		return "/v1/messages?beta=true"
 	}
 	return originalPath
@@ -219,7 +219,7 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, transformedBod
 		q.Set("key", endpoint.APIKey)
 		q.Set("alt", "sse")
 		proxyReq.URL.RawQuery = q.Encode()
-	case "openai_to_cli", "cx_chat_cli", "cx_resp_cli":
+	case "cc_cli", "cx_chat_cli", "cx_resp_cli":
 		// CLI transformer uses custom headers from convert package
 		// Parse tools from request body to build dynamic betas
 		var cliReq struct {
