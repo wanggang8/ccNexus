@@ -2,9 +2,11 @@ package chat
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // OpenAITransformer is a passthrough transformer for Codex Chat → OpenAI Chat
@@ -116,9 +118,59 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 }
 
 func (t *OpenAITransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {
+	if isStreaming {
+		return resp, nil
+	}
+
+	// Detect response format and convert if needed
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		// Parse failed, passthrough
+		return resp, nil
+	}
+
+	// Check if it's Claude format: type=="message" && content is array && has stop_reason
+	if data["type"] == "message" {
+		if _, hasContent := data["content"].([]interface{}); hasContent {
+			if _, hasStopReason := data["stop_reason"]; hasStopReason {
+				logger.Debug("[cx_chat_openai] Detected Claude format response, converting to OpenAI")
+				return convert.ClaudeRespToOpenAI(resp, t.model)
+			}
+		}
+	}
+
+	// OpenAI format or unknown, passthrough
 	return resp, nil
 }
 
 func (t *OpenAITransformer) TransformResponseWithContext(resp []byte, isStreaming bool, ctx *transformer.StreamContext) ([]byte, error) {
+	if !isStreaming {
+		return t.TransformResponse(resp, false)
+	}
+
+	// Detect SSE event format
+	// Claude SSE events: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop
+	// OpenAI SSE events: data: {"object": "chat.completion.chunk", ...}
+
+	respStr := string(resp)
+
+	// Check for Claude SSE event types
+	claudeEvents := []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
+	}
+
+	for _, event := range claudeEvents {
+		if strings.Contains(respStr, event) {
+			logger.Debug("[cx_chat_openai] Detected Claude SSE event, converting to OpenAI")
+			return convert.ClaudeStreamToOpenAI(resp, ctx, t.model)
+		}
+	}
+
+	// OpenAI format or unknown, passthrough
 	return resp, nil
 }

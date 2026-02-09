@@ -8,84 +8,708 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
-func TestOpenAI2RespToClaudeWithThinking(t *testing.T) {
-	openai2Resp := `{
-		"id": "resp_1",
-		"object": "response",
-		"status": "completed",
-		"output": [{
-			"type": "message",
-			"role": "assistant",
-			"content": [{
-				"type": "output_text",
-				"text": "<think>Reason</think>Answer"
-			}]
-		}],
-		"usage": {
-			"input_tokens": 3,
-			"output_tokens": 5,
-			"total_tokens": 8
-		}
+// ========== Claude ↔ OpenAI2 (Responses API) 转换测试 ==========
+
+// --- ClaudeReqToOpenAI2 ---
+
+func TestClaudeReqToOpenAI2_Basic(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"system": "You are helpful.",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 1024,
+		"stream": true
 	}`
 
-	claudeRespBytes, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	result, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	// Check model
+	if openai2Req["model"] != "gpt-4o" {
+		t.Errorf("Expected model 'gpt-4o', got '%v'", openai2Req["model"])
+	}
+
+	// Check instructions
+	if openai2Req["instructions"] != "You are helpful." {
+		t.Errorf("Expected instructions 'You are helpful.', got '%v'", openai2Req["instructions"])
+	}
+
+	// Check input
+	input := openai2Req["input"].([]interface{})
+	if len(input) != 1 {
+		t.Errorf("Expected 1 input item, got %d", len(input))
+	}
+
+	// Check stream
+	if openai2Req["stream"] != true {
+		t.Errorf("Expected stream=true, got %v", openai2Req["stream"])
+	}
+}
+
+func TestClaudeReqToOpenAI2_WithTools(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"messages": [{"role": "user", "content": "Read file"}],
+		"tools": [{
+			"name": "read_file",
+			"description": "Read a file",
+			"input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+		}],
+		"max_tokens": 1024
+	}`
+
+	result, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools := openai2Req["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("Expected 1 tool, got %d", len(tools))
+	}
+
+	tool := tools[0].(map[string]interface{})
+	if tool["name"] != "read_file" {
+		t.Errorf("Expected tool name 'read_file', got '%v'", tool["name"])
+	}
+}
+
+func TestClaudeReqToOpenAI2_WithContentArray(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+		"max_tokens": 1024
+	}`
+
+	result, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	input := openai2Req["input"].([]interface{})
+	if len(input) != 1 {
+		t.Errorf("Expected 1 input item, got %d", len(input))
+	}
+}
+
+func TestClaudeReqToOpenAI2_InvalidJSON(t *testing.T) {
+	_, err := ClaudeReqToOpenAI2([]byte("not valid json"), "gpt-4o")
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+// --- OpenAI2ReqToClaude ---
+
+func TestOpenAI2ReqToClaude_Basic(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"instructions": "You are helpful.",
+		"input": "Hello",
+		"max_output_tokens": 1024,
+		"stream": true
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	// Check model
+	if claudeReq["model"] != "claude-sonnet-4-20250514" {
+		t.Errorf("Expected model 'claude-sonnet-4-20250514', got '%v'", claudeReq["model"])
+	}
+
+	// Check system
+	if claudeReq["system"] != "You are helpful." {
+		t.Errorf("Expected system 'You are helpful.', got '%v'", claudeReq["system"])
+	}
+
+	// Check max_tokens
+	if claudeReq["max_tokens"] != float64(1024) {
+		t.Errorf("Expected max_tokens 1024, got %v", claudeReq["max_tokens"])
+	}
+
+	// Check messages
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Errorf("Expected 1 message, got %d", len(messages))
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithArrayInput(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hi!"}]}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(messages))
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithFunctionCall(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Read file"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"/tmp/a\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "file content"}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	// Should have: user, assistant (with tool_use), user (with tool_result)
+	if len(messages) != 3 {
+		t.Fatalf("Expected 3 messages, got %d", len(messages))
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithTools(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": "Hello",
+		"tools": [
+			{"type": "function", "name": "read_file", "description": "Read a file", "parameters": {"type": "object"}}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools := claudeReq["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("Expected 1 tool, got %d", len(tools))
+	}
+
+	tool := tools[0].(map[string]interface{})
+	if tool["name"] != "read_file" {
+		t.Errorf("Expected tool name 'read_file', got '%v'", tool["name"])
+	}
+	if tool["input_schema"] == nil {
+		t.Error("Expected input_schema, got nil")
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithCustomTool(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": "Hello",
+		"tools": [
+			{"type": "custom", "name": "apply_patch", "description": "Apply a patch"}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools := claudeReq["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("Expected 1 tool, got %d", len(tools))
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithTemperature(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": "Hello",
+		"temperature": 0.7
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if claudeReq["temperature"] != 0.7 {
+		t.Errorf("Expected temperature 0.7, got %v", claudeReq["temperature"])
+	}
+}
+
+func TestOpenAI2ReqToClaude_InvalidJSON(t *testing.T) {
+	_, err := OpenAI2ReqToClaude([]byte("not valid json"), "claude-sonnet-4-20250514")
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+// --- ClaudeRespToOpenAI2 ---
+
+func TestClaudeRespToOpenAI2_Basic(t *testing.T) {
+	claudeResp := `{
+		"id": "msg_123",
+		"type": "message",
+		"role": "assistant",
+		"content": [{"type": "text", "text": "Hello!"}],
+		"model": "claude-sonnet-4-20250514",
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+
+	result, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Resp map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Resp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	// Check object
+	if openai2Resp["object"] != "response" {
+		t.Errorf("Expected object 'response', got '%v'", openai2Resp["object"])
+	}
+
+	// Check status
+	if openai2Resp["status"] != "completed" {
+		t.Errorf("Expected status 'completed', got '%v'", openai2Resp["status"])
+	}
+
+	// Check output
+	output := openai2Resp["output"].([]interface{})
+	if len(output) != 1 {
+		t.Fatalf("Expected 1 output item, got %d", len(output))
+	}
+}
+
+func TestClaudeRespToOpenAI2_WithToolUse(t *testing.T) {
+	claudeResp := `{
+		"id": "msg_123",
+		"type": "message",
+		"role": "assistant",
+		"content": [
+			{"type": "text", "text": "Let me read that."},
+			{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/a"}}
+		],
+		"model": "claude-sonnet-4-20250514",
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 10, "output_tokens": 15}
+	}`
+
+	result, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Resp map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Resp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	output := openai2Resp["output"].([]interface{})
+	// Should have message + function_call
+	if len(output) != 2 {
+		t.Fatalf("Expected 2 output items, got %d", len(output))
+	}
+
+	funcCall := output[1].(map[string]interface{})
+	if funcCall["type"] != "function_call" {
+		t.Errorf("Expected type 'function_call', got '%v'", funcCall["type"])
+	}
+}
+
+func TestClaudeRespToOpenAI2_WithThinking(t *testing.T) {
+	claudeResp := `{
+		"id": "msg_123",
+		"type": "message",
+		"role": "assistant",
+		"content": [
+			{"type": "thinking", "thinking": "Let me think..."},
+			{"type": "text", "text": "Hello!"}
+		],
+		"model": "claude-sonnet-4-20250514",
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+
+	result, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Resp map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Resp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	// Thinking should be skipped
+	output := openai2Resp["output"].([]interface{})
+	if len(output) != 1 {
+		t.Fatalf("Expected 1 output item (thinking skipped), got %d", len(output))
+	}
+}
+
+func TestClaudeRespToOpenAI2_InvalidJSON(t *testing.T) {
+	_, err := ClaudeRespToOpenAI2([]byte("not valid json"))
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+// --- OpenAI2RespToClaude ---
+
+func TestOpenAI2RespToClaude_Basic(t *testing.T) {
+	openai2Resp := `{
+		"id": "resp_123",
+		"object": "response",
+		"status": "completed",
+		"output": [
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello!"}]}
+		],
+		"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+	}`
+
+	result, err := OpenAI2RespToClaude([]byte(openai2Resp))
 	if err != nil {
 		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
 	}
 
 	var claudeResp map[string]interface{}
-	if err := json.Unmarshal(claudeRespBytes, &claudeResp); err != nil {
-		t.Fatalf("Failed to unmarshal Claude response: %v", err)
+	if err := json.Unmarshal(result, &claudeResp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	content, ok := claudeResp["content"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected content to be an array, got %T", claudeResp["content"])
+	// Check type
+	if claudeResp["type"] != "message" {
+		t.Errorf("Expected type 'message', got '%v'", claudeResp["type"])
 	}
-	if len(content) != 2 {
-		t.Fatalf("Expected 2 content blocks, got %d", len(content))
+
+	// Check role
+	if claudeResp["role"] != "assistant" {
+		t.Errorf("Expected role 'assistant', got '%v'", claudeResp["role"])
 	}
-	if content[0].(map[string]interface{})["type"] != "thinking" {
-		t.Fatalf("Expected first block thinking, got %v", content[0])
-	}
-	if content[1].(map[string]interface{})["type"] != "text" {
-		t.Fatalf("Expected second block text, got %v", content[1])
+
+	// Check stop_reason
+	if claudeResp["stop_reason"] != "end_turn" {
+		t.Errorf("Expected stop_reason 'end_turn', got '%v'", claudeResp["stop_reason"])
 	}
 }
 
-func TestOpenAI2StreamToClaudeWithThinking(t *testing.T) {
+func TestOpenAI2RespToClaude_WithFunctionCall(t *testing.T) {
+	openai2Resp := `{
+		"id": "resp_123",
+		"object": "response",
+		"status": "completed",
+		"output": [
+			{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"/tmp/a\"}"}
+		],
+		"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+	}`
+
+	result, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	if err != nil {
+		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
+	}
+
+	var claudeResp map[string]interface{}
+	if err := json.Unmarshal(result, &claudeResp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	// Check stop_reason
+	if claudeResp["stop_reason"] != "tool_use" {
+		t.Errorf("Expected stop_reason 'tool_use', got '%v'", claudeResp["stop_reason"])
+	}
+
+	// Check content
+	content := claudeResp["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("Expected 1 content block, got %d", len(content))
+	}
+
+	block := content[0].(map[string]interface{})
+	if block["type"] != "tool_use" {
+		t.Errorf("Expected type 'tool_use', got '%v'", block["type"])
+	}
+}
+
+func TestOpenAI2RespToClaude_InvalidJSON(t *testing.T) {
+	_, err := OpenAI2RespToClaude([]byte("not valid json"))
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+// --- ClaudeStreamToOpenAI2 ---
+
+func TestClaudeStreamToOpenAI2_MessageStart(t *testing.T) {
 	ctx := transformer.NewStreamContext()
-	ctx.ModelName = "claude-3-sonnet-20240229"
 
-	chunks := []string{
-		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
-		`data: {"type":"response.output_text.delta","delta":"<think>Reason</think>Hello"}`,
-		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
-		`data: [DONE]`,
-	}
+	claudeEvent := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":10,"output_tokens":0}}}
 
-	var allEvents []string
-	for _, chunk := range chunks {
-		events, err := OpenAI2StreamToClaude([]byte(chunk), ctx)
-		if err != nil {
-			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
-		}
-		if events != nil {
-			allEvents = append(allEvents, string(events))
-		}
+`
+
+	result, err := ClaudeStreamToOpenAI2([]byte(claudeEvent), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
 	}
 
-	fullEvents := strings.Join(allEvents, "")
-	if !strings.Contains(fullEvents, "\"type\":\"thinking\"") {
-		t.Fatalf("Expected thinking block start, but not found")
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "response.created") {
+		t.Errorf("Expected 'response.created' event, got '%s'", resultStr)
 	}
-	if !strings.Contains(fullEvents, "\"thinking\":\"Reason\"") {
-		t.Fatalf("Expected thinking delta 'Reason', but not found")
+
+	// Check context updated
+	if ctx.MessageID != "msg_1" {
+		t.Errorf("Expected MessageID 'msg_1', got '%v'", ctx.MessageID)
 	}
-	if !strings.Contains(fullEvents, "\"text\":\"Hello\"") {
-		t.Fatalf("Expected text delta 'Hello', but not found")
+}
+
+func TestClaudeStreamToOpenAI2_TextDelta(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+	ctx.ContentBlockStarted = true
+	ctx.ContentIndex = 0
+
+	claudeEvent := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+`
+
+	result, err := ClaudeStreamToOpenAI2([]byte(claudeEvent), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
 	}
-	if strings.Contains(fullEvents, "<think>") || strings.Contains(fullEvents, "</think>") {
-		t.Fatalf("Unexpected think tags leaked into output")
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "response.output_text.delta") {
+		t.Errorf("Expected 'response.output_text.delta' event, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "Hello") {
+		t.Errorf("Expected 'Hello' in result, got '%s'", resultStr)
+	}
+}
+
+func TestClaudeStreamToOpenAI2_ToolUse(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+
+	claudeEvent := `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
+
+`
+
+	result, err := ClaudeStreamToOpenAI2([]byte(claudeEvent), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "response.output_item.added") {
+		t.Errorf("Expected 'response.output_item.added' event, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "function_call") {
+		t.Errorf("Expected 'function_call' in result, got '%s'", resultStr)
+	}
+}
+
+func TestClaudeStreamToOpenAI2_MessageStop(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+	ctx.InputTokens = 10
+	ctx.OutputTokens = 5
+
+	claudeEvent := `event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	result, err := ClaudeStreamToOpenAI2([]byte(claudeEvent), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "response.completed") {
+		t.Errorf("Expected 'response.completed' event, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "[DONE]") {
+		t.Errorf("Expected '[DONE]' in result, got '%s'", resultStr)
+	}
+}
+
+func TestClaudeStreamToOpenAI2_Empty(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	result, err := ClaudeStreamToOpenAI2([]byte(""), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
+	}
+
+	if result != nil {
+		t.Errorf("Expected nil for empty event, got %v", result)
+	}
+}
+
+// --- OpenAI2StreamToClaude ---
+
+func TestOpenAI2StreamToClaude_Created(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.ModelName = "claude-sonnet-4-20250514"
+
+	openai2SSE := `data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`
+
+	result, err := OpenAI2StreamToClaude([]byte(openai2SSE), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "message_start") {
+		t.Errorf("Expected 'message_start' event, got '%s'", resultStr)
+	}
+
+	// Check context updated
+	if ctx.MessageID != "resp_1" {
+		t.Errorf("Expected MessageID 'resp_1', got '%v'", ctx.MessageID)
+	}
+}
+
+func TestOpenAI2StreamToClaude_TextDelta(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+
+	openai2SSE := `data: {"type":"response.output_text.delta","delta":"Hello"}`
+
+	result, err := OpenAI2StreamToClaude([]byte(openai2SSE), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "content_block") {
+		t.Errorf("Expected content_block events, got '%s'", resultStr)
+	}
+}
+
+func TestOpenAI2StreamToClaude_FunctionCall(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+
+	openai2SSE := `data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`
+
+	result, err := OpenAI2StreamToClaude([]byte(openai2SSE), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "content_block_start") {
+		t.Errorf("Expected 'content_block_start' event, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "tool_use") {
+		t.Errorf("Expected 'tool_use' in result, got '%s'", resultStr)
+	}
+}
+
+func TestOpenAI2StreamToClaude_Completed(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+
+	openai2SSE := `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`
+
+	result, err := OpenAI2StreamToClaude([]byte(openai2SSE), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "message_delta") {
+		t.Errorf("Expected 'message_delta' event, got '%s'", resultStr)
+	}
+}
+
+func TestOpenAI2StreamToClaude_Done(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+
+	result, err := OpenAI2StreamToClaude([]byte("data: [DONE]"), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "message_stop") {
+		t.Errorf("Expected 'message_stop' event, got '%s'", resultStr)
+	}
+}
+
+func TestOpenAI2StreamToClaude_Empty(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	result, err := OpenAI2StreamToClaude([]byte(""), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+
+	if result != nil {
+		t.Errorf("Expected nil for empty event, got %v", result)
 	}
 }
