@@ -154,7 +154,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
 				toolCalls = append(toolCalls, map[string]interface{}{
-					"id":   fmt.Sprintf("call_%d", len(toolCalls)),
+					"id":   GenerateToolCallID(part.FunctionCall.Name),
 					"type": "function",
 					"function": map[string]interface{}{
 						"name":      part.FunctionCall.Name,
@@ -228,7 +228,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			toolCall := []map[string]interface{}{
 				{
 					"index": ctx.ContentIndex,
-					"id":    fmt.Sprintf("call_%d", ctx.ContentIndex),
+					"id":    GenerateToolCallID(part.FunctionCall.Name),
 					"type":  "function",
 					"function": map[string]interface{}{
 						"name":      part.FunctionCall.Name,

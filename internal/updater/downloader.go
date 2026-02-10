@@ -192,9 +192,10 @@ func (d *Downloader) setError(errMsg string) {
 
 // Cancel cancels the current download
 func (d *Downloader) Cancel() {
-	d.mu.RLock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.cancelChan != nil && d.progress.Status == "downloading" {
 		close(d.cancelChan)
+		d.cancelChan = nil // Prevent double close panic
 	}
-	d.mu.RUnlock()
 }

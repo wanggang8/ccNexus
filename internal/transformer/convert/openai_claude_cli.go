@@ -288,7 +288,7 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 	headers := BuildClaudeCliHeaders(apiKey, betas, req.Stream)
 
 	// 日志记录：请求转换完成
-	logger.Debug("[CLI] Request transformed: model=%s, messages=%d, tools=%d, stream=%v, thinking=%v",
+	logger.Debug("[CLI] 请求已转换: 模型=%s, 消息数=%d, 工具数=%d, 流式=%v, 思考=%v",
 		model, len(messages), len(tools), req.Stream, req.EnableThinking)
 
 	return body, headers, nil

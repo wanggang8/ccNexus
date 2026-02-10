@@ -35,15 +35,18 @@ type APIResponse struct {
 type Proxy struct {
 	config            *config.Config
 	stats             *Stats
+	trafficRecorder   *TrafficRecorder              // traffic log recorder
 	currentIndex      int
 	mu                sync.RWMutex
 	server            *http.Server
-	activeRequests    map[string]bool               // tracks active requests by endpoint name
+	activeRequests    map[string]int                // tracks active request count by endpoint name
 	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
 	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
 	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
 	ctxMu             sync.RWMutex                  // protects context maps
 	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
+	httpClient        *http.Client                  // cached HTTP client for connection reuse
+	httpClientOnce    sync.Once                     // ensures HTTP client is created only once
 }
 
 // New creates a new Proxy instance
@@ -51,18 +54,24 @@ func New(cfg *config.Config, statsStorage StatsStorage, deviceID string) *Proxy 
 	stats := NewStats(statsStorage, deviceID)
 
 	return &Proxy{
-		config:         cfg,
-		stats:          stats,
-		currentIndex:   0,
-		activeRequests: make(map[string]bool),
-		endpointCtx:    make(map[string]context.Context),
-		endpointCancel: make(map[string]context.CancelFunc),
+		config:          cfg,
+		stats:           stats,
+		trafficRecorder: NewTrafficRecorder(),
+		currentIndex:    0,
+		activeRequests:  make(map[string]int),
+		endpointCtx:     make(map[string]context.Context),
+		endpointCancel:  make(map[string]context.CancelFunc),
 	}
 }
 
 // SetOnEndpointSuccess sets the callback for successful endpoint requests
 func (p *Proxy) SetOnEndpointSuccess(callback func(endpointName string)) {
 	p.onEndpointSuccess = callback
+}
+
+// GetTrafficRecorder returns the traffic recorder
+func (p *Proxy) GetTrafficRecorder() *TrafficRecorder {
+	return p.trafficRecorder
 }
 
 // Start starts the proxy server
@@ -92,8 +101,8 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux) error {
 		Handler: mux,
 	}
 
-	logger.Info("ccNexus starting on port %d", port)
-	logger.Info("Configured %d endpoints", len(p.config.GetEndpoints()))
+	logger.Info("ccNexus 启动于端口 %d", port)
+	logger.Info("已配置 %d 个端点", len(p.config.GetEndpoints()))
 
 	return p.server.ListenAndServe()
 }
@@ -104,6 +113,37 @@ func (p *Proxy) Stop() error {
 		return p.server.Close()
 	}
 	return nil
+}
+
+// getHTTPClient returns a cached HTTP client for connection reuse
+func (p *Proxy) getHTTPClient() *http.Client {
+	p.httpClientOnce.Do(func() {
+		transport := &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+		}
+
+		if proxyCfg := p.config.GetProxy(); proxyCfg != nil && proxyCfg.URL != "" {
+			if proxyTransport, err := CreateProxyTransport(proxyCfg.URL); err == nil {
+				// Copy proxy settings to our transport
+				proxyTransport.MaxIdleConns = 100
+				proxyTransport.MaxIdleConnsPerHost = 10
+				proxyTransport.IdleConnTimeout = 90 * time.Second
+				transport = proxyTransport
+				logger.Debug("HTTP client using proxy: %s", proxyCfg.URL)
+			} else {
+				logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
+			}
+		}
+
+		p.httpClient = &http.Client{
+			Transport: transport,
+			Timeout:   300 * time.Second,
+		}
+	})
+	return p.httpClient
 }
 
 // getEnabledEndpoints returns only the enabled endpoints
@@ -137,21 +177,26 @@ func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 func (p *Proxy) markRequestActive(endpointName string) {
 	p.activeRequestsMu.Lock()
 	defer p.activeRequestsMu.Unlock()
-	p.activeRequests[endpointName] = true
+	p.activeRequests[endpointName]++
 }
 
-// markRequestInactive marks an endpoint as having no active requests
+// markRequestInactive decrements active request count for an endpoint
 func (p *Proxy) markRequestInactive(endpointName string) {
 	p.activeRequestsMu.Lock()
 	defer p.activeRequestsMu.Unlock()
-	delete(p.activeRequests, endpointName)
+	if p.activeRequests[endpointName] > 0 {
+		p.activeRequests[endpointName]--
+	}
+	if p.activeRequests[endpointName] == 0 {
+		delete(p.activeRequests, endpointName)
+	}
 }
 
 // hasActiveRequests checks if an endpoint has active requests
 func (p *Proxy) hasActiveRequests(endpointName string) bool {
 	p.activeRequestsMu.RLock()
 	defer p.activeRequestsMu.RUnlock()
-	return p.activeRequests[endpointName]
+	return p.activeRequests[endpointName] > 0
 }
 
 // isCurrentEndpoint checks if the given endpoint is still the current one
@@ -204,7 +249,7 @@ func (p *Proxy) rotateEndpoint() config.Endpoint {
 	// Check if there are active requests on the current endpoint
 	// Wait a short time for them to complete (max 500ms)
 	if p.hasActiveRequests(oldEndpoint.Name) {
-		logger.Debug("[SWITCH] Waiting for active requests on %s to complete...", oldEndpoint.Name)
+		logger.Debug("[切换] 等待 %s 上的活跃请求完成...", oldEndpoint.Name)
 		p.mu.Unlock() // Release lock while waiting
 
 		for i := 0; i < 10; i++ { // Check 10 times, 50ms each = 500ms max
@@ -221,13 +266,14 @@ func (p *Proxy) rotateEndpoint() config.Endpoint {
 		if len(endpoints) == 0 {
 			return config.Endpoint{}
 		}
+		// Re-calculate oldIndex since currentIndex may have been modified by other goroutines
+		oldIndex = p.currentIndex % len(endpoints)
 	}
 
-	// Use oldIndex to calculate next, avoiding skip if currentIndex was modified during wait
 	p.currentIndex = (oldIndex + 1) % len(endpoints)
 
 	newEndpoint := endpoints[p.currentIndex]
-	logger.Debug("[SWITCH] %s → %s (#%d)", oldEndpoint.Name, newEndpoint.Name, p.currentIndex+1)
+	logger.Debug("[切换] %s → %s (第%d个)", oldEndpoint.Name, newEndpoint.Name, p.currentIndex+1)
 
 	return newEndpoint
 }
@@ -243,10 +289,10 @@ func (p *Proxy) GetCurrentEndpointName() string {
 // Thread-safe and cancels ongoing requests on the old endpoint
 func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
+		p.mu.Unlock()
 		return fmt.Errorf("no enabled endpoints")
 	}
 
@@ -254,16 +300,23 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	for i, ep := range endpoints {
 		if ep.Name == targetName {
 			oldEndpoint := endpoints[p.currentIndex%len(endpoints)]
+			oldEndpointName := ""
 			if oldEndpoint.Name != targetName {
-				// Cancel all requests on the old endpoint
-				p.cancelEndpointRequests(oldEndpoint.Name)
+				oldEndpointName = oldEndpoint.Name
 			}
 			p.currentIndex = i
-			logger.Info("[MANUAL SWITCH] %s → %s", oldEndpoint.Name, ep.Name)
+			logger.Info("[手动切换] %s → %s", oldEndpoint.Name, ep.Name)
+			p.mu.Unlock()
+
+			// Cancel requests on old endpoint after releasing mu lock to avoid deadlock
+			if oldEndpointName != "" {
+				p.cancelEndpointRequests(oldEndpointName)
+			}
 			return nil
 		}
 	}
 
+	p.mu.Unlock()
 	return fmt.Errorf("endpoint '%s' not found or not enabled", targetName)
 }
 
@@ -287,12 +340,14 @@ func detectClientFormat(path string) ClientFormat {
 	default:
 		format = ClientFormatClaude
 	}
-	logger.Debug("[CLIENT_DETECT] Path: %s → Format: %s", path, format)
+	logger.Debug("[格式检测] 路径: %s → 客户端格式: %s", path, format)
 	return format
 }
 
 // handleProxy handles the main proxy logic
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		logger.Error("Failed to read request body: %v", err)
@@ -304,7 +359,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Detect client format
 	clientFormat := detectClientFormat(r.URL.Path)
 
-	logger.Debug("Proxy request: %s %s | Format: %s | Body: %d bytes", r.Method, r.URL.Path, clientFormat, len(bodyBytes))
+	logger.Debug("代理请求: %s %s | 格式: %s | 请求体: %d 字节", r.Method, r.URL.Path, clientFormat, len(bodyBytes))
 
 	// Write full request body to debug.log file only
 	if len(bodyBytes) == 0 {
@@ -322,7 +377,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
-		logger.Error("No enabled endpoints available")
+		logger.Error("没有可用的端点")
 		http.Error(w, "No enabled endpoints configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -353,6 +408,19 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Error("[%s] %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for transformer error
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    string(clientFormat),
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: bodyBytes,
+			})
+
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -364,9 +432,23 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
-			logger.Error("[%s] Failed to transform request: %v", endpoint.Name, err)
+			logger.Error("[%s] 请求转换失败: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for transform error
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    string(clientFormat),
+				TransformerName: transformerName,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: bodyBytes,
+			})
+
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -398,6 +480,21 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for request build error
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				Duration:           time.Since(startTime),
+				Error:              err.Error(),
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+			})
+
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -406,11 +503,30 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ctx := p.getEndpointContext(endpoint.Name)
-		resp, err := sendRequest(ctx, proxyReq, p.config)
+		resp, err := sendRequest(ctx, proxyReq, p.getHTTPClient())
 		if err != nil {
+			// Some HTTP errors may return non-nil resp, ensure cleanup
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
 			logger.Error("[%s] Request failed: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for request send error
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				Duration:           time.Since(startTime),
+				Error:              err.Error(),
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+			})
+
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -422,7 +538,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		isStreaming := contentType == "text/event-stream" || (streamReq.Stream && strings.Contains(contentType, "text/event-stream"))
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
-			inputTokens, outputTokens, outputText := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, streamReq.Model, bodyBytes)
+			inputTokens, outputTokens, outputText, originalResp, transformedResp := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, streamReq.Model, bodyBytes)
 
 			// Fallback: estimate tokens when usage is 0
 			if inputTokens == 0 || outputTokens == 0 {
@@ -431,22 +547,62 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for successful streaming response
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        string(clientFormat),
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				IsStreaming:         true,
+				OriginalRequest:     bodyBytes,
+				TransformedRequest:  transformedBody,
+				OriginalResponse:    originalResp,
+				TransformedResponse: transformedResp,
+			})
+
 			if p.onEndpointSuccess != nil {
 				p.onEndpointSuccess(endpoint.Name)
 			}
-			logger.Debug("[%s] Request completed successfully (streaming)", endpoint.Name)
+			logger.Debug("[%s] 请求完成 (流式响应)", endpoint.Name)
 			return
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			inputTokens, outputTokens, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
+			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
 			if err == nil {
 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 				p.markRequestInactive(endpoint.Name)
+
+				// Record traffic log for successful non-streaming response
+				p.trafficRecorder.Record(&TrafficLog{
+					Timestamp:           startTime,
+					EndpointName:        endpoint.Name,
+					ClientFormat:        string(clientFormat),
+					TransformerName:     transformerName,
+					Method:              r.Method,
+					Path:                r.URL.Path,
+					StatusCode:          resp.StatusCode,
+					Duration:            time.Since(startTime),
+					InputTokens:         inputTokens,
+					OutputTokens:        outputTokens,
+					IsStreaming:         false,
+					OriginalRequest:     bodyBytes,
+					TransformedRequest:  transformedBody,
+					OriginalResponse:    originalResp,
+					TransformedResponse: transformedResp,
+				})
+
 				if p.onEndpointSuccess != nil {
 					p.onEndpointSuccess(endpoint.Name)
 				}
-				logger.Debug("[%s] Request completed successfully", endpoint.Name)
+				logger.Debug("[%s] 请求完成", endpoint.Name)
 				return
 			}
 		}
@@ -466,6 +622,23 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Warn("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for retry error
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         resp.StatusCode,
+				Duration:           time.Since(startTime),
+				Error:              errMsg,
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+				OriginalResponse:   errBody,
+			})
+
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -500,6 +673,23 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
+
+		// Record traffic log for non-200 passthrough response
+		p.trafficRecorder.Record(&TrafficLog{
+			Timestamp:           startTime,
+			EndpointName:        endpoint.Name,
+			ClientFormat:        string(clientFormat),
+			TransformerName:     transformerName,
+			Method:              r.Method,
+			Path:                r.URL.Path,
+			StatusCode:          resp.StatusCode,
+			Duration:            time.Since(startTime),
+			OriginalRequest:     bodyBytes,
+			TransformedRequest:  transformedBody,
+			OriginalResponse:    respBody,
+			TransformedResponse: respBody, // Passthrough, same as original
+		})
+
 		return
 	}
 

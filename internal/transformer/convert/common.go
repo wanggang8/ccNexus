@@ -4,8 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// toolCallCounter is used to generate unique tool call IDs
+var toolCallCounter int64
+
+// GenerateToolCallID generates a unique tool call ID for consistent tool call tracking
+func GenerateToolCallID(name string) string {
+	counter := atomic.AddInt64(&toolCallCounter, 1)
+	return fmt.Sprintf("toolu_%s_%d", name, counter)
+}
 
 // cleanSchemaForGemini removes fields not supported by Gemini API
 func cleanSchemaForGemini(schema interface{}) interface{} {

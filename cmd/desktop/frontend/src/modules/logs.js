@@ -1,7 +1,5 @@
 import { t } from '../i18n/index.js';
 
-let logPanelExpanded = true;
-
 export async function loadLogs() {
     try {
         if (!window.go?.main?.App) return;
@@ -46,24 +44,6 @@ function renderLogs(logs) {
     // Only auto-scroll to bottom if user was already at the bottom
     if (isAtBottom) {
         textarea.scrollTop = textarea.scrollHeight;
-    }
-}
-
-export function toggleLogPanel() {
-    const panel = document.getElementById('logPanel');
-    const icon = document.getElementById('logToggleIcon');
-    const text = document.getElementById('logToggleText');
-
-    logPanelExpanded = !logPanelExpanded;
-
-    if (logPanelExpanded) {
-        panel.style.display = 'block';
-        icon.textContent = '🔼';
-        text.textContent = t('logs.collapse');
-    } else {
-        panel.style.display = 'none';
-        icon.textContent = '🔽';
-        text.textContent = t('logs.expand');
     }
 }
 

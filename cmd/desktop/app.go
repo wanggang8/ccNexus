@@ -55,6 +55,7 @@ type App struct {
 	archive  *service.ArchiveService
 	update   *service.UpdateService
 	terminal *service.TerminalService
+	traffic  *service.TrafficService
 }
 
 // NewApp creates a new App application struct
@@ -68,7 +69,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.ctxMutex.Unlock()
 
-	logger.Info("Application starting...")
+	logger.Info("应用启动中...")
 
 	// Create config directory first
 	homeDir, err := os.UserHomeDir()
@@ -142,6 +143,7 @@ func (a *App) startup(ctx context.Context) {
 	a.archive = service.NewArchiveService(a.storage)
 	a.update = service.NewUpdateService(a.config, a.storage, version)
 	a.terminal = service.NewTerminalService(a.config, a.storage)
+	a.traffic = service.NewTrafficService(a.proxy)
 
 	a.initTray()
 
@@ -154,7 +156,7 @@ func (a *App) startup(ctx context.Context) {
 	time.Sleep(300 * time.Millisecond)
 	runtime.WindowShow(ctx)
 
-	logger.Info("Application started successfully")
+	logger.Info("应用启动成功")
 }
 
 // shutdown is called when the app is closing
@@ -167,7 +169,7 @@ func (a *App) shutdown(ctx context.Context) {
 			logger.Warn("Failed to close storage: %v", err)
 		}
 	}
-	logger.Info("Application stopped")
+	logger.Info("应用已停止")
 	logger.GetLogger().Close()
 }
 
@@ -228,7 +230,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 
 // Quit quits the application
 func (a *App) Quit() {
-	logger.Info("Quitting application...")
+	logger.Info("正在退出应用...")
 
 	a.ctxMutex.RLock()
 	ctx := a.ctx
@@ -555,3 +557,13 @@ func (a *App) DeleteCodexSession(sessionID string) error {
 func (a *App) RenameCodexSession(sessionID, alias string) error {
 	return a.terminal.RenameCodexSession(sessionID, alias)
 }
+
+// ========== Traffic Bindings ==========
+
+func (a *App) SetTrafficRecording(enabled bool) { a.traffic.SetRecording(enabled) }
+func (a *App) IsTrafficRecording() bool         { return a.traffic.IsRecording() }
+func (a *App) GetTrafficLogs(filterJSON string) string {
+	return a.traffic.GetLogs(filterJSON)
+}
+func (a *App) GetTrafficLogDetail(id string) string { return a.traffic.GetLogDetail(id) }
+func (a *App) ClearTrafficLogs()                    { a.traffic.ClearLogs() }

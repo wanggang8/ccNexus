@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/proxy"
 
@@ -46,7 +46,7 @@ func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endp
 		return nil, err
 	}
 
-	logger.Debug("[%s] Transformer: %s (client: %s, endpoint: %s)", endpoint.Name, trans.Name(), clientFormat, endpointTransformer)
+	logger.Debug("[%s] 转换器: %s (客户端: %s, 端点: %s)", endpoint.Name, trans.Name(), clientFormat, endpointTransformer)
 	return trans, nil
 }
 
@@ -241,24 +241,9 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, transformedBod
 	return proxyReq, nil
 }
 
-// sendRequest sends the HTTP request and returns the response
-func sendRequest(ctx context.Context, proxyReq *http.Request, cfg *config.Config) (*http.Response, error) {
+// sendRequest sends the HTTP request using the provided client
+func sendRequest(ctx context.Context, proxyReq *http.Request, client *http.Client) (*http.Response, error) {
 	proxyReq = proxyReq.WithContext(ctx)
-	client := &http.Client{
-		Timeout: 300 * time.Second,
-	}
-
-	// Apply proxy if configured
-	if proxyCfg := cfg.GetProxy(); proxyCfg != nil && proxyCfg.URL != "" {
-		transport, err := CreateProxyTransport(proxyCfg.URL)
-		if err != nil {
-			logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
-		} else {
-			client.Transport = transport
-			logger.Debug("Using proxy: %s", proxyCfg.URL)
-		}
-	}
-
 	return client.Do(proxyReq)
 }
 
@@ -284,7 +269,9 @@ func CreateProxyTransport(proxyURL string) (*http.Transport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
 		}
-		transport.Dial = dialer.Dial
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		}
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(parsed)
 	default:

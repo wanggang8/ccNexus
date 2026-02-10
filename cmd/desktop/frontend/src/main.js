@@ -2,11 +2,11 @@ import './style.css'
 import './effects/festival-effects.css'
 import '../wailsjs/runtime/runtime.js'
 import { setLanguage } from './i18n/index.js'
-import { initUI, changeLanguage } from './modules/ui.js'
+import { initUI, changeLanguage, switchWorkspaceTab } from './modules/ui.js'
 import { loadConfig } from './modules/config.js'
 import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod } from './modules/stats.js'
-import { renderEndpoints, toggleEndpointPanel, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen } from './modules/endpoints.js'
-import { loadLogs, toggleLogPanel, changeLogLevel, copyLogs, clearLogs } from './modules/logs.js'
+import { renderEndpoints, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen } from './modules/endpoints.js'
+import { loadLogs, changeLogLevel, copyLogs, clearLogs } from './modules/logs.js'
 import { showDataSyncDialog } from './modules/webdav.js'
 import { initTips } from './modules/tips.js'
 import { initTerminal } from './modules/terminal.js'
@@ -15,6 +15,7 @@ import { showSettingsModal, closeSettingsModal, saveSettings, applyTheme, initTh
 import { checkUpdatesOnStartup, checkForUpdates, initUpdateSettings } from './modules/updater.js'
 import { initBroadcast } from './modules/broadcast.js'
 import { initSponsor, showSponsorModal, closeSponsorModal, openSponsorLink } from './modules/sponsor.js'
+import { initTraffic, toggleTrafficRecording, loadTrafficLogs, showTrafficDetail, closeTrafficDetailModal, clearTrafficLogs, filterTrafficByStatus, filterTrafficByEndpoint, switchTrafficTab, toggleJSONNode } from './modules/traffic.js'
 import {
     showAddEndpointModal,
     editEndpoint,
@@ -140,6 +141,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Initialize update settings
     initUpdateSettings();
 
+    // Initialize traffic module
+    initTraffic();
+
     // Listen for close dialog event from backend
     if (window.runtime) {
         window.runtime.EventsOn('show-close-dialog', () => {
@@ -185,7 +189,6 @@ window.testEndpoint = testEndpointHandler;
 window.closeTestResultModal = closeTestResultModal;
 window.openGitHub = openGitHub;
 window.openArticle = openArticle;
-window.toggleLogPanel = toggleLogPanel;
 window.changeLogLevel = changeLogLevel;
 window.copyLogs = copyLogs;
 window.clearLogs = clearLogs;
@@ -199,8 +202,8 @@ window.quitApplication = quitApplication;
 window.minimizeToTray = minimizeToTray;
 window.showDataSyncDialog = showDataSyncDialog;
 window.switchStatsPeriod = switchStatsPeriod;
-window.toggleEndpointPanel = toggleEndpointPanel;
 window.switchEndpointViewMode = switchEndpointViewMode;
+window.switchWorkspaceTab = switchWorkspaceTab;
 window.showSettingsModal = showSettingsModal;
 window.closeSettingsModal = closeSettingsModal;
 window.saveSettings = saveSettings;
@@ -210,6 +213,17 @@ window.saveAutoThemeConfig = saveAutoThemeConfig;
 window.showSponsorModal = showSponsorModal;
 window.closeSponsorModal = closeSponsorModal;
 window.openSponsorLink = openSponsorLink;
+
+// Traffic functions
+window.toggleTrafficRecording = toggleTrafficRecording;
+window.loadTrafficLogs = loadTrafficLogs;
+window.showTrafficDetail = showTrafficDetail;
+window.closeTrafficDetailModal = closeTrafficDetailModal;
+window.clearTrafficLogs = clearTrafficLogs;
+window.filterTrafficByStatus = filterTrafficByStatus;
+window.filterTrafficByEndpoint = filterTrafficByEndpoint;
+window.switchTrafficTab = switchTrafficTab;
+window.toggleJSONNode = toggleJSONNode;
 
 // History modal functions
 window.closeHistoryModal = async () => {

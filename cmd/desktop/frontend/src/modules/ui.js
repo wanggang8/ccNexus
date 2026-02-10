@@ -1,5 +1,29 @@
 import { t } from '../i18n/index.js';
 
+let currentWorkspaceTab = 'endpoints';
+
+// Switch workspace tab
+export function switchWorkspaceTab(tabName) {
+    currentWorkspaceTab = tabName;
+    
+    // Update tab buttons
+    document.querySelectorAll('.workspace-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    
+    // Update panels
+    document.querySelectorAll('.workspace-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.id === `panel-${tabName}`);
+    });
+    
+    // Update action buttons
+    document.querySelectorAll('.tab-actions').forEach(actions => {
+        actions.classList.remove('active');
+    });
+    const actionsEl = document.getElementById(`${tabName}Actions`);
+    if (actionsEl) actionsEl.classList.add('active');
+}
+
 export function initUI() {
     const platform = navigator.platform.toLowerCase();
     const isShowBtn = platform.includes('win') || platform.includes('mac');
@@ -206,78 +230,107 @@ export function initUI() {
                 </div>
             </div>
 
-            <!-- Endpoints -->
-            <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <h2 style="margin: 0;">🔗 ${t('endpoints.title')}</h2>
-                        <button class="endpoint-toggle-btn" onclick="window.toggleEndpointPanel()">
-                            <span id="endpointToggleIcon">🔼</span> <span id="endpointToggleText">${t('endpoints.collapse')}</span>
+            <!-- Workspace Tab Card -->
+            <div class="card workspace-card">
+                <div class="workspace-header">
+                    <div class="workspace-tabs">
+                        <button class="workspace-tab active" data-tab="endpoints" onclick="window.switchWorkspaceTab('endpoints')">
+                            🔗 ${t('endpoints.title')}
                         </button>
-                        <div class="view-mode-tabs">
-                            <button class="view-mode-btn active" data-view="detail" onclick="window.switchEndpointViewMode('detail')" title="${t('endpoints.viewDetail')}">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                    <rect x="3" y="3" width="8" height="8" rx="1"/>
-                                    <rect x="13" y="3" width="8" height="8" rx="1"/>
-                                    <rect x="3" y="13" width="8" height="8" rx="1"/>
-                                    <rect x="13" y="13" width="8" height="8" rx="1"/>
-                                </svg>
+                        <button class="workspace-tab" data-tab="traffic" onclick="window.switchWorkspaceTab('traffic')">
+                            📡 ${t('traffic.title')} <span class="tab-badge" id="trafficTabBadge"></span>
+                        </button>
+                        <button class="workspace-tab" data-tab="logs" onclick="window.switchWorkspaceTab('logs')">
+                            📋 ${t('logs.title')}
+                        </button>
+                    </div>
+                    <div class="workspace-actions">
+                        <!-- Endpoints Actions -->
+                        <div id="endpointsActions" class="tab-actions active">
+                            <div class="view-mode-tabs">
+                                <button class="view-mode-btn active" data-view="detail" onclick="window.switchEndpointViewMode('detail')" title="${t('endpoints.viewDetail')}">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <rect x="3" y="3" width="8" height="8" rx="1"/>
+                                        <rect x="13" y="3" width="8" height="8" rx="1"/>
+                                        <rect x="3" y="13" width="8" height="8" rx="1"/>
+                                        <rect x="13" y="13" width="8" height="8" rx="1"/>
+                                    </svg>
+                                </button>
+                                <button class="view-mode-btn" data-view="compact" onclick="window.switchEndpointViewMode('compact')" title="${t('endpoints.viewCompact')}">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <rect x="3" y="4" width="18" height="3" rx="1"/>
+                                        <rect x="3" y="10.5" width="18" height="3" rx="1"/>
+                                        <rect x="3" y="17" width="18" height="3" rx="1"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            ${isShowBtn ? `
+                            <button class="btn btn-secondary" onclick="window.showTerminalModal()">
+                                🖥️ ${t('terminal.title')}
+                            </button>` : ''}
+                            <button class="btn btn-secondary" onclick="window.showDataSyncDialog()">
+                                🔄 ${t('webdav.dataSync')}
                             </button>
-                            <button class="view-mode-btn" data-view="compact" onclick="window.switchEndpointViewMode('compact')" title="${t('endpoints.viewCompact')}">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                    <rect x="3" y="4" width="18" height="3" rx="1"/>
-                                    <rect x="3" y="10.5" width="18" height="3" rx="1"/>
-                                    <rect x="3" y="17" width="18" height="3" rx="1"/>
-                                </svg>
+                            <button class="btn btn-primary" onclick="window.showAddEndpointModal()">
+                                ➕ ${t('header.addEndpoint')}
+                            </button>
+                        </div>
+                        <!-- Traffic Actions -->
+                        <div id="trafficActions" class="tab-actions">
+                            <span class="traffic-count" id="trafficCount">0 / 0</span>
+                            <select class="traffic-filter-select" onchange="window.filterTrafficByStatus(this.value === '' ? null : this.value === 'true')">
+                                <option value="">${t('traffic.filterAll')}</option>
+                                <option value="true">${t('traffic.filterErrors')}</option>
+                                <option value="false">${t('traffic.filterSuccess')}</option>
+                            </select>
+                            <button class="btn btn-secondary btn-sm" onclick="window.clearTrafficLogs()">
+                                🗑️ ${t('traffic.clear')}
+                            </button>
+                            <button id="trafficRecordBtn" class="traffic-record-btn" onclick="window.toggleTrafficRecording()">
+                                <span class="record-dot"></span> ${t('traffic.startRecording')}
+                            </button>
+                        </div>
+                        <!-- Logs Actions -->
+                        <div id="logsActions" class="tab-actions">
+                            <select id="logLevel" class="log-level-select-btn" onchange="window.changeLogLevel()">
+                                <option value="0">🔍 ${t('logs.levels.0')}</option>
+                                <option value="1" selected>ℹ️ ${t('logs.levels.1')}</option>
+                                <option value="2">⚠️ ${t('logs.levels.2')}</option>
+                                <option value="3">❌ ${t('logs.levels.3')}</option>
+                            </select>
+                            <button class="btn btn-secondary btn-sm" onclick="window.copyLogs()">
+                                📋 ${t('logs.copy')}
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="window.clearLogs()">
+                                🗑️ ${t('logs.clear')}
                             </button>
                         </div>
                     </div>
-                    <div style="display: flex; gap: 10px;">
-                        ${isShowBtn ? `
-                        <button class="btn btn-secondary" onclick="window.showTerminalModal()">
-                            🖥️ ${t('terminal.title')}
-                        </button>` : ''}
-                        <button class="btn btn-secondary" onclick="window.showDataSyncDialog()">
-                            🔄 ${t('webdav.dataSync')}
-                        </button>
-                        <button class="btn btn-primary" onclick="window.showAddEndpointModal()">
-                            ➕ ${t('header.addEndpoint')}
-                        </button>
-                    </div>
                 </div>
-                <div id="endpointPanel" class="endpoint-panel">
-                    <div id="endpointList" class="endpoint-list">
-                        <div class="loading">${t('endpoints.title')}...</div>
+                <div class="workspace-content">
+                    <!-- Endpoints Panel -->
+                    <div class="workspace-panel active" id="panel-endpoints">
+                        <div id="endpointList" class="endpoint-list">
+                            <div class="loading">${t('endpoints.title')}...</div>
+                        </div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Logs Panel -->
-            <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <h2 style="margin: 0;">📋 ${t('logs.title')}</h2>
-                        <button class="endpoint-toggle-btn" onclick="window.toggleLogPanel()">
-                            <span id="logToggleIcon">🔼</span> <span id="logToggleText">${t('logs.collapse')}</span>
-                        </button>
+                    <!-- Traffic Panel -->
+                    <div class="workspace-panel" id="panel-traffic">
+                        <div class="traffic-log-header">
+                            <div class="traffic-col-status">${t('traffic.status')}</div>
+                            <div class="traffic-col-info">${t('traffic.request')}</div>
+                            <div class="traffic-col-tokens">${t('traffic.tokens')}</div>
+                            <div class="traffic-col-duration">${t('traffic.duration')}</div>
+                            <div class="traffic-col-time">${t('traffic.time')}</div>
+                        </div>
+                        <div id="trafficLogList" class="traffic-log-list">
+                            <div class="traffic-empty">${t('traffic.noLogs')}</div>
+                        </div>
                     </div>
-                    <div style="display: flex; gap: 10px;">
-                        <select id="logLevel" class="log-level-select-btn" onchange="window.changeLogLevel()">
-                            <option value="0">🔍 ${t('logs.levels.0')}</option>
-                            <option value="1" selected>ℹ️ ${t('logs.levels.1')}</option>
-                            <option value="2">⚠️ ${t('logs.levels.2')}</option>
-                            <option value="3">❌ ${t('logs.levels.3')}</option>
-                        </select>
-                        <button class="btn btn-secondary btn-sm" onclick="window.copyLogs()">
-                            📋 ${t('logs.copy')}
-                        </button>
-                        <button class="btn btn-secondary btn-sm" onclick="window.clearLogs()">
-                            🗑️ ${t('logs.clear')}
-                        </button>
+                    <!-- Logs Panel -->
+                    <div class="workspace-panel" id="panel-logs">
+                        <textarea id="logContent" class="log-textarea" readonly></textarea>
                     </div>
-                </div>
-                <div id="logPanel" class="log-panel">
-                    <textarea id="logContent" class="log-textarea" readonly></textarea>
                 </div>
             </div>
         </div>
@@ -742,6 +795,19 @@ export function initUI() {
                 </div>
             </div>
         </div>
+
+        <!-- Traffic Detail Modal -->
+        <div id="trafficDetailModal" class="modal">
+            <div class="modal-content traffic-detail-modal">
+                <div class="modal-header">
+                    <h2>📡 ${t('traffic.detailTitle')}</h2>
+                    <button class="modal-close" onclick="window.closeTrafficDetailModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="trafficDetailContent">
+                    <!-- Traffic detail will be inserted here -->
+                </div>
+            </div>
+        </div>
     `;
 
     setupModalEventListeners();
@@ -752,6 +818,13 @@ function setupModalEventListeners() {
      document.getElementById('testResultModal').addEventListener('click', (e) => {
         if (e.target.id === 'testResultModal') {
             window.closeTestResultModal();
+        }
+    });
+
+    // Close traffic detail modal on background click
+    document.getElementById('trafficDetailModal').addEventListener('click', (e) => {
+        if (e.target.id === 'trafficDetailModal') {
+            window.closeTrafficDetailModal();
         }
     });
 }

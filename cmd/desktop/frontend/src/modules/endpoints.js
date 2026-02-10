@@ -79,7 +79,6 @@ export function initEndpointViewMode() {
 let currentTestButton = null;
 let currentTestButtonOriginalText = '';
 let currentTestIndex = -1;
-let endpointPanelExpanded = true;
 
 function copyToClipboard(text, button) {
     navigator.clipboard.writeText(text).then(() => {
@@ -280,24 +279,6 @@ export async function renderEndpoints(endpoints) {
 
         container.appendChild(item);
     });
-}
-
-export function toggleEndpointPanel() {
-    const panel = document.getElementById('endpointPanel');
-    const icon = document.getElementById('endpointToggleIcon');
-    const text = document.getElementById('endpointToggleText');
-
-    endpointPanelExpanded = !endpointPanelExpanded;
-
-    if (endpointPanelExpanded) {
-        panel.style.display = 'block';
-        icon.textContent = '🔼';
-        text.textContent = t('endpoints.collapse');
-    } else {
-        panel.style.display = 'none';
-        icon.textContent = '🔽';
-        text.textContent = t('endpoints.expand');
-    }
 }
 
 // Drag and drop state

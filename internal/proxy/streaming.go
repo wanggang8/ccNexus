@@ -18,7 +18,8 @@ import (
 )
 
 // handleStreamingResponse processes streaming SSE responses
-func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte) (int, int, string) {
+// Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse
+func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte) (int, int, string, []byte, []byte) {
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -34,7 +35,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	if !ok {
 		logger.Error("[%s] ResponseWriter does not support flushing", endpoint.Name)
 		resp.Body.Close()
-		return 0, 0, ""
+		return 0, 0, "", nil, nil
 	}
 
 	// Handle gzip-encoded response body
@@ -44,7 +45,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		if err != nil {
 			logger.Error("[%s] Failed to create gzip reader: %v", endpoint.Name, err)
 			resp.Body.Close()
-			return 0, 0, ""
+			return 0, 0, "", nil, nil
 		}
 		defer gzipReader.Close()
 		reader = gzipReader
@@ -72,6 +73,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	var inputTokens, outputTokens int
 	var buffer bytes.Buffer
 	var outputText strings.Builder
+	var originalRespBuffer bytes.Buffer    // Accumulate original SSE events
+	var transformedRespBuffer bytes.Buffer // Accumulate transformed SSE events
+	isRecording := p.trafficRecorder.IsRecording()
 	eventCount := 0
 	streamDone := false
 
@@ -89,8 +93,18 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			buffer.WriteString(line + "\n")
 			eventData := buffer.Bytes()
 
+			// Accumulate original response (with size limit)
+			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+				originalRespBuffer.Write(eventData)
+			}
+
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
+				// Accumulate transformed response (with size limit)
+				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+					transformedRespBuffer.Write(transformedEvent)
+				}
+
 				w.Write(transformedEvent)
 				flusher.Flush()
 			}
@@ -103,12 +117,24 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			eventCount++
 			eventData := buffer.Bytes()
 
+			// Accumulate original response (with size limit)
+			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+				originalRespBuffer.Write(eventData)
+			}
+
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
 			} else if len(transformedEvent) > 0 {
-				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
-				p.extractTextFromEvent(transformedEvent, &outputText)
+				// Accumulate transformed response (with size limit)
+				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+					transformedRespBuffer.Write(transformedEvent)
+				}
+
+				// Extract tokens and text from original event (upstream API response)
+				// Original event contains complete token usage info from the API
+				p.extractTokensFromEvent(eventData, &inputTokens, &outputTokens)
+				p.extractTextFromEvent(eventData, &outputText)
 
 				if _, writeErr := w.Write(transformedEvent); writeErr != nil {
 					// Client disconnected (broken pipe) is normal for cancelled requests
@@ -131,7 +157,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	resp.Body.Close()
-	return inputTokens, outputTokens, outputText.String()
+	return inputTokens, outputTokens, outputText.String(), originalRespBuffer.Bytes(), transformedRespBuffer.Bytes()
 }
 
 // transformStreamEvent transforms a single SSE event
@@ -186,6 +212,7 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 }
 
 // extractTokensFromEvent extracts token counts from SSE event
+// Supports multiple formats: Claude (message_start/message_delta) and OpenAI (usage in final chunk)
 func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputTokens *int) {
 	scanner := bufio.NewScanner(bytes.NewReader(eventData))
 	for scanner.Scan() {
@@ -200,6 +227,7 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 			continue
 		}
 
+		// Claude format: message_start contains input_tokens, message_delta contains output_tokens
 		eventType, _ := event["type"].(string)
 		if eventType == "message_start" {
 			if message, ok := event["message"].(map[string]interface{}); ok {
@@ -216,12 +244,34 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 				}
 			}
 		}
+
+		// OpenAI format: usage in final chunk (prompt_tokens/completion_tokens or input_tokens/output_tokens)
+		if usage, ok := event["usage"].(map[string]interface{}); ok {
+			// OpenAI naming: prompt_tokens / completion_tokens
+			if input, ok := usage["prompt_tokens"].(float64); ok && int(input) > 0 {
+				*inputTokens = int(input)
+			}
+			if output, ok := usage["completion_tokens"].(float64); ok && int(output) > 0 {
+				*outputTokens = int(output)
+			}
+			// Alternative naming: input_tokens / output_tokens (some providers use this)
+			if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
+				*inputTokens = int(input)
+			}
+			if output, ok := usage["output_tokens"].(float64); ok && int(output) > 0 {
+				*outputTokens = int(output)
+			}
+		}
 	}
 }
 
-// extractTextFromEvent extracts text content from transformed event
-func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *strings.Builder) {
-	scanner := bufio.NewScanner(bytes.NewReader(transformedEvent))
+// extractTextFromEvent extracts text content from SSE event
+// Supports multiple formats:
+// - Claude original: content_block_delta with delta.type="text_delta" and delta.text
+// - Claude transformed: delta.text (simplified)
+// - OpenAI: choices[0].delta.content
+func (p *Proxy) extractTextFromEvent(eventData []byte, outputText *strings.Builder) {
+	scanner := bufio.NewScanner(bytes.NewReader(eventData))
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -234,9 +284,30 @@ func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *string
 			continue
 		}
 
+		// Claude format: delta.text (works for both original content_block_delta and simplified format)
 		if delta, ok := event["delta"].(map[string]interface{}); ok {
+			// Check for text_delta type (Claude original format)
+			if deltaType, ok := delta["type"].(string); ok && deltaType == "text_delta" {
+				if text, ok := delta["text"].(string); ok {
+					outputText.WriteString(text)
+					continue
+				}
+			}
+			// Simplified format: direct delta.text
 			if text, ok := delta["text"].(string); ok {
 				outputText.WriteString(text)
+				continue
+			}
+		}
+
+		// OpenAI format: choices[0].delta.content
+		if choices, ok := event["choices"].([]interface{}); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]interface{}); ok {
+				if delta, ok := choice["delta"].(map[string]interface{}); ok {
+					if content, ok := delta["content"].(string); ok {
+						outputText.WriteString(content)
+					}
+				}
 			}
 		}
 	}

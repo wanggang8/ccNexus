@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"reflect"
 	"sync"
 	"time"
 
@@ -29,9 +28,9 @@ type EndpointStats struct {
 
 // StatsStorage defines the interface for stats persistence
 type StatsStorage interface {
-	RecordDailyStat(stat interface{}) error
-	GetTotalStats() (int, map[string]interface{}, error)
-	GetDailyStats(endpointName, startDate, endDate string) ([]interface{}, error)
+	RecordDailyStat(stat *StatRecord) error
+	GetTotalStats() (int, map[string]*StatsData, error)
+	GetDailyStats(endpointName, startDate, endDate string) ([]*DailyRecord, error)
 }
 
 // StatRecord represents a stat record for storage
@@ -180,17 +179,11 @@ func (s *Stats) GetStats() (int, map[string]*EndpointStats) {
 	// Convert to EndpointStats format
 	result := make(map[string]*EndpointStats)
 	for name, data := range statsData {
-		// Type assert to get the actual data using reflection
-		v := reflect.ValueOf(data)
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-
 		result[name] = &EndpointStats{
-			Requests:     int(v.FieldByName("Requests").Int()),
-			Errors:       int(v.FieldByName("Errors").Int()),
-			InputTokens:  int(v.FieldByName("InputTokens").Int()),
-			OutputTokens: int(v.FieldByName("OutputTokens").Int()),
+			Requests:     data.Requests,
+			Errors:       data.Errors,
+			InputTokens:  int(data.InputTokens),
+			OutputTokens: int(data.OutputTokens),
 			LastUsed:     time.Now(),
 			DailyHistory: make(map[string]*DailyStats),
 		}
@@ -248,17 +241,11 @@ func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats
 			Date: startDate + " to " + endDate,
 		}
 
-		for _, dailyInterface := range dailyRecords {
-			// Use reflection to extract fields
-			v := reflect.ValueOf(dailyInterface)
-			if v.Kind() == reflect.Ptr {
-				v = v.Elem()
-			}
-
-			aggregated.Requests += int(v.FieldByName("Requests").Int())
-			aggregated.Errors += int(v.FieldByName("Errors").Int())
-			aggregated.InputTokens += int(v.FieldByName("InputTokens").Int())
-			aggregated.OutputTokens += int(v.FieldByName("OutputTokens").Int())
+		for _, record := range dailyRecords {
+			aggregated.Requests += record.Requests
+			aggregated.Errors += record.Errors
+			aggregated.InputTokens += record.InputTokens
+			aggregated.OutputTokens += record.OutputTokens
 		}
 
 		result[endpointName] = aggregated
@@ -288,18 +275,13 @@ func (s *Stats) GetDailyStats(date string) map[string]*DailyStats {
 		}
 
 		if len(dailyRecords) > 0 {
-			// Use reflection to extract fields
-			v := reflect.ValueOf(dailyRecords[0])
-			if v.Kind() == reflect.Ptr {
-				v = v.Elem()
-			}
-
+			record := dailyRecords[0]
 			result[endpointName] = &DailyStats{
-				Date:         v.FieldByName("Date").String(),
-				Requests:     int(v.FieldByName("Requests").Int()),
-				Errors:       int(v.FieldByName("Errors").Int()),
-				InputTokens:  int(v.FieldByName("InputTokens").Int()),
-				OutputTokens: int(v.FieldByName("OutputTokens").Int()),
+				Date:         record.Date,
+				Requests:     record.Requests,
+				Errors:       record.Errors,
+				InputTokens:  record.InputTokens,
+				OutputTokens: record.OutputTokens,
 			}
 		}
 	}

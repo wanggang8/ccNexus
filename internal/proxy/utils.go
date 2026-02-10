@@ -105,13 +105,13 @@ func (p *Proxy) estimateTokens(bodyBytes []byte, outputText string, inputTokens,
 		var req tokencount.CountTokensRequest
 		if json.Unmarshal(bodyBytes, &req) == nil {
 			inputTokens = tokencount.EstimateInputTokens(&req)
-			logger.Debug("[%s] Estimated input tokens: %d", endpointName, inputTokens)
+			logger.Debug("[%s] 预估输入 Token: %d", endpointName, inputTokens)
 		}
 	}
 
 	if outputTokens == 0 && outputText != "" {
 		outputTokens = tokencount.EstimateOutputTokens(outputText)
-		logger.Debug("[%s] Estimated output tokens: %d", endpointName, outputTokens)
+		logger.Debug("[%s] 预估输出 Token: %d", endpointName, outputTokens)
 	}
 
 	return inputTokens, outputTokens

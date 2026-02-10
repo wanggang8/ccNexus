@@ -128,18 +128,18 @@ func (p *Proxy) UpdateConfig(cfg *config.Config) error {
 			if ep.Name == currentEndpointName {
 				p.currentIndex = i
 				found = true
-				logger.Debug("[CONFIG UPDATE] Preserved current endpoint: %s at index %d", currentEndpointName, i)
+				logger.Debug("[配置更新] 保留当前端点: %s (索引 %d)", currentEndpointName, i)
 				break
 			}
 		}
 		if !found {
 			p.currentIndex = 0
-			logger.Debug("[CONFIG UPDATE] Current endpoint '%s' not found, reset to index 0", currentEndpointName)
+			logger.Debug("[配置更新] 当前端点 '%s' 未找到，重置为索引 0", currentEndpointName)
 		}
 	} else {
 		p.currentIndex = 0
 	}
 
-	logger.Info("Configuration updated: %d endpoints configured", len(cfg.GetEndpoints()))
+	logger.Info("配置已更新: 已配置 %d 个端点", len(cfg.GetEndpoints()))
 	return nil
 }

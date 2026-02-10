@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/lich0821/ccNexus/internal/logger"
 )
@@ -63,7 +64,8 @@ func (h *ToolChainHandler) HasToolResults() bool {
 	return len(h.toolMessages) > 0
 }
 
-// ExecuteChain executes the tool chain by making a recursive API call
+// ExecuteChain executes the tool chain by making a recursive API call.
+// IMPORTANT: Caller MUST close the returned io.Reader when done to avoid resource leaks.
 func (h *ToolChainHandler) ExecuteChain() (io.Reader, error) {
 	if h.currentDepth >= h.maxDepth {
 		return nil, fmt.Errorf("maximum tool chain depth (%d) exceeded", h.maxDepth)
@@ -117,7 +119,14 @@ func (h *ToolChainHandler) ExecuteChain() (io.Reader, error) {
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+		},
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("recursive API call failed: %w", err)

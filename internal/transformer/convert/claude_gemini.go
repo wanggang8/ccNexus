@@ -110,7 +110,6 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 
 	// Convert contents to messages
 	var messages []map[string]interface{}
-	toolCallCounter := 0                       // Counter for generating unique tool IDs
 	toolNameToID := make(map[string]string)    // Map function_name to generated ID for tool_result matching
 	for _, content := range req.Contents {
 		role := content.Role
@@ -135,8 +134,7 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 			}
 			if part.FunctionCall != nil {
 				// Generate unique ID for each function call
-				toolID := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallCounter)
-				toolCallCounter++
+				toolID := GenerateToolCallID(part.FunctionCall.Name)
 				toolNameToID[part.FunctionCall.Name] = toolID // Store latest ID for this function name
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":  "tool_use",
@@ -146,11 +144,10 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 				})
 			}
 			if part.FunctionResponse != nil {
-				// Try to find the ID from our mapping, fallback to counter-based ID
+				// Try to find the ID from our mapping, fallback to generated ID
 				toolUseID := toolNameToID[part.FunctionResponse.Name]
 				if toolUseID == "" {
-					toolUseID = fmt.Sprintf("call_%s_%d", part.FunctionResponse.Name, toolCallCounter)
-					toolCallCounter++
+					toolUseID = GenerateToolCallID(part.FunctionResponse.Name)
 				}
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":        "tool_result",
@@ -265,7 +262,6 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
-	toolCallCounter := 0 // Counter for generating unique tool IDs
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
@@ -285,8 +281,7 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 			}
 			if part.FunctionCall != nil {
 				// Generate unique ID for each function call
-				toolID := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallCounter)
-				toolCallCounter++
+				toolID := GenerateToolCallID(part.FunctionCall.Name)
 				content = append(content, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    toolID,
@@ -429,7 +424,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
 				"index": ctx.ContentIndex,
 				"content_block": map[string]interface{}{
-					"type": "tool_use", "id": fmt.Sprintf("call_%s", part.FunctionCall.Name), "name": part.FunctionCall.Name,
+					"type": "tool_use", "id": GenerateToolCallID(part.FunctionCall.Name), "name": part.FunctionCall.Name,
 				},
 			})...)
 			args, _ := json.Marshal(part.FunctionCall.Args)
