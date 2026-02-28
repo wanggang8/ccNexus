@@ -19,6 +19,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/chat"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/responses"
+	"github.com/lich0821/ccNexus/internal/transformer/passthrough"
 )
 
 // prepareTransformerForClient creates transformer based on client format and endpoint
@@ -79,6 +80,8 @@ func prepareCCTransformer(endpoint config.Endpoint, endpointTransformer string) 
 			return nil, fmt.Errorf("CLI transformer requires model field")
 		}
 		return cc.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
+	case "passthrough":
+		return passthrough.NewPassthroughTransformer(endpoint.Model), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer: %s", endpointTransformer)
 	}
@@ -113,6 +116,8 @@ func prepareCxChatTransformer(endpoint config.Endpoint, endpointTransformer stri
 			return nil, fmt.Errorf("CLI transformer requires model field")
 		}
 		return chat.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
+	case "passthrough":
+		return passthrough.NewPassthroughTransformer(endpoint.Model), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer for Codex Chat: %s", endpointTransformer)
 	}
@@ -147,6 +152,8 @@ func prepareCxRespTransformer(endpoint config.Endpoint, endpointTransformer stri
 			return nil, fmt.Errorf("CLI transformer requires model field")
 		}
 		return responses.NewCLITransformer(endpoint.Model, endpoint.APIKey), nil
+	case "passthrough":
+		return passthrough.NewPassthroughTransformer(endpoint.Model), nil
 	default:
 		return nil, fmt.Errorf("unsupported endpoint transformer for Codex Responses: %s", endpointTransformer)
 	}
