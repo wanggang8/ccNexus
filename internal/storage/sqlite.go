@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
+
+// escapeSQLString escapes single quotes in SQL string literals to prevent injection
+func escapeSQLString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
 
 // safeConfigKeys 定义可以安全跨设备和跨平台备份/恢复的 app_config 配置项。
 // 这些配置是平台无关的，不包含设备特定或路径相关的值。
@@ -45,9 +50,21 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 		return nil, err
 	}
 
-	// 设置 busy_timeout，当数据库被锁定时等待最多 5 秒
-	// 这可以避免并发写入时的 SQLITE_BUSY 错误
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+	// Enable WAL mode for better concurrency performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+	}
+
+	// Set synchronous mode to NORMAL for better performance (still safe with WAL)
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set synchronous mode: %w", err)
+	}
+
+	// Set busy_timeout - wait up to 5 seconds when database is locked
+	// This helps avoid SQLITE_BUSY errors during concurrent writes
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set busy_timeout: %w", err)
 	}
@@ -350,6 +367,43 @@ func (s *SQLiteStorage) GetEndpointTotalStats(endpointName string) (*EndpointSta
 	}, nil
 }
 
+// GetPeriodStatsAggregated returns aggregated statistics for all endpoints in a time period using a single query
+func (s *SQLiteStorage) GetPeriodStatsAggregated(startDate, endDate string) (map[string]*EndpointStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `SELECT endpoint_name, SUM(requests), SUM(errors), SUM(input_tokens), SUM(output_tokens)
+		FROM daily_stats
+		WHERE date >= ? AND date <= ?
+		GROUP BY endpoint_name`
+
+	rows, err := s.db.Query(query, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]*EndpointStats)
+	for rows.Next() {
+		var endpointName string
+		var requests, errors int
+		var inputTokens, outputTokens int64
+
+		if err := rows.Scan(&endpointName, &requests, &errors, &inputTokens, &outputTokens); err != nil {
+			return nil, err
+		}
+
+		result[endpointName] = &EndpointStats{
+			Requests:     requests,
+			Errors:       errors,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		}
+	}
+
+	return result, rows.Err()
+}
+
 // GetOrCreateDeviceID returns the device ID, creating one if it doesn't exist
 func (s *SQLiteStorage) GetOrCreateDeviceID() (string, error) {
 	s.mu.Lock()
@@ -376,9 +430,8 @@ func (s *SQLiteStorage) GetOrCreateDeviceID() (string, error) {
 }
 
 func generateDeviceID() string {
-	// Use timestamp + random string for uniqueness
-	timestamp := time.Now().UnixNano()
-	return fmt.Sprintf("device-%x", timestamp)[:16]
+	// Use UUID v4 for guaranteed uniqueness
+	return "device-" + uuid.New().String()
 }
 
 func GenerateDeviceID() string {
@@ -474,8 +527,8 @@ func (s *SQLiteStorage) CreateBackupCopy(backupPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 使用 VACUUM INTO 创建数据库副本
-	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
+	// 使用 VACUUM INTO 创建数据库副本，转义路径中的单引号
+	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", escapeSQLString(backupPath)))
 	if err != nil {
 		return fmt.Errorf("failed to create backup: %w", err)
 	}
@@ -517,8 +570,8 @@ func (s *SQLiteStorage) DetectEndpointConflicts(remoteDBPath string) ([]MergeCon
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Attach remote database
-	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS remote", remoteDBPath))
+	// Attach remote database, escape path to prevent SQL injection
+	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS remote", escapeSQLString(remoteDBPath)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach remote database: %w", err)
 	}
@@ -622,8 +675,8 @@ func (s *SQLiteStorage) MergeFromBackup(backupDBPath string, strategy MergeStrat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 挂载备份数据库
-	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS backup", backupDBPath))
+	// 挂载备份数据库，转义路径防止 SQL 注入
+	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS backup", escapeSQLString(backupDBPath)))
 	if err != nil {
 		return fmt.Errorf("failed to attach backup database: %w", err)
 	}

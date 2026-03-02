@@ -69,3 +69,23 @@ func (a *StatsStorageAdapter) GetDailyStats(endpointName, startDate, endDate str
 
 	return result, nil
 }
+
+// GetPeriodStatsAggregated gets aggregated stats for all endpoints in a time period
+func (a *StatsStorageAdapter) GetPeriodStatsAggregated(startDate, endDate string) (map[string]interface{}, error) {
+	endpointStats, err := a.storage.GetPeriodStatsAggregated(startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]interface{})
+	for name, stats := range endpointStats {
+		result[name] = &proxy.StatsData{
+			Requests:     stats.Requests,
+			Errors:       stats.Errors,
+			InputTokens:  stats.InputTokens,
+			OutputTokens: stats.OutputTokens,
+		}
+	}
+
+	return result, nil
+}

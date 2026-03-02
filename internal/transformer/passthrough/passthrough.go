@@ -44,3 +44,8 @@ func (t *PassthroughTransformer) TransformResponse(resp []byte, isStreaming bool
 	return resp, nil
 }
 
+// TransformResponseWithContext delegates to TransformResponse (passthrough does not need context)
+func (t *PassthroughTransformer) TransformResponseWithContext(resp []byte, isStreaming bool, ctx *transformer.StreamContext) ([]byte, error) {
+	return t.TransformResponse(resp, isStreaming)
+}
+

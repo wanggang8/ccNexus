@@ -7,6 +7,7 @@ import (
     "io"
     "net/http"
     "strings"
+    "sync"
     "time"
 
     "github.com/lich0821/ccNexus/internal/config"
@@ -17,12 +18,35 @@ import (
 
 // createHTTPClient creates an HTTP client with optional proxy support
 func (e *EndpointService) createHTTPClient(timeout time.Duration) *http.Client {
-    client := &http.Client{Timeout: timeout}
+    // Always create client with proper transport configuration
+    // Enhanced for large SSE streaming and HTTP/2 support
+    client := &http.Client{
+        Timeout: timeout,
+        Transport: &http.Transport{
+            MaxIdleConns:           100,
+            MaxIdleConnsPerHost:    10,
+            IdleConnTimeout:        90 * time.Second,
+            TLSHandshakeTimeout:    10 * time.Second,
+            ExpectContinueTimeout:  1 * time.Second,
+            ResponseHeaderTimeout:  30 * time.Second,
+            WriteBufferSize:        128 * 1024, // 128KB write buffer
+            ReadBufferSize:         128 * 1024, // 128KB read buffer
+            MaxResponseHeaderBytes: 64 * 1024,  // 64KB max response headers
+        },
+    }
+
+    // Override with proxy transport if configured
     if proxyCfg := e.config.GetProxy(); proxyCfg != nil && proxyCfg.URL != "" {
+        logger.Debug("Using proxy for model fetch: %s", proxyCfg.URL)
         if transport, err := proxy.CreateProxyTransport(proxyCfg.URL); err == nil {
             client.Transport = transport
+        } else {
+            logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
         }
+    } else {
+        logger.Debug("No proxy configured, using direct connection for model fetch")
     }
+
     return client
 }
 
@@ -612,51 +636,79 @@ func (e *EndpointService) testResult(success bool, status, method, message strin
 }
 
 // TestAllEndpointsZeroCost tests all endpoints using zero-cost methods only
+// Uses concurrent testing with limited parallelism for optimal performance
 func (e *EndpointService) TestAllEndpointsZeroCost() string {
     endpoints := e.config.GetEndpoints()
     results := make(map[string]string)
+    mu := &sync.Mutex{}
+
+    // Use semaphore to limit concurrent requests (max 15 concurrent)
+    const maxConcurrent = 15
+    semaphore := make(chan struct{}, maxConcurrent)
+    wg := &sync.WaitGroup{}
 
     for _, endpoint := range endpoints {
-        transformer := endpoint.Transformer
-        if transformer == "" {
-            transformer = "claude"
-        }
+        wg.Add(1)
+        go func(ep config.Endpoint) {
+            defer wg.Done()
 
-        normalizedURL := normalizeAPIUrl(endpoint.APIUrl)
-        if !strings.HasPrefix(normalizedURL, "http://") && !strings.HasPrefix(normalizedURL, "https://") {
-            normalizedURL = "https://" + normalizedURL
-        }
+            // Acquire semaphore
+            semaphore <- struct{}{}
+            defer func() { <-semaphore }()
 
-        status := "unknown"
+            // Test the endpoint
+            status := e.testSingleEndpointZeroCost(ep)
 
-        statusCode, err := e.testModelsAPI(normalizedURL, endpoint.APIKey, transformer)
-        if err == nil {
-            status = "ok"
-        } else if statusCode == 401 || statusCode == 403 {
-            status = "invalid_key"
-        } else {
-            if transformer == "claude" {
-                statusCode, err = e.testTokenCountAPI(normalizedURL, endpoint.APIKey)
-                if err == nil {
-                    status = "ok"
-                } else if statusCode == 401 || statusCode == 403 {
-                    status = "invalid_key"
-                }
-            } else if transformer == "openai" || transformer == "openai2" {
-                statusCode, err = e.testBillingAPI(normalizedURL, endpoint.APIKey)
-                if err == nil {
-                    status = "ok"
-                } else if statusCode == 401 || statusCode == 403 {
-                    status = "invalid_key"
-                }
-            }
-        }
-
-        results[endpoint.Name] = status
+            // Store result
+            mu.Lock()
+            results[ep.Name] = status
+            mu.Unlock()
+        }(endpoint)
     }
 
+    wg.Wait()
     data, _ := json.Marshal(results)
     return string(data)
+}
+
+// testSingleEndpointZeroCost tests a single endpoint using zero-cost methods
+func (e *EndpointService) testSingleEndpointZeroCost(endpoint config.Endpoint) string {
+    transformer := endpoint.Transformer
+    if transformer == "" {
+        transformer = "claude"
+    }
+
+    normalizedURL := normalizeAPIUrl(endpoint.APIUrl)
+    if !strings.HasPrefix(normalizedURL, "http://") && !strings.HasPrefix(normalizedURL, "https://") {
+        normalizedURL = "https://" + normalizedURL
+    }
+
+    status := "unknown"
+
+    statusCode, err := e.testModelsAPI(normalizedURL, endpoint.APIKey, transformer)
+    if err == nil {
+        status = "ok"
+    } else if statusCode == 401 || statusCode == 403 {
+        status = "invalid_key"
+    } else {
+        if transformer == "claude" {
+            statusCode, err = e.testTokenCountAPI(normalizedURL, endpoint.APIKey)
+            if err == nil {
+                status = "ok"
+            } else if statusCode == 401 || statusCode == 403 {
+                status = "invalid_key"
+            }
+        } else if transformer == "openai" || transformer == "openai2" {
+            statusCode, err = e.testBillingAPI(normalizedURL, endpoint.APIKey)
+            if err == nil {
+                status = "ok"
+            } else if statusCode == 401 || statusCode == 403 {
+                status = "invalid_key"
+            }
+        }
+    }
+
+    return status
 }
 
 func (e *EndpointService) testModelsAPI(apiUrl, apiKey, transformer string) (int, error) {
@@ -676,7 +728,7 @@ func (e *EndpointService) testModelsAPI(apiUrl, apiKey, transformer string) (int
         req.Header.Set("Authorization", "Bearer "+apiKey)
     }
 
-    client := e.createHTTPClient(15 * time.Second)
+    client := e.createHTTPClient(8 * time.Second)
     resp, err := client.Do(req)
     if err != nil {
         return 0, err
@@ -734,7 +786,7 @@ func (e *EndpointService) testTokenCountAPI(apiUrl, apiKey string) (int, error) 
     req.Header.Set("anthropic-version", "2023-06-01")
     req.Header.Set("anthropic-beta", "token-counting-2024-11-01")
 
-    client := e.createHTTPClient(15 * time.Second)
+    client := e.createHTTPClient(8 * time.Second)
     resp, err := client.Do(req)
     if err != nil {
         return 0, err
@@ -772,7 +824,7 @@ func (e *EndpointService) testBillingAPI(apiUrl, apiKey string) (int, error) {
 
     req.Header.Set("Authorization", "Bearer "+apiKey)
 
-    client := e.createHTTPClient(15 * time.Second)
+    client := e.createHTTPClient(8 * time.Second)
     resp, err := client.Do(req)
     if err != nil {
         return 0, err
@@ -929,20 +981,30 @@ func (e *EndpointService) fetchOpenAIModels(apiUrl, apiKey string) ([]string, er
 
     req, err := http.NewRequest("GET", url, nil)
     if err != nil {
+        logger.Error("Failed to create request for %s: %v", url, err)
         return nil, fmt.Errorf("failed to create request: %v", err)
     }
 
     req.Header.Set("Authorization", "Bearer "+apiKey)
+    logger.Debug("Fetching models from: %s", url)
 
     client := e.createHTTPClient(30 * time.Second)
     resp, err := client.Do(req)
     if err != nil {
+        logger.Error("Request failed for %s: %v", url, err)
         return nil, fmt.Errorf("request failed: %v", err)
     }
     defer resp.Body.Close()
 
     if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("no_models_found")
+        // Read response body for error details
+        body, _ := io.ReadAll(resp.Body)
+        errMsg := string(body)
+        if len(errMsg) > 200 {
+            errMsg = errMsg[:200] + "..."
+        }
+        logger.Error("Models API failed for %s: HTTP %d - %s", url, resp.StatusCode, errMsg)
+        return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, errMsg)
     }
 
     var result struct {
@@ -952,7 +1014,12 @@ func (e *EndpointService) fetchOpenAIModels(apiUrl, apiKey string) ([]string, er
     }
 
     if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        logger.Error("Failed to parse models response from %s: %v", url, err)
         return nil, fmt.Errorf("failed to parse response: %v", err)
+    }
+
+    if len(result.Data) == 0 {
+        logger.Warn("No models found in response from %s", url)
     }
 
     seen := make(map[string]bool)
@@ -965,6 +1032,7 @@ func (e *EndpointService) fetchOpenAIModels(apiUrl, apiKey string) ([]string, er
         }
     }
 
+    logger.Debug("Successfully fetched %d models from %s", len(models), url)
     return models, nil
 }
 
@@ -973,19 +1041,28 @@ func (e *EndpointService) fetchGeminiModels(apiUrl, apiKey string) ([]string, er
 
     req, err := http.NewRequest("GET", url, nil)
     if err != nil {
+        logger.Error("Failed to create request for %s: %v", apiUrl, err)
         return nil, fmt.Errorf("failed to create request: %v", err)
     }
+
+    logger.Debug("Fetching Gemini models from: %s", apiUrl)
 
     client := e.createHTTPClient(30 * time.Second)
     resp, err := client.Do(req)
     if err != nil {
+        logger.Error("Request failed for %s: %v", apiUrl, err)
         return nil, fmt.Errorf("request failed: %v", err)
     }
     defer resp.Body.Close()
 
     if resp.StatusCode != http.StatusOK {
         body, _ := io.ReadAll(resp.Body)
-        return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+        errMsg := string(body)
+        if len(errMsg) > 200 {
+            errMsg = errMsg[:200] + "..."
+        }
+        logger.Error("Gemini Models API failed for %s: HTTP %d - %s", apiUrl, resp.StatusCode, errMsg)
+        return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, errMsg)
     }
 
     var result struct {
@@ -995,6 +1072,7 @@ func (e *EndpointService) fetchGeminiModels(apiUrl, apiKey string) ([]string, er
     }
 
     if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        logger.Error("Failed to parse Gemini models response from %s: %v", apiUrl, err)
         return nil, fmt.Errorf("failed to parse response: %v", err)
     }
 
@@ -1005,6 +1083,12 @@ func (e *EndpointService) fetchGeminiModels(apiUrl, apiKey string) ([]string, er
             name = strings.TrimPrefix(name, "models/")
         }
         models = append(models, name)
+    }
+
+    if len(models) == 0 {
+        logger.Warn("No Gemini models found in response from %s", apiUrl)
+    } else {
+        logger.Debug("Successfully fetched %d Gemini models from %s", len(models), apiUrl)
     }
 
     return models, nil

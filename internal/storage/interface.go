@@ -48,6 +48,7 @@ type Storage interface {
 	GetAllStats() (map[string][]DailyStat, error)
 	GetTotalStats() (int, map[string]*EndpointStats, error)
 	GetEndpointTotalStats(endpointName string) (*EndpointStats, error)
+	GetPeriodStatsAggregated(startDate, endDate string) (map[string]*EndpointStats, error)
 
 	// Config
 	GetConfig(key string) (string, error)

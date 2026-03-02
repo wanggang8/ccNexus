@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
@@ -15,13 +16,29 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	endpoints := p.getEnabledEndpoints()
+
+	// Mask API keys before sending response to prevent security leak
+	maskedEndpoints := make([]config.Endpoint, len(endpoints))
+	for i, ep := range endpoints {
+		maskedEndpoints[i] = ep
+		maskedEndpoints[i].APIKey = maskAPIKey(ep.APIKey)
+	}
+
 	response := map[string]interface{}{
 		"status":            "healthy",
 		"enabled_endpoints": len(endpoints),
-		"endpoints":         endpoints,
+		"endpoints":         maskedEndpoints,
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// maskAPIKey masks an API key for security, showing only first 4 and last 4 characters
+func maskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
 }
 
 // handleStats handles statistics requests

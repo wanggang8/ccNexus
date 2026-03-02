@@ -39,28 +39,45 @@ type Proxy struct {
 	currentIndex      int
 	mu                sync.RWMutex
 	server            *http.Server
-	activeRequests    map[string]int                // tracks active request count by endpoint name
-	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
-	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
+	httpClient        *http.Client                 // Reusable HTTP client with connection pool
+	activeRequests    map[string]int               // tracks active request count by endpoint name
+	activeRequestsMu  sync.RWMutex                 // protects activeRequests map
+	endpointCtx       map[string]context.Context   // context per endpoint for cancellation
 	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
-	ctxMu             sync.RWMutex                  // protects context maps
-	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
-	httpClient        *http.Client                  // cached HTTP client for connection reuse
-	httpClientOnce    sync.Once                     // ensures HTTP client is created only once
+	ctxMu             sync.RWMutex                 // protects context maps
+	onEndpointSuccess func(endpointName string)    // callback when endpoint request succeeds
 }
 
 // New creates a new Proxy instance
 func New(cfg *config.Config, statsStorage StatsStorage, deviceID string) *Proxy {
 	stats := NewStats(statsStorage, deviceID)
 
+	// Create a reusable HTTP client with connection pool
+	// Enhanced configuration for large SSE streaming and HTTP/2 support
+	httpClient := &http.Client{
+		Timeout: 300 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:           100,
+			MaxIdleConnsPerHost:    10,
+			IdleConnTimeout:        90 * time.Second,
+			TLSHandshakeTimeout:    10 * time.Second,
+			ExpectContinueTimeout:  1 * time.Second,
+			ResponseHeaderTimeout:  30 * time.Second,
+			WriteBufferSize:        128 * 1024, // 128KB write buffer for large SSE streams
+			ReadBufferSize:         128 * 1024, // 128KB read buffer for large SSE streams
+			MaxResponseHeaderBytes: 64 * 1024,  // 64KB max response headers
+		},
+	}
+
 	return &Proxy{
 		config:          cfg,
 		stats:           stats,
 		trafficRecorder: NewTrafficRecorder(),
-		currentIndex:    0,
-		activeRequests:  make(map[string]int),
-		endpointCtx:     make(map[string]context.Context),
-		endpointCancel:  make(map[string]context.CancelFunc),
+		currentIndex:   0,
+		httpClient:     httpClient,
+		activeRequests: make(map[string]int),
+		endpointCtx:    make(map[string]context.Context),
+		endpointCancel: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -113,37 +130,6 @@ func (p *Proxy) Stop() error {
 		return p.server.Close()
 	}
 	return nil
-}
-
-// getHTTPClient returns a cached HTTP client for connection reuse
-func (p *Proxy) getHTTPClient() *http.Client {
-	p.httpClientOnce.Do(func() {
-		transport := &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-			DisableCompression:  false,
-		}
-
-		if proxyCfg := p.config.GetProxy(); proxyCfg != nil && proxyCfg.URL != "" {
-			if proxyTransport, err := CreateProxyTransport(proxyCfg.URL); err == nil {
-				// Copy proxy settings to our transport
-				proxyTransport.MaxIdleConns = 100
-				proxyTransport.MaxIdleConnsPerHost = 10
-				proxyTransport.IdleConnTimeout = 90 * time.Second
-				transport = proxyTransport
-				logger.Debug("HTTP client using proxy: %s", proxyCfg.URL)
-			} else {
-				logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
-			}
-		}
-
-		p.httpClient = &http.Client{
-			Transport: transport,
-			Timeout:   300 * time.Second,
-		}
-	})
-	return p.httpClient
 }
 
 // getEnabledEndpoints returns only the enabled endpoints
@@ -235,6 +221,21 @@ func (p *Proxy) cancelEndpointRequests(endpointName string) {
 // rotateEndpoint switches to the next endpoint (thread-safe)
 // waitForActive: if true, waits briefly for active requests to complete before switching
 func (p *Proxy) rotateEndpoint() config.Endpoint {
+	// First, check if we need to wait for active requests
+	oldEndpoint := p.getCurrentEndpoint()
+	if p.hasActiveRequests(oldEndpoint.Name) {
+		logger.Debug("[SWITCH] Waiting for active requests on %s to complete...", oldEndpoint.Name)
+
+		// Wait outside of the main lock to avoid blocking other operations
+		for i := 0; i < 10; i++ { // Check 10 times, 50ms each = 500ms max
+			time.Sleep(50 * time.Millisecond)
+			if !p.hasActiveRequests(oldEndpoint.Name) {
+				break
+			}
+		}
+	}
+
+	// Now acquire lock and perform the rotation
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -244,32 +245,9 @@ func (p *Proxy) rotateEndpoint() config.Endpoint {
 	}
 
 	oldIndex := p.currentIndex % len(endpoints)
-	oldEndpoint := endpoints[oldIndex]
+	oldEndpoint = endpoints[oldIndex]
 
-	// Check if there are active requests on the current endpoint
-	// Wait a short time for them to complete (max 500ms)
-	if p.hasActiveRequests(oldEndpoint.Name) {
-		logger.Debug("[切换] 等待 %s 上的活跃请求完成...", oldEndpoint.Name)
-		p.mu.Unlock() // Release lock while waiting
-
-		for i := 0; i < 10; i++ { // Check 10 times, 50ms each = 500ms max
-			time.Sleep(50 * time.Millisecond)
-			if !p.hasActiveRequests(oldEndpoint.Name) {
-				break
-			}
-		}
-
-		p.mu.Lock() // Re-acquire lock
-
-		// Re-fetch endpoints after re-acquiring lock (may have changed)
-		endpoints = p.getEnabledEndpoints()
-		if len(endpoints) == 0 {
-			return config.Endpoint{}
-		}
-		// Re-calculate oldIndex since currentIndex may have been modified by other goroutines
-		oldIndex = p.currentIndex % len(endpoints)
-	}
-
+	// Calculate next index
 	p.currentIndex = (oldIndex + 1) % len(endpoints)
 
 	newEndpoint := endpoints[p.currentIndex]
@@ -401,7 +379,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		endpointAttempts++
 		p.markRequestActive(endpoint.Name)
-		p.stats.RecordRequest(endpoint.Name)
 
 		trans, err := prepareTransformerForClient(clientFormat, endpoint)
 		if err != nil {
@@ -503,7 +480,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ctx := p.getEndpointContext(endpoint.Name)
-		resp, err := sendRequest(ctx, proxyReq, p.getHTTPClient())
+		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config)
 		if err != nil {
 			// Some HTTP errors may return non-nil resp, ensure cleanup
 			if resp != nil && resp.Body != nil {
@@ -545,6 +522,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				inputTokens, outputTokens = p.estimateTokens(bodyBytes, outputText, inputTokens, outputTokens, endpoint.Name)
 			}
 
+			p.stats.RecordRequest(endpoint.Name)
 			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 			p.markRequestInactive(endpoint.Name)
 
@@ -577,6 +555,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode == http.StatusOK {
 			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
 			if err == nil {
+				p.stats.RecordRequest(endpoint.Name)
 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 				p.markRequestInactive(endpoint.Name)
 

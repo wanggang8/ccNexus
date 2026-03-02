@@ -10,6 +10,12 @@ type Transformer interface {
 	// TransformResponse converts target API format response to source format
 	TransformResponse(targetResp []byte, isStreaming bool) (sourceResp []byte, err error)
 
+	// TransformResponseWithContext converts target API format response to Claude format with streaming context
+	// This method is used for streaming responses that require context management across multiple events
+	// Implementations should provide this method for proper streaming support
+	// If a transformer doesn't need context, it can delegate to TransformResponse
+	TransformResponseWithContext(targetResp []byte, isStreaming bool, ctx *StreamContext) (claudeResp []byte, err error)
+
 	// Name returns the transformer name
 	Name() string
 }

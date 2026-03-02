@@ -64,6 +64,7 @@ type UpdateConfig struct {
 type TerminalConfig struct {
 	SelectedTerminal string   `json:"selectedTerminal"` // Selected terminal ID
 	ProjectDirs      []string `json:"projectDirs"`      // Project directories
+	ClaudeCommand    string   `json:"claudeCommand"`    // Custom launcher command, defaults to "claude"
 }
 
 // ProxyConfig represents HTTP proxy configuration
@@ -120,8 +121,8 @@ func DefaultConfig() *Config {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Port)
@@ -357,6 +358,7 @@ func (c *Config) GetTerminal() *TerminalConfig {
 		return &TerminalConfig{
 			SelectedTerminal: "cmd",
 			ProjectDirs:      []string{},
+			ClaudeCommand:    "",
 		}
 	}
 	return c.Terminal
@@ -600,6 +602,7 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	config.Terminal = &TerminalConfig{
 		SelectedTerminal: "cmd",
 		ProjectDirs:      []string{},
+		ClaudeCommand:    "",
 	}
 	if selectedTerminal, err := storage.GetConfig("terminal_selected"); err == nil && selectedTerminal != "" {
 		config.Terminal.SelectedTerminal = selectedTerminal
@@ -609,6 +612,9 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		if err := json.Unmarshal([]byte(projectDirsStr), &dirs); err == nil {
 			config.Terminal.ProjectDirs = dirs
 		}
+	}
+	if claudeCmd, err := storage.GetConfig("terminal_claudeCommand"); err == nil {
+		config.Terminal.ClaudeCommand = claudeCmd
 	}
 
 	// Load Proxy config
@@ -680,71 +686,145 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 
 	// Save app config
-	storage.SetConfig("port", strconv.Itoa(c.Port))
-	storage.SetConfig("logLevel", strconv.Itoa(c.LogLevel))
-	storage.SetConfig("language", c.Language)
-	storage.SetConfig("theme", c.Theme)
-	storage.SetConfig("themeAuto", strconv.FormatBool(c.ThemeAuto))
-	storage.SetConfig("autoLightTheme", c.AutoLightTheme)
-	storage.SetConfig("autoDarkTheme", c.AutoDarkTheme)
-	storage.SetConfig("windowWidth", strconv.Itoa(c.WindowWidth))
-	storage.SetConfig("windowHeight", strconv.Itoa(c.WindowHeight))
-	storage.SetConfig("closeWindowBehavior", c.CloseWindowBehavior)
+	if err := storage.SetConfig("port", strconv.Itoa(c.Port)); err != nil {
+		return fmt.Errorf("failed to save port config: %w", err)
+	}
+	if err := storage.SetConfig("logLevel", strconv.Itoa(c.LogLevel)); err != nil {
+		return fmt.Errorf("failed to save logLevel config: %w", err)
+	}
+	if err := storage.SetConfig("language", c.Language); err != nil {
+		return fmt.Errorf("failed to save language config: %w", err)
+	}
+	if err := storage.SetConfig("theme", c.Theme); err != nil {
+		return fmt.Errorf("failed to save theme config: %w", err)
+	}
+	if err := storage.SetConfig("themeAuto", strconv.FormatBool(c.ThemeAuto)); err != nil {
+		return fmt.Errorf("failed to save themeAuto config: %w", err)
+	}
+	if err := storage.SetConfig("autoLightTheme", c.AutoLightTheme); err != nil {
+		return fmt.Errorf("failed to save autoLightTheme config: %w", err)
+	}
+	if err := storage.SetConfig("autoDarkTheme", c.AutoDarkTheme); err != nil {
+		return fmt.Errorf("failed to save autoDarkTheme config: %w", err)
+	}
+	if err := storage.SetConfig("windowWidth", strconv.Itoa(c.WindowWidth)); err != nil {
+		return fmt.Errorf("failed to save windowWidth config: %w", err)
+	}
+	if err := storage.SetConfig("windowHeight", strconv.Itoa(c.WindowHeight)); err != nil {
+		return fmt.Errorf("failed to save windowHeight config: %w", err)
+	}
+	if err := storage.SetConfig("closeWindowBehavior", c.CloseWindowBehavior); err != nil {
+		return fmt.Errorf("failed to save closeWindowBehavior config: %w", err)
+	}
 
 	// Save WebDAV config
 	if c.WebDAV != nil {
-		storage.SetConfig("webdav_url", c.WebDAV.URL)
-		storage.SetConfig("webdav_username", c.WebDAV.Username)
-		storage.SetConfig("webdav_password", c.WebDAV.Password)
-		storage.SetConfig("webdav_configPath", c.WebDAV.ConfigPath)
-		storage.SetConfig("webdav_statsPath", c.WebDAV.StatsPath)
+		if err := storage.SetConfig("webdav_url", c.WebDAV.URL); err != nil {
+			return fmt.Errorf("failed to save webdav_url config: %w", err)
+		}
+		if err := storage.SetConfig("webdav_username", c.WebDAV.Username); err != nil {
+			return fmt.Errorf("failed to save webdav_username config: %w", err)
+		}
+		if err := storage.SetConfig("webdav_password", c.WebDAV.Password); err != nil {
+			return fmt.Errorf("failed to save webdav_password config: %w", err)
+		}
+		if err := storage.SetConfig("webdav_configPath", c.WebDAV.ConfigPath); err != nil {
+			return fmt.Errorf("failed to save webdav_configPath config: %w", err)
+		}
+		if err := storage.SetConfig("webdav_statsPath", c.WebDAV.StatsPath); err != nil {
+			return fmt.Errorf("failed to save webdav_statsPath config: %w", err)
+		}
 	}
 
 	// Save Backup config
 	if c.Backup != nil {
-		storage.SetConfig("backup_provider", c.Backup.Provider)
+		if err := storage.SetConfig("backup_provider", c.Backup.Provider); err != nil {
+			return fmt.Errorf("failed to save backup_provider config: %w", err)
+		}
 		if c.Backup.Local != nil {
-			storage.SetConfig("backup_local_dir", c.Backup.Local.Dir)
+			if err := storage.SetConfig("backup_local_dir", c.Backup.Local.Dir); err != nil {
+				return fmt.Errorf("failed to save backup_local_dir config: %w", err)
+			}
 		}
 		if c.Backup.S3 != nil {
-			storage.SetConfig("backup_s3_endpoint", c.Backup.S3.Endpoint)
-			storage.SetConfig("backup_s3_region", c.Backup.S3.Region)
-			storage.SetConfig("backup_s3_bucket", c.Backup.S3.Bucket)
-			storage.SetConfig("backup_s3_prefix", c.Backup.S3.Prefix)
-			storage.SetConfig("backup_s3_accessKey", c.Backup.S3.AccessKey)
-			storage.SetConfig("backup_s3_secretKey", c.Backup.S3.SecretKey)
-			storage.SetConfig("backup_s3_sessionToken", c.Backup.S3.SessionToken)
-			storage.SetConfig("backup_s3_useSSL", strconv.FormatBool(c.Backup.S3.UseSSL))
-			storage.SetConfig("backup_s3_forcePathStyle", strconv.FormatBool(c.Backup.S3.ForcePathStyle))
+			if err := storage.SetConfig("backup_s3_endpoint", c.Backup.S3.Endpoint); err != nil {
+				return fmt.Errorf("failed to save backup_s3_endpoint config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_region", c.Backup.S3.Region); err != nil {
+				return fmt.Errorf("failed to save backup_s3_region config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_bucket", c.Backup.S3.Bucket); err != nil {
+				return fmt.Errorf("failed to save backup_s3_bucket config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_prefix", c.Backup.S3.Prefix); err != nil {
+				return fmt.Errorf("failed to save backup_s3_prefix config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_accessKey", c.Backup.S3.AccessKey); err != nil {
+				return fmt.Errorf("failed to save backup_s3_accessKey config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_secretKey", c.Backup.S3.SecretKey); err != nil {
+				return fmt.Errorf("failed to save backup_s3_secretKey config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_sessionToken", c.Backup.S3.SessionToken); err != nil {
+				return fmt.Errorf("failed to save backup_s3_sessionToken config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_useSSL", strconv.FormatBool(c.Backup.S3.UseSSL)); err != nil {
+				return fmt.Errorf("failed to save backup_s3_useSSL config: %w", err)
+			}
+			if err := storage.SetConfig("backup_s3_forcePathStyle", strconv.FormatBool(c.Backup.S3.ForcePathStyle)); err != nil {
+				return fmt.Errorf("failed to save backup_s3_forcePathStyle config: %w", err)
+			}
 		}
 	}
 
 	// Save Update config
 	if c.Update != nil {
-		storage.SetConfig("update_autoCheck", strconv.FormatBool(c.Update.AutoCheck))
-		storage.SetConfig("update_checkInterval", strconv.Itoa(c.Update.CheckInterval))
-		storage.SetConfig("update_lastCheckTime", c.Update.LastCheckTime)
-		storage.SetConfig("update_skippedVersion", c.Update.SkippedVersion)
+		if err := storage.SetConfig("update_autoCheck", strconv.FormatBool(c.Update.AutoCheck)); err != nil {
+			return fmt.Errorf("failed to save update_autoCheck config: %w", err)
+		}
+		if err := storage.SetConfig("update_checkInterval", strconv.Itoa(c.Update.CheckInterval)); err != nil {
+			return fmt.Errorf("failed to save update_checkInterval config: %w", err)
+		}
+		if err := storage.SetConfig("update_lastCheckTime", c.Update.LastCheckTime); err != nil {
+			return fmt.Errorf("failed to save update_lastCheckTime config: %w", err)
+		}
+		if err := storage.SetConfig("update_skippedVersion", c.Update.SkippedVersion); err != nil {
+			return fmt.Errorf("failed to save update_skippedVersion config: %w", err)
+		}
 	}
 
 	// Save Terminal config
 	if c.Terminal != nil {
-		storage.SetConfig("terminal_selected", c.Terminal.SelectedTerminal)
-		if dirsJSON, err := json.Marshal(c.Terminal.ProjectDirs); err == nil {
-			storage.SetConfig("terminal_projectDirs", string(dirsJSON))
+		if err := storage.SetConfig("terminal_selected", c.Terminal.SelectedTerminal); err != nil {
+			return fmt.Errorf("failed to save terminal_selected config: %w", err)
 		}
+		if dirsJSON, err := json.Marshal(c.Terminal.ProjectDirs); err == nil {
+			if err := storage.SetConfig("terminal_projectDirs", string(dirsJSON)); err != nil {
+				return fmt.Errorf("failed to save terminal_projectDirs config: %w", err)
+			}
+		}
+		if err := storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand); err != nil {
+			return fmt.Errorf("failed to save terminal_claudeCommand config: %w", err)
+		}
+		storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand)
 	}
 
 	// Save Proxy config
+	proxyURL := ""
 	if c.Proxy != nil {
-		storage.SetConfig("proxy_url", c.Proxy.URL)
-	} else {
-		storage.SetConfig("proxy_url", "")
+		proxyURL = c.Proxy.URL
+	}
+	if err := storage.SetConfig("proxy_url", proxyURL); err != nil {
+		return fmt.Errorf("failed to save proxy_url config: %w", err)
 	}
 
 	// Save Claude notification config
-	storage.SetConfig("claude_notification_enabled", strconv.FormatBool(c.ClaudeNotificationEnabled))
-	storage.SetConfig("claude_notification_type", c.ClaudeNotificationType)
+	if err := storage.SetConfig("claude_notification_enabled", strconv.FormatBool(c.ClaudeNotificationEnabled)); err != nil {
+		return fmt.Errorf("failed to save claude_notification_enabled config: %w", err)
+	}
+	if err := storage.SetConfig("claude_notification_type", c.ClaudeNotificationType); err != nil {
+		return fmt.Errorf("failed to save claude_notification_type config: %w", err)
+	}
 
 	return nil
 }
