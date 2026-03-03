@@ -6,20 +6,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
-// testEndpoint tests an endpoint's connectivity
+const testClientTimeout = 8 * time.Second
+
+// testEndpoint tests an endpoint's connectivity using tiered strategy (matches Desktop TestEndpointLight)
 func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	// Get endpoint
 	endpoints, err := h.storage.GetEndpoints()
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
@@ -40,9 +42,25 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
-	// Test the endpoint
+	transformer := endpoint.Transformer
+	if transformer == "" {
+		transformer = "claude"
+	}
+	if transformer == "passthrough" {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"error":   "passthrough transformer does not support connectivity test (API format is provider-specific)",
+		})
+		return
+	}
+
+	normalizedURL := normalizeAPIUrl(endpoint.APIUrl)
+	if !strings.HasPrefix(normalizedURL, "http://") && !strings.HasPrefix(normalizedURL, "https://") {
+		normalizedURL = "https://" + normalizedURL
+	}
+
 	start := time.Now()
-	response, err := h.sendTestRequest(endpoint)
+	response, err := h.runTieredTest(normalizedURL, endpoint.APIKey, transformer, endpoint.Model)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -61,155 +79,229 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 	})
 }
 
-// sendTestRequest sends a test request to an endpoint
-func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
-	var reqBody []byte
+// runTieredTest tries light methods first, then fallback to minimal chat (matches Desktop TestEndpointLight)
+func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (string, error) {
+	client := &http.Client{Timeout: testClientTimeout}
+
+	// Step 1: Try models API
+	statusCode, err := h.testModelsAPI(client, apiUrl, apiKey, transformer)
+	if err == nil {
+		return "Models API accessible", nil
+	}
+	if statusCode == 401 || statusCode == 403 {
+		return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
+	}
+
+	// Step 2: Try token count (Claude) or billing API (OpenAI)
+	if transformer == "claude" {
+		statusCode, err = h.testTokenCountAPI(client, apiUrl, apiKey)
+		if err == nil {
+			return "Token count API accessible", nil
+		}
+		if statusCode == 401 || statusCode == 403 {
+			return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
+		}
+	} else if transformer == "openai" || transformer == "openai2" {
+		statusCode, err = h.testBillingAPI(client, apiUrl, apiKey)
+		if err == nil {
+			return "Billing API accessible", nil
+		}
+		if statusCode == 401 || statusCode == 403 {
+			return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
+		}
+	}
+
+	// Step 3: Minimal request (fallback)
+	statusCode, err = h.testMinimalRequest(client, apiUrl, apiKey, transformer, model)
+	if err == nil {
+		return "Minimal request successful", nil
+	}
+	if statusCode == 401 || statusCode == 403 {
+		return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
+	}
+	if statusCode == 405 {
+		return "", fmt.Errorf("method not allowed (may work in real client)")
+	}
+	return "", err
+}
+
+func (h *Handler) testModelsAPI(client *http.Client, apiUrl, apiKey, transformer string) (int, error) {
 	var url string
-	var err error
-
-	switch endpoint.Transformer {
-	case "claude":
-		model := endpoint.Model
-		if model == "" {
-			model = "claude-sonnet-4-5-20250929"
-		}
-		url = fmt.Sprintf("%s/v1/messages", endpoint.APIUrl)
-		reqBody, err = json.Marshal(map[string]interface{}{
-			"model": model,
-			"messages": []map[string]interface{}{
-				{
-					"role":    "user",
-					"content": "你是什么模型?",
-				},
-			},
-			"max_tokens": 16,
-		})
-	case "openai", "openai2":
-		model := endpoint.Model
-		if model == "" {
-			model = "gpt-4-turbo"
-		}
-		url = fmt.Sprintf("%s/v1/chat/completions", endpoint.APIUrl)
-		reqBody, err = json.Marshal(map[string]interface{}{
-			"model": model,
-			"messages": []map[string]interface{}{
-				{
-					"role":    "user",
-					"content": "你是什么模型?",
-				},
-			},
-			"max_tokens": 16,
-		})
-	case "gemini":
-		model := endpoint.Model
-		if model == "" {
-			model = "gemini-pro"
-		}
-		url = fmt.Sprintf("%s/v1beta/models/%s:generateContent", endpoint.APIUrl, model)
-		reqBody, err = json.Marshal(map[string]interface{}{
-			"contents": []map[string]interface{}{
-				{
-					"parts": []map[string]interface{}{
-						{
-							"text": "你是什么模型?",
-						},
-					},
-				},
-			},
-		})
-	case "passthrough":
-		return "", fmt.Errorf("passthrough transformer does not support connectivity test (API format is provider-specific)")
-	default:
-		return "", fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
+	if transformer == "gemini" {
+		url = fmt.Sprintf("%s/v1beta/models?key=%s", apiUrl, apiKey)
+	} else {
+		url = fmt.Sprintf("%s/v1/models", apiUrl)
 	}
 
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %v", err)
+		return 0, err
 	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	// Add authentication based on transformer
-	switch endpoint.Transformer {
-	case "claude":
-		req.Header.Set("x-api-key", endpoint.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	case "openai", "openai2":
-		req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
-	case "gemini":
-		// Gemini uses API key in URL query parameter
-		q := req.URL.Query()
-		q.Add("key", endpoint.APIKey)
-		req.URL.RawQuery = q.Encode()
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	if transformer != "gemini" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %v", err)
+		return 0, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %v", err)
+		return resp.StatusCode, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response to extract the actual message
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return string(body), nil
+		return resp.StatusCode, err
+	}
+	if data, ok := result["data"].([]interface{}); ok && len(data) > 0 {
+		return resp.StatusCode, nil
+	}
+	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+		return resp.StatusCode, nil
+	}
+	return resp.StatusCode, fmt.Errorf("unexpected response format")
+}
+
+func (h *Handler) testTokenCountAPI(client *http.Client, apiUrl, apiKey string) (int, error) {
+	url := fmt.Sprintf("%s/v1/messages/count_tokens", apiUrl)
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4-5-20250929",
+		"messages": []map[string]string{{"role": "user", "content": "Hi"}},
+	})
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-beta", "token-counting-2024-11-01")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// Extract message based on transformer
-	switch endpoint.Transformer {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, err
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return resp.StatusCode, err
+	}
+	if _, ok := result["input_tokens"]; !ok {
+		return resp.StatusCode, fmt.Errorf("invalid response: no input_tokens")
+	}
+	return resp.StatusCode, nil
+}
+
+func (h *Handler) testBillingAPI(client *http.Client, apiUrl, apiKey string) (int, error) {
+	url := fmt.Sprintf("%s/v1/dashboard/billing/credit_grants", apiUrl)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return resp.StatusCode, nil
+}
+
+func (h *Handler) testMinimalRequest(client *http.Client, apiUrl, apiKey, transformer, model string) (int, error) {
+	var url string
+	var body []byte
+
+	switch transformer {
 	case "claude":
-		if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
-			if block, ok := content[0].(map[string]interface{}); ok {
-				if text, ok := block["text"].(string); ok {
-					return text, nil
-				}
-			}
+		url = fmt.Sprintf("%s/v1/messages", apiUrl)
+		if model == "" {
+			model = "claude-sonnet-4-5-20250929"
 		}
-	case "openai", "openai2":
-		if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]interface{}); ok {
-				if message, ok := choice["message"].(map[string]interface{}); ok {
-					if content, ok := message["content"].(string); ok {
-						return content, nil
-					}
-				}
-			}
+		body, _ = json.Marshal(map[string]interface{}{
+			"model":      model,
+			"max_tokens": 1,
+			"messages":   []map[string]string{{"role": "user", "content": "Hi"}},
+		})
+	case "openai":
+		url = fmt.Sprintf("%s/v1/chat/completions", apiUrl)
+		if model == "" {
+			model = "gpt-4-turbo"
 		}
+		body, _ = json.Marshal(map[string]interface{}{
+			"model":      model,
+			"max_tokens": 1,
+			"messages":   []map[string]interface{}{{"role": "user", "content": "Hi"}},
+		})
+	case "openai2":
+		url = fmt.Sprintf("%s/v1/responses", apiUrl)
+		if model == "" {
+			model = "gpt-4-turbo"
+		}
+		body, _ = json.Marshal(map[string]interface{}{
+			"model": model,
+			"input": []map[string]interface{}{
+				{"type": "message", "role": "user", "content": []map[string]interface{}{{"type": "input_text", "text": "Hi"}}},
+			},
+		})
 	case "gemini":
-		if candidates, ok := result["candidates"].([]interface{}); ok && len(candidates) > 0 {
-			if candidate, ok := candidates[0].(map[string]interface{}); ok {
-				if content, ok := candidate["content"].(map[string]interface{}); ok {
-					if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
-						if part, ok := parts[0].(map[string]interface{}); ok {
-							if text, ok := part["text"].(string); ok {
-								return text, nil
-							}
-						}
-					}
-				}
-			}
+		if model == "" {
+			model = "gemini-2.0-flash"
 		}
+		url = fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", apiUrl, model, apiKey)
+		body, _ = json.Marshal(map[string]interface{}{
+			"contents":         []map[string]interface{}{{"parts": []map[string]string{{"text": "Hi"}}}},
+			"generationConfig": map[string]int{"maxOutputTokens": 1},
+		})
+	default:
+		return 0, fmt.Errorf("unsupported transformer: %s", transformer)
 	}
 
-	return string(body), nil
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if transformer == "claude" {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else if transformer != "gemini" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client30 := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client30.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return resp.StatusCode, nil
 }
 
 // handleFetchModels fetches available models from a provider
