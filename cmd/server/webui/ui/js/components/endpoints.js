@@ -414,18 +414,23 @@ class Endpoints {
     }
 
     async fetchModels() {
-        const apiUrlInput = document.querySelector('input[name="apiUrl"]');
-        const apiKeyInput = document.querySelector('input[name="apiKey"]');
-        const transformerSelect = document.querySelector('select[name="transformer"]');
+        const form = document.getElementById('endpoint-form');
+        if (!form) return;
+        const apiUrl = form.querySelector('input[name="apiUrl"]')?.value?.trim() || '';
+        const apiKey = form.querySelector('input[name="apiKey"]')?.value?.trim() || '';
+        const transformer = form.querySelector('select[name="transformer"]')?.value || '';
+        const endpointName = form.querySelector('input[name="name"]')?.value?.trim() || '';
         const modelInput = document.getElementById('model-input');
         const fetchBtn = document.getElementById('fetch-models-btn');
 
-        const apiUrl = apiUrlInput.value.trim();
-        const apiKey = apiKeyInput.value.trim();
-        const transformer = transformerSelect.value;
-
-        if (!apiUrl || !apiKey || apiKey === '****') {
-            notifications.error('Please enter API URL and API Key first');
+        // When editing, apiKey shows "****" (masked); backend will use stored key via endpointName
+        const useStoredKey = endpointName && (!apiKey || apiKey === '****');
+        if (!apiUrl) {
+            notifications.error('Please enter API URL first');
+            return;
+        }
+        if (!useStoredKey && (!apiKey || apiKey === '****')) {
+            notifications.error('Please enter API Key first');
             return;
         }
 
@@ -433,7 +438,7 @@ class Endpoints {
             fetchBtn.disabled = true;
             fetchBtn.textContent = 'Fetching...';
 
-            const result = await api.fetchModels(apiUrl, apiKey, transformer);
+            const result = await api.fetchModels(apiUrl, apiKey, transformer, useStoredKey ? endpointName : null);
 
             if (result.models && result.models.length > 0) {
                 // Show model selection modal

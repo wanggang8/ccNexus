@@ -78,8 +78,10 @@ class APIClient {
         return this.request('POST', '/endpoints/switch', { name });
     }
 
-    async fetchModels(apiUrl, apiKey, transformer) {
-        return this.request('POST', '/endpoints/fetch-models', { apiUrl, apiKey, transformer });
+    async fetchModels(apiUrl, apiKey, transformer, endpointName = null) {
+        const body = { apiUrl, apiKey, transformer };
+        if (endpointName) body.endpointName = endpointName;
+        return this.request('POST', '/endpoints/fetch-models', body);
     }
 
     async exportEndpoints() {

@@ -69,9 +69,13 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 
 	switch endpoint.Transformer {
 	case "claude":
+		model := endpoint.Model
+		if model == "" {
+			model = "claude-sonnet-4-5-20250929"
+		}
 		url = fmt.Sprintf("%s/v1/messages", endpoint.APIUrl)
 		reqBody, err = json.Marshal(map[string]interface{}{
-			"model": "claude-3-5-sonnet-20241022",
+			"model": model,
 			"messages": []map[string]interface{}{
 				{
 					"role":    "user",
@@ -81,11 +85,11 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			"max_tokens": 16,
 		})
 	case "openai", "openai2":
-		url = fmt.Sprintf("%s/v1/chat/completions", endpoint.APIUrl)
 		model := endpoint.Model
 		if model == "" {
-			model = "gpt-4"
+			model = "gpt-4-turbo"
 		}
+		url = fmt.Sprintf("%s/v1/chat/completions", endpoint.APIUrl)
 		reqBody, err = json.Marshal(map[string]interface{}{
 			"model": model,
 			"messages": []map[string]interface{}{
@@ -216,9 +220,10 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		Transformer string `json:"transformer"`
+		APIUrl       string `json:"apiUrl"`
+		APIKey       string `json:"apiKey"`
+		Transformer  string `json:"transformer"`
+		EndpointName string `json:"endpointName"` // when editing with masked key, use stored credentials
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -226,7 +231,30 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := h.fetchModelsFromProvider(req.APIUrl, req.APIKey, req.Transformer)
+	apiUrl, apiKey := req.APIUrl, req.APIKey
+	if (apiKey == "" || apiKey == "****") && req.EndpointName != "" {
+		// Use stored credentials when editing (frontend has masked key)
+		endpoints, err := h.storage.GetEndpoints()
+		if err != nil {
+			logger.Error("Failed to get endpoints: %v", err)
+			WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
+			return
+		}
+		found := false
+		for _, ep := range endpoints {
+			if ep.Name == req.EndpointName {
+				apiUrl, apiKey = ep.APIUrl, ep.APIKey
+				found = true
+				break
+			}
+		}
+		if !found {
+			WriteError(w, http.StatusNotFound, "Endpoint not found")
+			return
+		}
+	}
+
+	models, err := h.fetchModelsFromProvider(apiUrl, apiKey, req.Transformer)
 	if err != nil {
 		logger.Error("Failed to fetch models: %v", err)
 		WriteError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to fetch models: %v", err))
