@@ -47,19 +47,14 @@ export function saveEndpointViewMode(mode) {
     }
 }
 
-// 导出端点到 JSON 文件
+// 导出端点到 JSON 文件（使用原生保存对话框，Wails WebView 中 a.click() 不触发下载）
 export async function exportEndpoints() {
     try {
         const json = await window.go.main.App.ExportEndpoints();
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ccnexus-endpoints-${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
+        await window.go.main.App.SaveEndpointsToFile(json);
         showNotification(t('endpoints.export') + ' OK', 'success');
     } catch (err) {
+        if (String(err).includes('cancel') || String(err).includes('Cancel')) return;
         showNotification(t('endpoints.export') + ' failed: ' + err, 'error');
     }
 }

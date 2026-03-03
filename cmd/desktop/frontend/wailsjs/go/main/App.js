@@ -74,6 +74,10 @@ export function DownloadUpdate(arg1, arg2) {
   return window['go']['main']['App']['DownloadUpdate'](arg1, arg2);
 }
 
+export function ExportEndpoints() {
+  return window['go']['main']['App']['ExportEndpoints']();
+}
+
 export function FetchBroadcast(arg1) {
   return window['go']['main']['App']['FetchBroadcast'](arg1);
 }
@@ -84,14 +88,6 @@ export function FetchImageAsBase64(arg1) {
 
 export function FetchModels(arg1, arg2, arg3) {
   return window['go']['main']['App']['FetchModels'](arg1, arg2, arg3);
-}
-
-export function ExportEndpoints() {
-  return window['go']['main']['App']['ExportEndpoints']();
-}
-
-export function ImportEndpoints(arg1, arg2) {
-  return window['go']['main']['App']['ImportEndpoints'](arg1, arg2);
 }
 
 export function GenerateMockArchives(arg1) {
@@ -230,6 +226,10 @@ export function HideWindow() {
   return window['go']['main']['App']['HideWindow']();
 }
 
+export function ImportEndpoints(arg1, arg2) {
+  return window['go']['main']['App']['ImportEndpoints'](arg1, arg2);
+}
+
 export function InstallUpdate(arg1) {
   return window['go']['main']['App']['InstallUpdate'](arg1);
 }
@@ -300,6 +300,10 @@ export function RestoreFromProvider(arg1, arg2, arg3) {
 
 export function RestoreFromWebDAV(arg1, arg2) {
   return window['go']['main']['App']['RestoreFromWebDAV'](arg1, arg2);
+}
+
+export function SaveEndpointsToFile(arg1) {
+  return window['go']['main']['App']['SaveEndpointsToFile'](arg1);
 }
 
 export function SaveSettings(arg1) {

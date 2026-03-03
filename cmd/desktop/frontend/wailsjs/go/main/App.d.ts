@@ -37,15 +37,13 @@ export function DetectWebDAVConflict(arg1:string):Promise<string>;
 
 export function DownloadUpdate(arg1:string,arg2:string):Promise<void>;
 
+export function ExportEndpoints():Promise<string>;
+
 export function FetchBroadcast(arg1:string):Promise<string>;
 
 export function FetchImageAsBase64(arg1:string):Promise<string>;
 
 export function FetchModels(arg1:string,arg2:string,arg3:string):Promise<string>;
-
-export function ExportEndpoints():Promise<string>;
-
-export function ImportEndpoints(arg1:string,arg2:string):Promise<void>;
 
 export function GenerateMockArchives(arg1:number):Promise<string>;
 
@@ -115,6 +113,8 @@ export function GetVersion():Promise<string>;
 
 export function HideWindow():Promise<void>;
 
+export function ImportEndpoints(arg1:string,arg2:string):Promise<void>;
+
 export function InstallUpdate(arg1:string):Promise<string>;
 
 export function IsTrafficRecording():Promise<boolean>;
@@ -150,6 +150,8 @@ export function ReorderEndpoints(arg1:Array<string>):Promise<void>;
 export function RestoreFromProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RestoreFromWebDAV(arg1:string,arg2:string):Promise<void>;
+
+export function SaveEndpointsToFile(arg1:string):Promise<void>;
 
 export function SaveSettings(arg1:string):Promise<void>;
 

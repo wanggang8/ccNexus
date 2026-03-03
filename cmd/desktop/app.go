@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -399,6 +400,28 @@ func (a *App) FetchModels(apiUrl, apiKey, transformer string) string {
 func (a *App) ExportEndpoints() string {
 	return a.settings.ExportEndpoints()
 }
+
+// SaveEndpointsToFile saves JSON to user-selected path via native SaveFileDialog.
+// Wails WebView does not reliably trigger downloads for blob URLs via a.click().
+func (a *App) SaveEndpointsToFile(jsonStr string) error {
+	defaultName := "ccnexus-endpoints-" + time.Now().Format("2006-01-02") + ".json"
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: defaultName,
+		Title:           "Save Endpoints",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "JSON (*.json)", Pattern: "*.json"},
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		return fmt.Errorf("cancelled")
+	}
+	return os.WriteFile(path, []byte(jsonStr), 0644)
+}
+
 func (a *App) ImportEndpoints(jsonStr, mode string) error {
 	return a.settings.ImportEndpoints(jsonStr, mode, a.proxy)
 }
