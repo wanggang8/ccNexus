@@ -128,7 +128,7 @@ RestartSec=5
 Environment=CCNEXUS_DATA_DIR=/opt/ccnexus
 Environment=CCNEXUS_PORT=3000
 Environment=CCNEXUS_DB_PATH=/opt/ccnexus/ccnexus.db
-
+Environment=CCNEXUS_UI_TOKEN=cc7fb9516ff16b8f88fa62961e59b8290b47b5c21172581bb03cfb0ff49d78e2
 [Install]
 WantedBy=multi-user.target
 ```
@@ -245,6 +245,8 @@ curl -X POST http://<服务器IP>:<端口>/api/endpoints \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/endpoints` | 列出所有端点 |
+| GET | `/api/endpoints/export` | 导出端点（含完整 API Key，用于备份） |
+| POST | `/api/endpoints/import` | 导入端点（body: `{ endpoints: [...], mode: "replace"|"merge" }`） |
 | POST | `/api/endpoints` | 创建端点 |
 | PUT | `/api/endpoints/:name` | 更新端点 |
 | DELETE | `/api/endpoints/:name` | 删除端点 |

@@ -53,7 +53,9 @@ export default {
         disabled: 'Off',
         configFirst: 'Please fill in API URL and key first',
         fetchFailed: 'Fetch failed: ',
-        copyUrl: 'Copy URL'
+        copyUrl: 'Copy URL',
+        export: 'Export',
+        import: 'Import'
     },
     modal: {
         addEndpoint: 'Add Endpoint',

@@ -17,9 +17,20 @@ class Endpoints {
             <div class="endpoints">
                 <div class="flex-between mb-3">
                     <h1>Endpoints</h1>
-                    <button class="btn btn-primary" id="add-endpoint-btn">
-                        <span>+ Add Endpoint</span>
-                    </button>
+                    <div class="flex gap-2">
+                        <button class="btn btn-secondary" id="export-endpoints-btn" title="Export endpoints to JSON file">
+                            <span class="icon" style="margin-right: 4px;">${getIcon('download')}</span>
+                            Export
+                        </button>
+                        <button class="btn btn-secondary" id="import-endpoints-btn" title="Import endpoints from JSON file">
+                            <span class="icon" style="margin-right: 4px;">${getIcon('upload')}</span>
+                            Import
+                        </button>
+                        <input type="file" id="import-file-input" accept=".json" style="display: none;">
+                        <button class="btn btn-primary" id="add-endpoint-btn">
+                            <span>+ Add Endpoint</span>
+                        </button>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -31,6 +42,9 @@ class Endpoints {
         `;
 
         document.getElementById('add-endpoint-btn').addEventListener('click', () => this.showAddModal());
+        document.getElementById('export-endpoints-btn').addEventListener('click', () => this.exportEndpoints());
+        document.getElementById('import-endpoints-btn').addEventListener('click', () => document.getElementById('import-file-input').click());
+        document.getElementById('import-file-input').addEventListener('change', (e) => this.importEndpoints(e));
 
         await this.loadEndpoints();
     }
@@ -244,6 +258,44 @@ class Endpoints {
             await this.loadEndpoints();
         } catch (error) {
             notifications.error('Failed to switch endpoint: ' + error.message);
+        }
+    }
+
+    async exportEndpoints() {
+        try {
+            const data = await api.exportEndpoints();
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `ccnexus-endpoints-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            notifications.success('Endpoints exported successfully');
+        } catch (error) {
+            notifications.error('Export failed: ' + error.message);
+        }
+    }
+
+    async importEndpoints(fileEvent) {
+        const file = fileEvent.target.files?.[0];
+        fileEvent.target.value = '';
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            const endpoints = data.endpoints || (Array.isArray(data) ? data : []);
+            if (endpoints.length === 0) {
+                notifications.error('No valid endpoints in file');
+                return;
+            }
+            const mode = this.endpoints.length > 0 ? 'merge' : 'replace';
+            const result = await api.importEndpoints(endpoints, mode);
+            notifications.success(`Imported ${result.imported || endpoints.length} endpoint(s)`);
+            await this.loadEndpoints();
+        } catch (error) {
+            notifications.error('Import failed: ' + error.message);
         }
     }
 

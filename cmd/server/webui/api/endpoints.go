@@ -35,6 +35,16 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 
 	name := parts[0]
 
+	// Handle export/import
+	if name == "export" {
+		h.exportEndpoints(w, r)
+		return
+	}
+	if name == "import" {
+		h.importEndpoints(w, r)
+		return
+	}
+
 	// Handle /test and /toggle sub-paths
 	if len(parts) > 1 {
 		switch parts[1] {
@@ -448,6 +458,163 @@ func (h *Handler) handleReorderEndpoints(w http.ResponseWriter, r *http.Request)
 
 	WriteSuccess(w, map[string]interface{}{
 		"message": "Endpoints reordered successfully",
+	})
+}
+
+// exportEndpoints returns all endpoints as JSON (full API keys, for backup/transfer)
+func (h *Handler) exportEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	endpoints, err := h.storage.GetEndpoints()
+	if err != nil {
+		logger.Error("Failed to get endpoints: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
+		return
+	}
+	// Export format: array of endpoint objects (no ID/sortOrder for portability)
+	exportList := make([]map[string]interface{}, len(endpoints))
+	for i, ep := range endpoints {
+		exportList[i] = map[string]interface{}{
+			"name":        ep.Name,
+			"apiUrl":      ep.APIUrl,
+			"apiKey":      ep.APIKey,
+			"enabled":     ep.Enabled,
+			"transformer": ep.Transformer,
+			"model":       ep.Model,
+			"remark":      ep.Remark,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"endpoints": exportList})
+}
+
+// importEndpoints imports endpoints from JSON (replace or merge)
+func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var req struct {
+		Endpoints []struct {
+			Name        string `json:"name"`
+			APIUrl      string `json:"apiUrl"`
+			APIKey      string `json:"apiKey"`
+			Enabled     bool   `json:"enabled"`
+			Transformer string `json:"transformer"`
+			Model       string `json:"model"`
+			Remark      string `json:"remark"`
+		} `json:"endpoints"`
+		Mode string `json:"mode"` // "replace" or "merge"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.Endpoints) == 0 {
+		WriteError(w, http.StatusBadRequest, "No endpoints to import")
+		return
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "merge"
+	}
+	if mode != "replace" && mode != "merge" {
+		WriteError(w, http.StatusBadRequest, "mode must be 'replace' or 'merge'")
+		return
+	}
+
+	existing, err := h.storage.GetEndpoints()
+	if err != nil {
+		logger.Error("Failed to get endpoints: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
+		return
+	}
+
+	if mode == "replace" {
+		for _, ep := range existing {
+			if err := h.storage.DeleteEndpoint(ep.Name); err != nil {
+				logger.Warn("Failed to delete endpoint %s: %v", ep.Name, err)
+			}
+		}
+	}
+
+	existingNames := make(map[string]bool)
+	for _, ep := range existing {
+		existingNames[ep.Name] = true
+	}
+
+	sortOrder := len(existing)
+	if mode == "replace" {
+		sortOrder = 0
+	}
+
+	imported := 0
+	for _, ep := range req.Endpoints {
+		if ep.Name == "" || ep.APIUrl == "" || ep.APIKey == "" {
+			continue
+		}
+		if mode == "merge" && existingNames[ep.Name] {
+			// Update existing
+			var existingEp *storage.Endpoint
+			for i := range existing {
+				if existing[i].Name == ep.Name {
+					existingEp = &existing[i]
+					break
+				}
+			}
+			if existingEp != nil {
+				existingEp.APIUrl = normalizeAPIUrl(ep.APIUrl)
+				existingEp.APIKey = ep.APIKey
+				existingEp.Enabled = ep.Enabled
+				if ep.Transformer != "" {
+					existingEp.Transformer = ep.Transformer
+				}
+				existingEp.Model = ep.Model
+				existingEp.Remark = ep.Remark
+				existingEp.UpdatedAt = time.Now()
+				if err := h.storage.UpdateEndpoint(existingEp); err != nil {
+					logger.Warn("Failed to update endpoint %s: %v", ep.Name, err)
+					continue
+				}
+				imported++
+			}
+			continue
+		}
+		// Add new
+		newEp := &storage.Endpoint{
+			Name:        ep.Name,
+			APIUrl:      normalizeAPIUrl(ep.APIUrl),
+			APIKey:      ep.APIKey,
+			Enabled:     ep.Enabled,
+			Transformer: ep.Transformer,
+			Model:       ep.Model,
+			Remark:      ep.Remark,
+			SortOrder:   sortOrder,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		if newEp.Transformer == "" {
+			newEp.Transformer = "claude"
+		}
+		if err := h.storage.SaveEndpoint(newEp); err != nil {
+			logger.Warn("Failed to save endpoint %s: %v", ep.Name, err)
+			continue
+		}
+		imported++
+		sortOrder++
+	}
+
+	if err := h.reloadConfig(); err != nil {
+		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoints imported but config reload failed")
+		return
+	}
+
+	WriteSuccess(w, map[string]interface{}{
+		"message":  "Import completed",
+		"imported": imported,
 	})
 }
 

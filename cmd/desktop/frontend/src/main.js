@@ -5,6 +5,7 @@ import '../wailsjs/runtime/runtime.js'
 import { getIcon } from './icons.js'
 import { setLanguage } from './i18n/index.js'
 import { initUI, changeLanguage, switchWorkspaceTab } from './modules/ui.js'
+import { exportEndpoints, importEndpoints } from './modules/endpoints.js'
 import { loadConfig } from './modules/config.js'
 import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod } from './modules/stats.js'
 import { renderEndpoints, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen } from './modules/endpoints.js'
@@ -214,6 +215,12 @@ window.minimizeToTray = minimizeToTray;
 window.showDataSyncDialog = showDataSyncDialog;
 window.switchStatsPeriod = switchStatsPeriod;
 window.switchEndpointViewMode = switchEndpointViewMode;
+window.exportEndpoints = exportEndpoints;
+window.importEndpoints = async (e) => {
+    const file = e?.target?.files?.[0];
+    if (file) await importEndpoints(file);
+    e.target.value = '';
+};
 window.switchWorkspaceTab = switchWorkspaceTab;
 window.showSettingsModal = showSettingsModal;
 window.closeSettingsModal = closeSettingsModal;

@@ -270,6 +270,13 @@ export function initUI() {
                             <button class="btn btn-secondary" onclick="window.showDataSyncDialog()">
                                 <span class="icon">${getIcon('refresh')}</span> ${t('webdav.dataSync')}
                             </button>
+                            <button class="btn btn-secondary" onclick="window.exportEndpoints()" title="${t('endpoints.export')}">
+                                <span class="icon">${getIcon('download')}</span> ${t('endpoints.export')}
+                            </button>
+                            <button class="btn btn-secondary" onclick="document.getElementById('importEndpointsInput').click()" title="${t('endpoints.import')}">
+                                <span class="icon">${getIcon('upload')}</span> ${t('endpoints.import')}
+                            </button>
+                            <input type="file" id="importEndpointsInput" accept=".json" style="display:none" onchange="window.importEndpoints(event)">
                             <button class="btn btn-primary" onclick="window.showAddEndpointModal()">
                                 <span class="icon">${getIcon('plus')}</span> ${t('header.addEndpoint')}
                             </button>

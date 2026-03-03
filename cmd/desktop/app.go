@@ -396,6 +396,12 @@ func (a *App) TestAllEndpointsZeroCost() string   { return a.endpoint.TestAllEnd
 func (a *App) FetchModels(apiUrl, apiKey, transformer string) string {
 	return a.endpoint.FetchModels(apiUrl, apiKey, transformer)
 }
+func (a *App) ExportEndpoints() string {
+	return a.settings.ExportEndpoints()
+}
+func (a *App) ImportEndpoints(jsonStr, mode string) error {
+	return a.settings.ImportEndpoints(jsonStr, mode, a.proxy)
+}
 
 // ========== Settings Bindings ==========
 

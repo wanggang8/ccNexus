@@ -86,6 +86,14 @@ export function FetchModels(arg1, arg2, arg3) {
   return window['go']['main']['App']['FetchModels'](arg1, arg2, arg3);
 }
 
+export function ExportEndpoints() {
+  return window['go']['main']['App']['ExportEndpoints']();
+}
+
+export function ImportEndpoints(arg1, arg2) {
+  return window['go']['main']['App']['ImportEndpoints'](arg1, arg2);
+}
+
 export function GenerateMockArchives(arg1) {
   return window['go']['main']['App']['GenerateMockArchives'](arg1);
 }

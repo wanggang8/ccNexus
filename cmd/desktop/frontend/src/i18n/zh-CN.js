@@ -49,7 +49,9 @@ export default {
         disabled: '已禁用',
         configFirst: '请先填写 API 地址和密钥',
         fetchFailed: '获取失败：',
-        copyUrl: '复制地址'
+        copyUrl: '复制地址',
+        export: '导出',
+        import: '导入'
     },
     modal: {
         addEndpoint: '添加端点',

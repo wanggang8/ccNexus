@@ -82,6 +82,14 @@ class APIClient {
         return this.request('POST', '/endpoints/fetch-models', { apiUrl, apiKey, transformer });
     }
 
+    async exportEndpoints() {
+        return this.request('GET', '/endpoints/export');
+    }
+
+    async importEndpoints(endpoints, mode = 'merge') {
+        return this.request('POST', '/endpoints/import', { endpoints, mode });
+    }
+
     // Statistics
     async getStatsSummary() {
         return this.request('GET', '/stats/summary');

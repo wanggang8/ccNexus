@@ -47,6 +47,39 @@ export function saveEndpointViewMode(mode) {
     }
 }
 
+// 导出端点到 JSON 文件
+export async function exportEndpoints() {
+    try {
+        const json = await window.go.main.App.ExportEndpoints();
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ccnexus-endpoints-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showNotification(t('endpoints.export') + ' OK', 'success');
+    } catch (err) {
+        showNotification(t('endpoints.export') + ' failed: ' + err, 'error');
+    }
+}
+
+// 从 JSON 文件导入端点
+export async function importEndpoints(file) {
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const config = JSON.parse(await window.go.main.App.GetConfig());
+        const currentCount = (config.endpoints || []).length;
+        const mode = currentCount > 0 ? 'merge' : 'replace';
+        await window.go.main.App.ImportEndpoints(text, mode);
+        window.loadConfig();
+        showNotification(t('endpoints.import') + ' OK', 'success');
+    } catch (err) {
+        showNotification(t('endpoints.import') + ' failed: ' + err, 'error');
+    }
+}
+
 // 切换视图模式
 export function switchEndpointViewMode(mode) {
     saveEndpointViewMode(mode);

@@ -29,6 +29,92 @@ func (s *SettingsService) GetConfig() string {
     return string(data)
 }
 
+// ExportEndpoints returns endpoints as JSON for backup/transfer
+func (s *SettingsService) ExportEndpoints() string {
+    endpoints := s.config.GetEndpoints()
+    exportList := make([]map[string]interface{}, len(endpoints))
+    for i, ep := range endpoints {
+        exportList[i] = map[string]interface{}{
+            "name":        ep.Name,
+            "apiUrl":      ep.APIUrl,
+            "apiKey":      ep.APIKey,
+            "enabled":     ep.Enabled,
+            "transformer": ep.Transformer,
+            "model":       ep.Model,
+            "remark":      ep.Remark,
+        }
+    }
+    data, _ := json.Marshal(map[string]interface{}{"endpoints": exportList})
+    return string(data)
+}
+
+// ImportEndpoints imports endpoints from JSON (mode: "replace" or "merge")
+func (s *SettingsService) ImportEndpoints(jsonStr, mode string, proxy interface{ UpdateConfig(*config.Config) error }) error {
+    var data struct {
+        Endpoints []config.Endpoint `json:"endpoints"`
+    }
+    if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+        var arr []config.Endpoint
+        if err2 := json.Unmarshal([]byte(jsonStr), &arr); err2 != nil {
+            return fmt.Errorf("invalid JSON: %w", err)
+        }
+        data.Endpoints = arr
+    }
+    if len(data.Endpoints) == 0 {
+        return fmt.Errorf("no endpoints to import")
+    }
+    if mode != "replace" && mode != "merge" {
+        mode = "merge"
+    }
+
+    current := s.config.GetEndpoints()
+    existingNames := make(map[string]bool)
+    for _, ep := range current {
+        existingNames[ep.Name] = true
+    }
+
+    var newEndpoints []config.Endpoint
+    if mode == "replace" {
+        newEndpoints = make([]config.Endpoint, 0, len(data.Endpoints))
+    } else {
+        newEndpoints = make([]config.Endpoint, len(current))
+        copy(newEndpoints, current)
+    }
+
+    for _, ep := range data.Endpoints {
+        if ep.Name == "" || ep.APIUrl == "" || ep.APIKey == "" {
+            continue
+        }
+        if ep.Transformer == "" {
+            ep.Transformer = "claude"
+        }
+        ep.APIUrl = strings.TrimSuffix(ep.APIUrl, "/")
+        if mode == "merge" && existingNames[ep.Name] {
+            for i := range newEndpoints {
+                if newEndpoints[i].Name == ep.Name {
+                    newEndpoints[i] = ep
+                    break
+                }
+            }
+        } else {
+            newEndpoints = append(newEndpoints, ep)
+            existingNames[ep.Name] = true
+        }
+    }
+
+    newConfig := *s.config
+    newConfig.UpdateEndpoints(newEndpoints)
+    if err := newConfig.Validate(); err != nil {
+        return fmt.Errorf("invalid config after import: %w", err)
+    }
+    return s.UpdateConfig(mustMarshal(&newConfig), proxy)
+}
+
+func mustMarshal(v interface{}) string {
+    b, _ := json.Marshal(v)
+    return string(b)
+}
+
 // UpdateConfig updates the configuration
 func (s *SettingsService) UpdateConfig(configJSON string, proxy interface{ UpdateConfig(*config.Config) error }) error {
     var newConfig config.Config
