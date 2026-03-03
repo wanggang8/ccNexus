@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
 import { getTransformerLabel, getStatusBadge } from '../utils/formatters.js';
+import { getIcon } from '../icons.js';
 
 class Endpoints {
     constructor() {
@@ -60,7 +61,7 @@ class Endpoints {
         if (this.endpoints.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <div class="empty-state-icon">🔗</div>
+                    <div class="empty-state-icon"><span class="icon icon-2xl">${getIcon('link')}</span></div>
                     <div class="empty-state-title">No Endpoints</div>
                     <div class="empty-state-message">Add your first endpoint to get started</div>
                 </div>
@@ -97,14 +98,14 @@ class Endpoints {
     renderEndpointRow(ep, index) {
         const isCurrentEndpoint = ep.name === this.currentEndpoint;
         const testStatus = this.getTestStatus(ep.name);
-        let testStatusIcon = '⚠️';
+        let testStatusIcon = `<span class="icon icon-warning">${getIcon('warning')}</span>`;
         let testStatusTitle = 'Not tested';
 
         if (testStatus === true) {
-            testStatusIcon = '✅';
+            testStatusIcon = `<span class="icon icon-success">${getIcon('checkCircle')}</span>`;
             testStatusTitle = 'Test passed';
         } else if (testStatus === false) {
-            testStatusIcon = '❌';
+            testStatusIcon = `<span class="icon icon-error">${getIcon('xCircle')}</span>`;
             testStatusTitle = 'Test failed';
         }
 
@@ -119,7 +120,7 @@ class Endpoints {
                 <td>
                     <code style="font-size: 12px;">${this.escapeHtml(ep.apiUrl)}</code>
                     <button class="btn-icon copy-btn" data-copy="${this.escapeHtml(ep.apiUrl)}" title="Copy URL">
-                        📋
+                        <span class="icon">${getIcon('clipboard')}</span>
                     </button>
                 </td>
                 <td>${getTransformerLabel(ep.transformer)}</td>
@@ -248,10 +249,10 @@ class Endpoints {
 
     copyToClipboard(text, button) {
         navigator.clipboard.writeText(text).then(() => {
-            const originalText = button.textContent;
-            button.textContent = '✓';
+            const originalHTML = button.innerHTML;
+            button.innerHTML = `<span class="icon icon-success">${getIcon('check')}</span>`;
             setTimeout(() => {
-                button.textContent = originalText;
+                button.innerHTML = originalHTML;
             }, 1000);
         }).catch(err => {
             notifications.error('Failed to copy to clipboard');

@@ -3,6 +3,7 @@ import { t } from '../i18n/index.js';
 import { showNotification } from './modal.js';
 import { parseMarkdown } from '../utils/markdown.js';
 import { getCurrentCliType } from './terminal.js';
+import { getIcon } from '../icons.js';
 
 let currentProjectDir = '';
 let sessions = [];
@@ -335,7 +336,7 @@ function showPromptDialog(message, defaultValue = '') {
         modal.innerHTML = `
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>📝 ${t('session.rename')}</h2>
+                    <h2><span class="icon">${getIcon('fileEdit')}</span> ${t('session.rename')}</h2>
                     <button class="modal-close" id="promptClose">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -409,7 +410,7 @@ async function viewSessionDetail(sessionId) {
     modal.innerHTML = `
         <div class="modal-content session-detail-content">
             <div class="modal-header">
-                <h2>💬 ${t('session.detail')}</h2>
+                <h2><span class="icon">${getIcon('comment')}</span> ${t('session.detail')}</h2>
                 <button class="modal-close" onclick="closeSessionDetailModal()">&times;</button>
             </div>
             <div class="modal-body">

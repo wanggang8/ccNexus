@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -81,7 +82,9 @@ func tempDirUnique(prefix string) (dir string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("create_temp_dir_failed")
 	}
 	cleanup = func() {
-		_ = os.RemoveAll(subDir)
+		if err := os.RemoveAll(subDir); err != nil {
+			logger.Warn("Failed to remove temp dir %s: %v", subDir, err)
+		}
 	}
 	return subDir, cleanup, nil
 }

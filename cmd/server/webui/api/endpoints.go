@@ -160,6 +160,8 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	// Update proxy config
 	if err := h.reloadConfig(); err != nil {
 		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoint created but config reload failed")
+		return
 	}
 
 	endpoint.APIKey = maskAPIKey(endpoint.APIKey)
@@ -233,6 +235,8 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	// Update proxy config
 	if err := h.reloadConfig(); err != nil {
 		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoint updated but config reload failed")
+		return
 	}
 
 	existing.APIKey = maskAPIKey(existing.APIKey)
@@ -250,6 +254,8 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request, name st
 	// Update proxy config
 	if err := h.reloadConfig(); err != nil {
 		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoint deleted but config reload failed")
+		return
 	}
 
 	WriteSuccess(w, map[string]interface{}{
@@ -306,6 +312,8 @@ func (h *Handler) toggleEndpoint(w http.ResponseWriter, r *http.Request, name st
 	// Update proxy config
 	if err := h.reloadConfig(); err != nil {
 		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoint toggled but config reload failed")
+		return
 	}
 
 	WriteSuccess(w, map[string]interface{}{
@@ -339,9 +347,12 @@ func (h *Handler) handleCurrentEndpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Return first enabled endpoint as current
+	name := h.proxy.GetCurrentEndpointName()
+	if name == "" {
+		name = enabledEndpoints[0].Name
+	}
 	WriteSuccess(w, map[string]interface{}{
-		"name": enabledEndpoints[0].Name,
+		"name": name,
 	})
 }
 
@@ -373,6 +384,11 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		WriteError(w, http.StatusNotFound, "Endpoint not found or not enabled")
+		return
+	}
+
+	if err := h.proxy.SetCurrentEndpoint(req.Name); err != nil {
+		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -426,6 +442,8 @@ func (h *Handler) handleReorderEndpoints(w http.ResponseWriter, r *http.Request)
 	// Update proxy config
 	if err := h.reloadConfig(); err != nil {
 		logger.Error("Failed to reload config: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Endpoints reordered but config reload failed")
+		return
 	}
 
 	WriteSuccess(w, map[string]interface{}{

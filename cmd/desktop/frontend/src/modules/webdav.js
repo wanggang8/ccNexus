@@ -1,5 +1,6 @@
 // Data Sync / Backup management
 import { t } from "../i18n/index.js";
+import { getIcon } from "../icons.js";
 
 function translateError(error) {
   const errorStr = error.toString();
@@ -218,16 +219,16 @@ export async function showDataSyncDialog(tab) {
   const content = `
         <div class="data-sync-dialog">
             <div class="data-sync-tabs">
-                <button class="sync-tab-btn ${selectedTab === "webdav" ? "active" : ""}" onclick="window.switchDataSyncTab('webdav')">☁️ WebDAV</button>
-                <button class="sync-tab-btn ${selectedTab === "local" ? "active" : ""}" onclick="window.switchDataSyncTab('local')">💾 ${t("backup.local.title")}</button>
-                <button class="sync-tab-btn ${selectedTab === "s3" ? "active" : ""}" onclick="window.switchDataSyncTab('s3')">🌐 ${t("backup.s3.title")}</button>
+                <button class="sync-tab-btn ${selectedTab === "webdav" ? "active" : ""}" onclick="window.switchDataSyncTab('webdav')"><span class="icon">${getIcon('cloud')}</span> WebDAV</button>
+                <button class="sync-tab-btn ${selectedTab === "local" ? "active" : ""}" onclick="window.switchDataSyncTab('local')"><span class="icon">${getIcon('save')}</span> ${t("backup.local.title")}</button>
+                <button class="sync-tab-btn ${selectedTab === "s3" ? "active" : ""}" onclick="window.switchDataSyncTab('s3')"><span class="icon">${getIcon('globe')}</span> ${t("backup.s3.title")}</button>
             </div>
 
             ${renderActiveTabContent()}
         </div>
     `;
 
-  showModal(`🔄 ${t("webdav.dataSync")}`, content);
+  showModal('<span class="icon">' + getIcon('refresh') + '</span> ' + t("webdav.dataSync"), content);
 
   window.switchDataSyncTab = (nextTab) => {
     showDataSyncDialog(nextTab);
@@ -274,10 +275,10 @@ function renderWebDAVTab() {
             </div>
         </div>
         <div class="data-sync-actions">
-            <button class="btn btn-secondary" onclick="window.testDataSyncConnection()">🔍 ${t('webdav.testConnection')}</button>
-            <button class="btn btn-secondary" onclick="window.saveDataSyncConfig()">💾 ${t('webdav.saveConfig')}</button>
-            <button class="btn btn-primary" onclick="window.backupToProviderFromDialog('webdav')">📤 ${t('webdav.backup')}</button>
-            <button class="btn btn-primary" onclick="window.openBackupManagerFromDialog('webdav')">📋 ${t('webdav.backupManager')}</button>
+            <button class="btn btn-secondary" onclick="window.testDataSyncConnection()"><span class="icon">${getIcon('search')}</span> ${t('webdav.testConnection')}</button>
+            <button class="btn btn-secondary" onclick="window.saveDataSyncConfig()"><span class="icon">${getIcon('save')}</span> ${t('webdav.saveConfig')}</button>
+            <button class="btn btn-primary" onclick="window.backupToProviderFromDialog('webdav')"><span class="icon">${getIcon('upload')}</span> ${t('webdav.backup')}</button>
+            <button class="btn btn-primary" onclick="window.openBackupManagerFromDialog('webdav')"><span class="icon">${getIcon('clipboard')}</span> ${t('webdav.backupManager')}</button>
         </div>
     `;
 }
@@ -289,14 +290,14 @@ function renderLocalTab() {
                 <label><span class="required-mark">*</span>${t('backup.local.dir')}</label>
                 <div class="form-row" style="gap: 10px;">
                     <input type="text" id="backupLocalDir" class="form-input" style="flex: 1;" value="${currentBackupConfig.local.dir}" placeholder="${t('backup.local.dirPlaceholder')}" readonly>
-                    <button class="btn btn-secondary" onclick="window.selectBackupLocalDir()">📁 ${t('backup.local.chooseDir')}</button>
+                    <button class="btn btn-secondary" onclick="window.selectBackupLocalDir()"><span class="icon">${getIcon('folder')}</span> ${t('backup.local.chooseDir')}</button>
                 </div>
             </div>
         </div>
         <div class="data-sync-actions" style="display: flex; gap: 10px;">
-            <button class="btn btn-secondary" style="flex: 1;" onclick="window.saveLocalBackupConfig()">💾 ${t('backup.saveConfig')}</button>
-            <button class="btn btn-primary" style="flex: 1;" onclick="window.backupToProviderFromDialog('local')">📤 ${t('backup.backup')}</button>
-            <button class="btn btn-primary" style="flex: 1;" onclick="window.openBackupManagerFromDialog('local')">📋 ${t('backup.backupManager')}</button>
+            <button class="btn btn-secondary" style="flex: 1;" onclick="window.saveLocalBackupConfig()"><span class="icon">${getIcon('save')}</span> ${t('backup.saveConfig')}</button>
+            <button class="btn btn-primary" style="flex: 1;" onclick="window.backupToProviderFromDialog('local')"><span class="icon">${getIcon('upload')}</span> ${t('backup.backup')}</button>
+            <button class="btn btn-primary" style="flex: 1;" onclick="window.openBackupManagerFromDialog('local')"><span class="icon">${getIcon('clipboard')}</span> ${t('backup.backupManager')}</button>
         </div>
     `;
 }
@@ -363,10 +364,10 @@ function renderS3Tab() {
             </div>
         </div>
         <div class="data-sync-actions">
-            <button class="btn btn-secondary" onclick="window.testS3ConnectionFromDialog()">🔍 ${t('backup.s3.testConnection')}</button>
-            <button class="btn btn-secondary" onclick="window.saveS3BackupConfig()">💾 ${t('backup.saveConfig')}</button>
-            <button class="btn btn-primary" onclick="window.backupToProviderFromDialog('s3')">📤 ${t('backup.backup')}</button>
-            <button class="btn btn-primary" onclick="window.openBackupManagerFromDialog('s3')">📋 ${t('backup.backupManager')}</button>
+            <button class="btn btn-secondary" onclick="window.testS3ConnectionFromDialog()"><span class="icon">${getIcon('search')}</span> ${t('backup.s3.testConnection')}</button>
+            <button class="btn btn-secondary" onclick="window.saveS3BackupConfig()"><span class="icon">${getIcon('save')}</span> ${t('backup.saveConfig')}</button>
+            <button class="btn btn-primary" onclick="window.backupToProviderFromDialog('s3')"><span class="icon">${getIcon('upload')}</span> ${t('backup.backup')}</button>
+            <button class="btn btn-primary" onclick="window.openBackupManagerFromDialog('s3')"><span class="icon">${getIcon('clipboard')}</span> ${t('backup.backupManager')}</button>
         </div>
     `;
 }
@@ -752,13 +753,13 @@ export async function openBackupManager(provider = "webdav") {
         <div class="backup-manager">
 	            <div class="backup-manager-header">
 	                <div class="backup-manager-actions">
-	                    <button class="btn btn-secondary btn-sm" onclick="window.refreshBackupList()">🔄 ${tBackup(
+	                    <button class="btn btn-secondary btn-sm" onclick="window.refreshBackupList()"><span class="icon">${getIcon('refresh')}</span> ${tBackup(
                         provider,
                         "refresh"
                       )}</button>
 	                    <button class="btn btn-danger btn-sm" onclick="window.deleteSelectedBackups()" ${
 	                      backups.length === 0 ? "disabled" : ""
-	                    }>🗑️ ${tBackup(provider, "deleteSelected")}</button>
+	                    }><span class="icon">${getIcon('trash')}</span> ${tBackup(provider, "deleteSelected")}</button>
 	                </div>
 	            </div>
 	            <div class="backup-list-container">
@@ -774,7 +775,7 @@ export async function openBackupManager(provider = "webdav") {
 	        </div>
 	    `;
 
-  showSubModal("📋 " + tBackup(provider, "backupManager"), content);
+  showSubModal('<span class="icon">' + getIcon('clipboard') + '</span> ' + tBackup(provider, "backupManager"), content);
 
   // Set up global functions for backup manager
   window.refreshBackupList = async () => {
@@ -882,10 +883,10 @@ function renderBackupList(provider, backups) {
 	                            <div style="display: flex; flex-direction: column; gap: 4px;">
 	                                <button class="btn btn-primary btn-sm" onclick="window.restoreBackup('${
 	                                  backup.filename
-	                                }')">↩️ ${tBackup(provider, "restore")}</button>
+	                                }')"><span class="icon">${getIcon('undo')}</span> ${tBackup(provider, "restore")}</button>
 	                                <button class="btn btn-danger btn-sm" onclick="window.deleteSingleBackup('${
 	                                  backup.filename
-	                                }')">🗑️ ${tBackup(provider, "delete")}</button>
+	                                }')"><span class="icon">${getIcon('trash')}</span> ${tBackup(provider, "delete")}</button>
 	                            </div>
 	                        </td>
 	                    </tr>
@@ -935,7 +936,7 @@ async function showConflictDialog(conflicts) {
         return `
                 <div class="conflict-endpoint">
                     <div class="conflict-endpoint-header">
-                        <strong>📍 ${conflict.endpointName}</strong>
+                        <strong><span class="icon">${getIcon('pin')}</span> ${conflict.endpointName}</strong>
                         <span class="conflict-badge">${fields.length} ${
           fields.length === 1 ? t("webdav.conflict") : t("webdav.conflicts")
         }</span>
@@ -980,9 +981,9 @@ async function showConflictDialog(conflicts) {
 
     const content = `
             <div class="conflict-dialog-content">
-                <button class="conflict-close-btn" onclick="window.resolveConflict(null)">×</button>
+                <button class="conflict-close-btn" onclick="window.resolveConflict(null)"><span class="icon">${getIcon('close')}</span></button>
                 <div class="conflict-header">
-                    <span class="conflict-icon">⚠️</span>
+                    <span class="conflict-icon"><span class="icon">${getIcon('warning')}</span></span>
                     <span class="conflict-title">${t(
                       "webdav.conflictTitle"
                     )}</span>
@@ -1034,11 +1035,11 @@ function formatFieldValue(value) {
     return "<em>empty</em>";
   }
   if (typeof value === "boolean") {
-    return value ? "✓ Enabled" : "✗ Disabled";
+    return value ? '<span class="icon icon-success">' + getIcon('checkCircle') + '</span> Enabled' : '<span class="icon icon-error">' + getIcon('xCircle') + '</span> Disabled';
   }
   // Handle numeric boolean (0/1) for enabled field
   if (typeof value === "number" && (value === 0 || value === 1)) {
-    return value === 1 ? "✓ Enabled" : "✗ Disabled";
+    return value === 1 ? '<span class="icon icon-success">' + getIcon('checkCircle') + '</span> Enabled' : '<span class="icon icon-error">' + getIcon('xCircle') + '</span> Disabled';
   }
   if (typeof value === "string" && value.length > 50) {
     return value.substring(0, 47) + "...";
@@ -1068,7 +1069,7 @@ async function promptFilename(message, defaultValue) {
             </div>
         `;
 
-    showSubModal("📝 " + t("webdav.filename"), content);
+    showSubModal('<span class="icon">' + getIcon('fileEdit') + '</span> ' + t("webdav.filename"), content);
 
     // Focus input
     setTimeout(() => {

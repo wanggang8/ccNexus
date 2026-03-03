@@ -1,4 +1,5 @@
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 
 export async function loadLogs() {
     try {
@@ -65,7 +66,7 @@ export function copyLogs() {
 
     const btn = event.target.closest('button');
     const originalText = btn.innerHTML;
-    btn.innerHTML = '✅ Copied!';
+    btn.innerHTML = '<span class="icon">' + getIcon('check') + '</span> Copied!';
     setTimeout(() => {
         btn.innerHTML = originalText;
     }, 1500);

@@ -1,4 +1,6 @@
 // Toast notification system
+import { getIcon } from '../icons.js';
+
 class NotificationManager {
     constructor() {
         this.container = document.getElementById('toast-container');
@@ -8,19 +10,19 @@ class NotificationManager {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
 
-        const icons = {
-            success: '✓',
-            error: '✕',
-            warning: '⚠',
-            info: 'ℹ'
+        const iconMap = {
+            success: 'check',
+            error: 'x',
+            warning: 'warning',
+            info: 'info'
         };
 
         toast.innerHTML = `
-            <span class="toast-icon">${icons[type] || icons.info}</span>
+            <span class="toast-icon icon">${getIcon(iconMap[type] || iconMap.info)}</span>
             <div class="toast-content">
                 <div class="toast-message">${message}</div>
             </div>
-            <button class="toast-close">×</button>
+            <button class="toast-close"><span class="icon">${getIcon('x')}</span></button>
         `;
 
         const closeBtn = toast.querySelector('.toast-close');

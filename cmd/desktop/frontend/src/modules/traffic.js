@@ -1,7 +1,10 @@
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
+import { showNotification } from './modal.js';
 
 let refreshInterval = null;
 let currentFilter = {};
+let currentTrafficDetail = null; // Store for copy/expand/collapse
 
 // Toggle traffic recording
 export async function toggleTrafficRecording() {
@@ -140,13 +143,40 @@ export async function showTrafficDetail(id) {
 
 // Render traffic detail modal
 function renderTrafficDetailModal(detail) {
+    currentTrafficDetail = detail;
     const time = new Date(detail.timestamp).toLocaleString();
     const duration = detail.duration < 1000 ? `${detail.duration}ms` : `${(detail.duration / 1000).toFixed(2)}s`;
     const statusClass = detail.statusCode >= 400 || detail.error ? 'error' : 'success';
-    
+
+    const tabData = [
+        { key: 'originalRequest', label: t('traffic.originalRequest'), icon: 'arrowUp' },
+        { key: 'transformedRequest', label: t('traffic.transformedRequest'), icon: 'refresh' },
+        { key: 'originalResponse', label: t('traffic.originalResponse'), icon: 'download' },
+        { key: 'transformedResponse', label: t('traffic.transformedResponse'), icon: 'refresh' },
+    ];
+
+    const tabsHtml = tabData.map((tab, i) =>
+        `<button class="traffic-tab-btn ${i === 0 ? 'active' : ''}" data-tab="${tab.key}" onclick="window.switchTrafficTab('${tab.key}')">
+            <span class="icon icon-sm">${getIcon(tab.icon)}</span> ${tab.label}
+        </button>`
+    ).join('');
+
+    const tabContentsHtml = tabData.map((tab, i) => {
+        const raw = detail[tab.key];
+        const sourceHtml = formatJSONSource(raw);
+        return `
+            <div class="traffic-tab-content ${i === 0 ? 'active' : ''}" id="tab-${tab.key}">
+                <div class="traffic-json-actions">
+                    <button class="btn-json-action" onclick="window.copyTrafficJson('${tab.key}')">${getIcon('copy')} ${t('traffic.copyJson')}</button>
+                </div>
+                <div class="traffic-json-wrap">${sourceHtml}</div>
+            </div>
+        `;
+    }).join('');
+
     const content = document.getElementById('trafficDetailContent');
     if (!content) return;
-    
+
     content.innerHTML = `
         <div class="traffic-detail-header">
             <div class="traffic-detail-status ${statusClass}">
@@ -169,29 +199,12 @@ function renderTrafficDetailModal(detail) {
                 </div>
             ` : ''}
         </div>
-        
-        <div class="traffic-detail-tabs">
-            <button class="traffic-tab-btn active" data-tab="originalRequest" onclick="window.switchTrafficTab('originalRequest')">${t('traffic.originalRequest')}</button>
-            <button class="traffic-tab-btn" data-tab="transformedRequest" onclick="window.switchTrafficTab('transformedRequest')">${t('traffic.transformedRequest')}</button>
-            <button class="traffic-tab-btn" data-tab="originalResponse" onclick="window.switchTrafficTab('originalResponse')">${t('traffic.originalResponse')}</button>
-            <button class="traffic-tab-btn" data-tab="transformedResponse" onclick="window.switchTrafficTab('transformedResponse')">${t('traffic.transformedResponse')}</button>
-        </div>
-        
-        <div class="traffic-detail-body">
-            <div class="traffic-tab-content active" id="tab-originalRequest">
-                <div class="traffic-json">${formatJSON(detail.originalRequest)}</div>
-            </div>
-            <div class="traffic-tab-content" id="tab-transformedRequest">
-                <div class="traffic-json">${formatJSON(detail.transformedRequest)}</div>
-            </div>
-            <div class="traffic-tab-content" id="tab-originalResponse">
-                <div class="traffic-json">${formatJSON(detail.originalResponse)}</div>
-            </div>
-            <div class="traffic-tab-content" id="tab-transformedResponse">
-                <div class="traffic-json">${formatJSON(detail.transformedResponse)}</div>
-            </div>
-        </div>
+
+        <div class="traffic-detail-tabs">${tabsHtml}</div>
+
+        <div class="traffic-detail-body">${tabContentsHtml}</div>
     `;
+
 }
 
 // Switch traffic detail tab
@@ -210,112 +223,38 @@ export function switchTrafficTab(tabName) {
 // Format JSON for display with collapsible tree
 function formatJSON(str) {
     if (!str) return '<span class="json-null">(empty)</span>';
-    
-    // Trim whitespace
+
     str = str.trim();
-    
     try {
         const obj = JSON.parse(str);
         return `<div class="json-tree">${renderJSONTree(obj, 0)}</div>`;
     } catch (e) {
         console.warn('JSON parse failed:', e.message);
-        // If not valid JSON, display as pre-formatted text with word wrap
         return `<pre class="json-raw">${escapeHtml(str)}</pre>`;
     }
 }
 
-// Render JSON as collapsible tree
-function renderJSONTree(value, depth, key = null) {
-    const maxExpandDepth = 2; // Auto-expand first 2 levels
-    const maxArrayPreview = 10; // Collapse arrays with more than 10 items
-    
-    const keyPrefix = key !== null ? `<span class="json-key">"${escapeHtml(key)}"</span>: ` : '';
-    
-    if (value === null) {
-        return `<div class="json-line">${keyPrefix}<span class="json-null">null</span></div>`;
+// Format JSON as source (pretty-printed)
+function formatJSONSource(str) {
+    if (!str) return '<pre class="json-raw">(empty)</pre>';
+    str = str.trim();
+    try {
+        const obj = JSON.parse(str);
+        const pretty = JSON.stringify(obj, null, 2);
+        return `<pre class="json-source">${escapeHtml(pretty)}</pre>`;
+    } catch (e) {
+        return `<pre class="json-raw">${escapeHtml(str)}</pre>`;
     }
-    
-    if (typeof value === 'boolean') {
-        return `<div class="json-line">${keyPrefix}<span class="json-boolean">${value}</span></div>`;
-    }
-    
-    if (typeof value === 'number') {
-        return `<div class="json-line">${keyPrefix}<span class="json-number">${value}</span></div>`;
-    }
-    
-    if (typeof value === 'string') {
-        // Truncate very long strings in display
-        const displayStr = value.length > 500 ? value.substring(0, 500) + '...' : value;
-        return `<div class="json-line">${keyPrefix}<span class="json-string">"${escapeHtml(displayStr)}"</span></div>`;
-    }
-    
-    if (Array.isArray(value)) {
-        if (value.length === 0) {
-            return `<div class="json-line">${keyPrefix}<span class="json-bracket">[]</span></div>`;
-        }
-        
-        const shouldCollapse = depth >= maxExpandDepth || value.length > maxArrayPreview;
-        const collapsedClass = shouldCollapse ? 'json-collapsed' : '';
-        const toggleIcon = shouldCollapse ? '▶' : '▼';
-        const id = `json-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        
-        let html = `<div class="json-line">
-            ${keyPrefix}<span class="json-toggle" onclick="window.toggleJSONNode('${id}')">${toggleIcon}</span>
-            <span class="json-bracket">[</span>
-            <span class="json-preview">${value.length} items</span>
-        </div>`;
-        html += `<div class="json-children ${collapsedClass}" id="${id}">`;
-        
-        value.forEach((item, index) => {
-            html += `<div class="json-item">${renderJSONTree(item, depth + 1)}</div>`;
-        });
-        
-        html += `</div><div class="json-line"><span class="json-bracket">]</span></div>`;
-        return html;
-    }
-    
-    if (typeof value === 'object') {
-        const keys = Object.keys(value);
-        if (keys.length === 0) {
-            return `<div class="json-line">${keyPrefix}<span class="json-bracket">{}</span></div>`;
-        }
-        
-        const shouldCollapse = depth >= maxExpandDepth;
-        const collapsedClass = shouldCollapse ? 'json-collapsed' : '';
-        const toggleIcon = shouldCollapse ? '▶' : '▼';
-        const id = `json-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        
-        let html = `<div class="json-line">
-            ${keyPrefix}<span class="json-toggle" onclick="window.toggleJSONNode('${id}')">${toggleIcon}</span>
-            <span class="json-bracket">{</span>
-            <span class="json-preview">${keys.length} keys</span>
-        </div>`;
-        html += `<div class="json-children ${collapsedClass}" id="${id}">`;
-        
-        keys.forEach(k => {
-            html += renderJSONTree(value[k], depth + 1, k);
-        });
-        
-        html += `</div><div class="json-line"><span class="json-bracket">}</span></div>`;
-        return html;
-    }
-    
-    return `<div class="json-line">${keyPrefix}<span class="json-unknown">${escapeHtml(String(value))}</span></div>`;
 }
 
-// Toggle JSON node collapse/expand
-export function toggleJSONNode(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    
-    const toggle = el.previousElementSibling?.querySelector('.json-toggle');
-    if (el.classList.contains('json-collapsed')) {
-        el.classList.remove('json-collapsed');
-        if (toggle) toggle.textContent = '▼';
-    } else {
-        el.classList.add('json-collapsed');
-        if (toggle) toggle.textContent = '▶';
-    }
+// Copy JSON content for current tab
+export function copyTrafficJson(tabKey) {
+    if (!currentTrafficDetail) return;
+    const raw = currentTrafficDetail[tabKey];
+    if (!raw) return;
+    navigator.clipboard.writeText(raw.trim()).then(() => {
+        showNotification(t('traffic.copied'), 'success');
+    }).catch(() => {});
 }
 
 // Escape HTML

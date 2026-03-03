@@ -341,34 +341,27 @@ func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats
 	return result
 }
 
-// GetDailyStats returns statistics for a specific date
+// GetDailyStats returns statistics for a specific date (single aggregated query, no N+1)
 func (s *Stats) GetDailyStats(date string) map[string]*DailyStats {
-	// Get all endpoints from storage
-	totalRequests, statsData, err := s.storage.GetTotalStats()
+	aggregated, err := s.storage.GetPeriodStatsAggregated(date, date)
 	if err != nil {
-		logger.Error("Failed to get stats: %v", err)
+		logger.Error("Failed to get daily stats: %v", err)
 		return make(map[string]*DailyStats)
 	}
 
-	_ = totalRequests // unused
 	result := make(map[string]*DailyStats)
-
-	// For each endpoint, get stats for the specific date
-	for endpointName := range statsData {
-		dailyRecords, err := s.storage.GetDailyStats(endpointName, date, date)
-		if err != nil {
-			logger.Error("Failed to get daily stats for %s: %v", endpointName, err)
-			continue
-		}
-
-		if len(dailyRecords) > 0 {
-			record := extractDailyRecord(dailyRecords[0])
-			if record != nil {
-				result[endpointName] = record
+	for endpointName, statsInterface := range aggregated {
+		stats := extractStatsData(statsInterface)
+		if stats != nil && (stats.Requests > 0 || stats.Errors > 0) {
+			result[endpointName] = &DailyStats{
+				Date:         date,
+				Requests:     stats.Requests,
+				Errors:       stats.Errors,
+				InputTokens:  int(stats.InputTokens),
+				OutputTokens: int(stats.OutputTokens),
 			}
 		}
 	}
-
 	return result
 }
 

@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="/ui/css/main.css">
     <link rel="stylesheet" href="/ui/css/components.css">
     <link rel="stylesheet" href="/ui/css/themes.css">
+    <link rel="stylesheet" href="/ui/css/icons.css">
+    <link rel="stylesheet" href="/ui/css/micro-interactions.css">
 </head>
 <body>
     <div id="app">
@@ -17,25 +19,25 @@
             </div>
             <ul class="nav-menu">
                 <li><a href="#" data-view="dashboard" class="nav-link active">
-                    <span class="icon">📊</span>
+                    <span class="icon" data-icon="chart"></span>
                     <span>Dashboard</span>
                 </a></li>
                 <li><a href="#" data-view="endpoints" class="nav-link">
-                    <span class="icon">🔗</span>
+                    <span class="icon" data-icon="link"></span>
                     <span>Endpoints</span>
                 </a></li>
                 <li><a href="#" data-view="stats" class="nav-link">
-                    <span class="icon">📈</span>
+                    <span class="icon" data-icon="trendUp"></span>
                     <span>Statistics</span>
                 </a></li>
                 <li><a href="#" data-view="testing" class="nav-link">
-                    <span class="icon">🧪</span>
+                    <span class="icon" data-icon="flask"></span>
                     <span>Testing</span>
                 </a></li>
             </ul>
             <div class="sidebar-footer">
                 <button id="theme-toggle" class="btn-icon" title="Toggle theme">
-                    <span class="icon">🌙</span>
+                    <span class="icon" data-icon="moon"></span>
                 </button>
             </div>
         </nav>

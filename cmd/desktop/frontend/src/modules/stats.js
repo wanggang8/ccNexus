@@ -1,4 +1,5 @@
 import { formatTokens } from '../utils/format.js';
+import { getIcon } from '../icons.js';
 
 let endpointStats = {};
 let currentPeriod = 'daily'; // 'daily', 'weekly', 'monthly'
@@ -117,18 +118,18 @@ async function loadTrend(period = 'daily') {
         const tokensEl = document.getElementById('tokensTrend');
 
         if (requestsEl) {
-            requestsEl.textContent = requestsTrend.text;
+            requestsEl.innerHTML = requestsTrend.text;
             requestsEl.className = 'trend ' + requestsTrend.className;
         }
 
         if (errorsEl) {
             // For errors, negative trend is good
-            errorsEl.textContent = errorsTrend.text;
+            errorsEl.innerHTML = errorsTrend.text;
             errorsEl.className = 'trend ' + (trend.errorsTrend < 0 ? 'trend-down' : trend.errorsTrend > 0 ? 'trend-up' : 'trend-flat');
         }
 
         if (tokensEl) {
-            tokensEl.textContent = tokensTrend.text;
+            tokensEl.innerHTML = tokensTrend.text;
             tokensEl.className = 'trend ' + tokensTrend.className;
         }
     } catch (error) {
@@ -143,17 +144,17 @@ function formatTrend(value) {
 
     if (value > 0) {
         return {
-            text: `↑ ${formattedValue}%`,
+            text: `<span class="icon">${getIcon('arrowUp')}</span> ${formattedValue}%`,
             className: 'trend-up'
         };
     } else if (value < 0) {
         return {
-            text: `↓ ${formattedValue}%`,
+            text: `<span class="icon">${getIcon('arrowDown')}</span> ${formattedValue}%`,
             className: 'trend-down'
         };
     } else {
         return {
-            text: '→ 0%',
+            text: `<span class="icon">${getIcon('arrowRight')}</span> 0%`,
             className: 'trend-flat'
         };
     }

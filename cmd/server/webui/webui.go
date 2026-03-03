@@ -19,10 +19,10 @@ type WebUI struct {
 	apiHandler *api.Handler
 }
 
-// New creates a new WebUI instance
-func New(cfg *config.Config, p *proxy.Proxy, storage *storage.SQLiteStorage) *WebUI {
+// New creates a new WebUI instance. uiToken: when non-empty, API requests require this token.
+func New(cfg *config.Config, p *proxy.Proxy, storage *storage.SQLiteStorage, uiToken string) *WebUI {
 	return &WebUI{
-		apiHandler: api.NewHandler(cfg, p, storage),
+		apiHandler: api.NewHandler(cfg, p, storage, uiToken),
 	}
 }
 

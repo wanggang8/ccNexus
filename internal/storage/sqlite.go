@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/lich0821/ccNexus/internal/logger"
 	_ "modernc.org/sqlite"
 )
 
@@ -202,6 +203,13 @@ func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if ep.ID > 0 {
+		// Use ID for update (supports endpoint rename from API)
+		_, err := s.db.Exec(`UPDATE endpoints SET name=?, api_url=?, api_key=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			ep.Name, ep.APIUrl, ep.APIKey, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.ID)
+		return err
+	}
+	// Fallback for adapter path (no ID): update by name, cannot rename
 	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
 		ep.APIUrl, ep.APIKey, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.Name)
 	return err
@@ -575,7 +583,11 @@ func (s *SQLiteStorage) DetectEndpointConflicts(remoteDBPath string) ([]MergeCon
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach remote database: %w", err)
 	}
-	defer s.db.Exec("DETACH DATABASE remote")
+	defer func() {
+		if _, err := s.db.Exec("DETACH DATABASE remote"); err != nil {
+			logger.Warn("Failed to detach remote database: %v", err)
+		}
+	}()
 
 	// Get local endpoints
 	localEndpoints, err := s.getEndpointsFromDB(s.db, "main")
@@ -680,7 +692,11 @@ func (s *SQLiteStorage) MergeFromBackup(backupDBPath string, strategy MergeStrat
 	if err != nil {
 		return fmt.Errorf("failed to attach backup database: %w", err)
 	}
-	defer s.db.Exec("DETACH DATABASE backup")
+	defer func() {
+		if _, err := s.db.Exec("DETACH DATABASE backup"); err != nil {
+			logger.Warn("Failed to detach backup database: %v", err)
+		}
+	}()
 
 	// 开启事务
 	tx, err := s.db.Begin()

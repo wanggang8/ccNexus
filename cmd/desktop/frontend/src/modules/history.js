@@ -1,5 +1,6 @@
 import { formatTokens } from '../utils/format.js';
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 import { showConfirm } from './modal.js';
 import { showNotification } from './modal.js';
 
@@ -166,17 +167,17 @@ function formatTrend(value) {
 
     if (value > 0) {
         return {
-            text: `↑ ${formattedValue}%`,
+            text: `<span class="icon">${getIcon('arrowUp')}</span> ${formattedValue}%`,
             className: 'trend-up'
         };
     } else if (value < 0) {
         return {
-            text: `↓ ${formattedValue}%`,
+            text: `<span class="icon">${getIcon('arrowDown')}</span> ${formattedValue}%`,
             className: 'trend-down'
         };
     } else {
         return {
-            text: '→ 0%',
+            text: `<span class="icon">${getIcon('arrowRight')}</span> 0%`,
             className: 'trend-flat'
         };
     }
@@ -209,12 +210,12 @@ function updateTrendDisplay(trend) {
     const tokensEl = document.getElementById('historyTokensTrend');
 
     if (requestsEl) {
-        requestsEl.textContent = requestsTrend.text;
+        requestsEl.innerHTML = requestsTrend.text;
         requestsEl.className = 'trend ' + requestsTrend.className;
     }
 
     if (tokensEl) {
-        tokensEl.textContent = tokensTrend.text;
+        tokensEl.innerHTML = tokensTrend.text;
         tokensEl.className = 'trend ' + tokensTrend.className;
     }
 }

@@ -3,6 +3,11 @@ export default {
         title: 'ccNexus',
         version: '版本'
     },
+    sidebar: {
+        endpoints: '端点',
+        traffic: '流量',
+        logs: '日志'
+    },
     header: {
         title: 'API 端点轮询代理工具，自动切换可用端点，实现无缝故障转移',
         port: '端口',
@@ -37,12 +42,14 @@ export default {
         testTipSuccess: '已测试连接成功',
         testTipFailed: '测试连接失败或当前端点不支持接口测试',
         testTipUnknown: '未测试或测试结果未知',
-        expand: '展开',
         viewDetail: '默认视图',
         viewCompact: '列表视图',
         dragToReorder: '拖拽排序',
         moreActions: '更多操作',
-        disabled: '已禁用'
+        disabled: '已禁用',
+        configFirst: '请先填写 API 地址和密钥',
+        fetchFailed: '获取失败：',
+        copyUrl: '复制地址'
     },
     modal: {
         addEndpoint: '添加端点',
@@ -93,6 +100,8 @@ export default {
         title: '日志',
         level: '级别',
         copy: '复制',
+        copyLogs: '复制日志',
+        clearLogs: '清空日志',
         clear: '清空',
         collapse: '收起',
         expand: '展开',
@@ -108,8 +117,8 @@ export default {
         testing: '测试中...',
         success: '成功',
         failed: '失败',
-        successTitle: '✅ 测试成功',
-        failedTitle: '❌ 测试失败',
+        successTitle: '测试成功',
+        failedTitle: '测试失败',
         connectionSuccess: '连接成功！',
         connectionFailed: '连接失败',
         testError: '测试出错',
@@ -117,7 +126,7 @@ export default {
     },
     welcome: {
         title: '欢迎使用 ccNexus！',
-        titleWithVersion: '👋 欢迎使用 ccNexus v{version}',
+        titleWithVersion: '欢迎使用 ccNexus v{version}',
         message: 'ccNexus 是一个为 Claude Code 设计的智能 API 端点轮询代理工具',
         features: '功能特性',
         feature1: '多个 API 端点之间自动故障转移',
@@ -129,9 +138,9 @@ export default {
         qrCodeTip: '扫码关注公众号，了解更多',
         chatGroupTip: '问题反馈请加群，学习与交流',
         chatGroupFallbackTip: '问题反馈可扫码，请备注加群',
-        readArticle: '📖 阅读介绍',
-        githubRepo: '🔗 GitHub 仓库',
-        changelog: '📋 更新日志'
+        readArticle: '阅读介绍',
+        githubRepo: 'GitHub 仓库',
+        changelog: '更新日志'
     },
     changelog: {
         title: '更新日志',
@@ -501,10 +510,16 @@ export default {
         close: '关闭',
         retry: '重试'
     },
+    quit: {
+        title: '退出确认',
+        message: '确定要退出 ccNexus 吗？',
+        minimize: '最小化',
+        quit: '退出'
+    },
     sponsor: {
-        ribbon: '❤️赞助',
+        ribbon: '赞助',
         ribbonTip: '请点击支持一下作者',
-        title: '❤️支持一下',
+        title: '支持一下',
     },
     traffic: {
         title: '流量日志',
@@ -513,6 +528,8 @@ export default {
         startRecording: '开始录制',
         stopRecording: '停止录制',
         clear: '清空',
+        clearLogs: '清空日志',
+        confirmClear: '确认清空所有流量日志吗？',
         noLogs: '暂无请求记录，点击"开始录制"捕获请求',
         filterAll: '全部',
         filterErrors: '仅错误',
@@ -528,11 +545,18 @@ export default {
         truncated: '已截断',
         in: '输入',
         out: '输出',
+        detail: '请求详情',
         detailTitle: '请求详情',
         originalRequest: '原始请求',
         transformedRequest: '转换后请求',
         originalResponse: '原始响应',
         transformedResponse: '转换后响应',
+        copyJson: '复制',
+        copied: '已复制',
+        expandAll: '全部展开',
+        collapseAll: '全部折叠',
+        treeView: '树形',
+        sourceView: '源码',
     },
     tips: [
         '小贴士：您可以同时启用多个 API 端点，实现自动故障转移',

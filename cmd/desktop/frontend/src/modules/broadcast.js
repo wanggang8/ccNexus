@@ -1,6 +1,7 @@
 // ========== 广播横幅模块 ==========
 
 import { t, getLanguage } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 
 // 广播URL配置
 const BROADCAST_URL = 'https://gitee.com/hea7en/images/raw/master/group/message.json';
@@ -15,10 +16,10 @@ let isHidden = false;
 
 // 图标映射
 const ICONS = {
-    info: '📢',
-    warning: '⚠️',
-    error: '❌',
-    success: '✅'
+    info: getIcon('megaphone'),
+    warning: getIcon('warning'),
+    error: getIcon('x'),
+    success: getIcon('check')
 };
 
 // 初始化广播
@@ -137,9 +138,9 @@ function renderBanner() {
 
     banner.className = `broadcast-banner ${type}`;
     banner.innerHTML = `
-        <span class="broadcast-banner-icon">${icon}</span>
+        <span class="broadcast-banner-icon"><span class="icon">${icon}</span></span>
         <div class="broadcast-banner-text-wrapper">
-            <span class="broadcast-banner-text" ${msg.link ? 'style="cursor:pointer"' : ''}>${content} <span class="broadcast-banner-close" title="关闭">✕</span></span>
+            <span class="broadcast-banner-text" ${msg.link ? 'style="cursor:pointer"' : ''}>${content} <span class="broadcast-banner-close" title="关闭"><span class="icon">${getIcon('close')}</span></span></span>
         </div>
     `;
 

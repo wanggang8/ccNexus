@@ -1,15 +1,25 @@
 // API Client for ccNexus
+const AUTH_TOKEN_KEY = 'ccnexus_ui_token';
+
 class APIClient {
     constructor(baseURL = '/api') {
         this.baseURL = baseURL;
     }
 
+    getAuthHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = sessionStorage.getItem(AUTH_TOKEN_KEY);
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+            headers['X-API-Token'] = token;
+        }
+        return headers;
+    }
+
     async request(method, path, data = null) {
         const options = {
             method,
-            headers: {
-                'Content-Type': 'application/json'
-            }
+            headers: this.getAuthHeaders()
         };
 
         if (data) {
@@ -117,6 +127,24 @@ class APIClient {
     async updateLogLevel(logLevel) {
         return this.request('PUT', '/config/log-level', { logLevel });
     }
+
+    // Auth (no token required)
+    async getAuthStatus() {
+        const res = await fetch(`${this.baseURL}/auth/status`);
+        const data = await res.json();
+        return data.authRequired !== undefined ? data : { authRequired: false };
+    }
+
+    async verifyToken(token) {
+        const res = await fetch(`${this.baseURL}/auth/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token })
+        });
+        const data = await res.json();
+        return { ok: res.ok, ...data };
+    }
 }
 
 export const api = new APIClient();
+export { AUTH_TOKEN_KEY };

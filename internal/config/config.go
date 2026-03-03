@@ -9,6 +9,7 @@ import (
 
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
+	ID          int64  `json:"id,omitempty"`          // Storage ID, 0 when new (supports rename)
 	Name        string `json:"name"`
 	APIUrl      string `json:"apiUrl"`
 	APIKey      string `json:"apiKey"`
@@ -412,6 +413,7 @@ type StorageAdapter interface {
 
 // StorageEndpoint represents an endpoint in storage
 type StorageEndpoint struct {
+	ID          int64  // 0 when unknown (adapter path); required for rename support
 	Name        string
 	APIUrl      string
 	APIKey      string
@@ -436,6 +438,7 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 
 	for _, ep := range endpoints {
 		endpoint := Endpoint{
+			ID:          ep.ID,
 			Name:        ep.Name,
 			APIUrl:      ep.APIUrl,
 			APIKey:      ep.APIKey,
@@ -649,11 +652,17 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 
 	existingNames := make(map[string]bool)
+	existingIDByName := make(map[string]int64)
+	existingNameByID := make(map[int64]string)
 	for _, ep := range existingEndpoints {
 		existingNames[ep.Name] = true
+		if ep.ID > 0 {
+			existingIDByName[ep.Name] = ep.ID
+			existingNameByID[ep.ID] = ep.Name
+		}
 	}
 
-	// Save/update endpoints
+	// Save/update endpoints (supports rename via ID)
 	for i, ep := range c.Endpoints {
 		endpoint := &StorageEndpoint{
 			Name:        ep.Name,
@@ -665,17 +674,31 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 			Remark:      ep.Remark,
 			SortOrder:   i, // Use array index as sort order
 		}
+		// Prefer ID for update (handles rename: ep.ID from old name, ep.Name is new)
+		if ep.ID > 0 {
+			endpoint.ID = ep.ID
+		} else if id := existingIDByName[ep.Name]; id > 0 {
+			endpoint.ID = id
+		}
 
-		if existingNames[ep.Name] {
+		if ep.ID > 0 {
+			// Update by ID (handles rename)
 			if err := storage.UpdateEndpoint(endpoint); err != nil {
 				return fmt.Errorf("failed to update endpoint %s: %w", ep.Name, err)
 			}
+			if oldName := existingNameByID[ep.ID]; oldName != "" {
+				delete(existingNames, oldName)
+			}
+		} else if existingNames[ep.Name] {
+			if err := storage.UpdateEndpoint(endpoint); err != nil {
+				return fmt.Errorf("failed to update endpoint %s: %w", ep.Name, err)
+			}
+			delete(existingNames, ep.Name)
 		} else {
 			if err := storage.SaveEndpoint(endpoint); err != nil {
 				return fmt.Errorf("failed to save endpoint %s: %w", ep.Name, err)
 			}
 		}
-		delete(existingNames, ep.Name)
 	}
 
 	// Delete endpoints that no longer exist
@@ -806,7 +829,6 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 		if err := storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand); err != nil {
 			return fmt.Errorf("failed to save terminal_claudeCommand config: %w", err)
 		}
-		storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand)
 	}
 
 	// Save Proxy config

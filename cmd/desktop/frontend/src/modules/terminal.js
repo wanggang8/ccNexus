@@ -154,11 +154,11 @@ function renderProjectDirs() {
                 <span class="dir-name" title="${dir}">${projectName}</span>
             </div>
             <div class="dir-actions">
-                <button class="btn btn-sm btn-primary" data-action="launch">▶ ${t('terminal.launch')}</button>
-                <button class="btn btn-sm btn-danger" data-action="remove">🗑️ ${t('terminal.delete')}</button>
+                <button class="btn btn-sm btn-primary" data-action="launch"><span class="icon">${getIcon('play')}</span> ${t('terminal.launch')}</button>
+                <button class="btn btn-sm btn-danger" data-action="remove"><span class="icon">${getIcon('trash')}</span> ${t('terminal.delete')}</button>
                 <button class="btn btn-sm btn-session" data-action="session" title="${sessionTooltip}">
-                    ${hasSession ? '✅' : '📋'} ${t('session.sessions')}
-                    ${hasSession ? '<span class="session-clear-btn">×</span>' : ''}
+                    <span class="icon">${hasSession ? getIcon('check') : getIcon('clipboard')}</span> ${t('session.sessions')}
+                    ${hasSession ? `<span class="session-clear-btn"><span class="icon">${getIcon('close')}</span></span>` : ''}
                 </button>
             </div>
         </div>

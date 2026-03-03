@@ -1,4 +1,5 @@
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 
 let currentWorkspaceTab = 'endpoints';
 
@@ -36,7 +37,7 @@ export function initUI() {
         <div class="header">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <div>
-                    <h1>🚀 ${t('app.title')}<span id="broadcast-banner" class="broadcast-banner hidden"></span></h1>
+                    <h1><span class="icon icon-lg">${getIcon('rocket')}</span> ${t('app.title')}<span id="broadcast-banner" class="broadcast-banner hidden"></span></h1>
                     <p>${t('header.title')}<span id="festivalToggle" class="festival-toggle hidden" onclick="window.toggleFestivalEffect(); event.stopPropagation();" title="${t('festival.toggle') || '切换氛围效果'}"><span class="festival-toggle-name" id="festivalToggleName"></span><span class="festival-toggle-switch" id="festivalToggleSwitch"></span></span></p>
                 </div>
                 <div style="display: flex; gap: 15px; align-items: center;">
@@ -46,16 +47,14 @@ export function initUI() {
                     </div>
                     <div style="display: flex; gap: 10px;">
                         <button class="header-link" onclick="window.openGitHub()" title="${t('header.githubRepo')}">
-                            <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
-                            </svg>
+                            <span class="icon">${getIcon('github')}</span>
                         </button>
                         <button class="header-link about-btn" id="aboutBtn" onclick="window.showWelcomeModal()" title="${t('header.about')}">
-                            📖
+                            <span class="icon">${getIcon('book')}</span>
                             <span class="update-badge" id="updateBadge"></span>
                         </button>
                         <button class="header-link" onclick="window.showSettingsModal()" title="${t('settings.title')}">
-                            <span style="position: relative; left: 1.2px;">⚙️</span>
+                            <span class="icon">${getIcon('settings')}</span>
                         </button>
                     </div>
                 </div>
@@ -66,22 +65,22 @@ export function initUI() {
             <!-- Statistics -->
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h2 style="margin: 0;">📊 ${t('statistics.title')}</h2>
+                    <h2 style="margin: 0;"><span class="icon icon-lg">${getIcon('chart')}</span> ${t('statistics.title')}</h2>
                     <div class="stats-tabs">
                         <button class="stats-tab-btn active" data-period="daily" onclick="window.switchStatsPeriod('daily')">
-                            📅 ${t('statistics.daily')}
+                            <span class="icon">${getIcon('calendar')}</span> ${t('statistics.daily')}
                         </button>
                         <button class="stats-tab-btn" data-period="yesterday" onclick="window.switchStatsPeriod('yesterday')">
-                            📆 ${t('statistics.yesterday')}
+                            <span class="icon">${getIcon('calendar')}</span> ${t('statistics.yesterday')}
                         </button>
                         <button class="stats-tab-btn" data-period="weekly" onclick="window.switchStatsPeriod('weekly')">
-                            📊 ${t('statistics.weekly')}
+                            <span class="icon">${getIcon('chart')}</span> ${t('statistics.weekly')}
                         </button>
                         <button class="stats-tab-btn" data-period="monthly" onclick="window.switchStatsPeriod('monthly')">
-                            📈 ${t('statistics.monthly')}
+                            <span class="icon">${getIcon('trendUp')}</span> ${t('statistics.monthly')}
                         </button>
                         <button class="stats-tab-btn" data-period="history" onclick="window.switchStatsPeriod('history')">
-                            📚 ${t('statistics.history')}
+                            <span class="icon">${getIcon('activity')}</span> ${t('statistics.history')}
                         </button>
                     </div>
                 </div>
@@ -103,7 +102,7 @@ export function initUI() {
                     <div class="stat-box">
                         <div class="stat-header">
                             <div class="stat-label">${t('statistics.totalRequests')}</div>
-                            <span class="trend" id="requestsTrend">→ 0%</span>
+                            <span class="trend" id="requestsTrend"><span class="icon">${getIcon('arrowRight')}</span> 0%</span>
                         </div>
                         <div class="stat-value">
                             <span id="periodTotalRequests">0</span>
@@ -119,7 +118,7 @@ export function initUI() {
                     <div class="stat-box">
                         <div class="stat-header">
                             <div class="stat-label">${t('statistics.totalTokens')}</div>
-                            <span class="trend" id="tokensTrend">→ 0%</span>
+                            <span class="trend" id="tokensTrend"><span class="icon">${getIcon('arrowRight')}</span> 0%</span>
                         </div>
                         <div class="stat-value">
                             <span id="periodTotalTokens">0</span>
@@ -152,7 +151,7 @@ export function initUI() {
             <div id="historyModal" class="modal" style="display: none;">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h2>📚 ${t('history.title')}</h2>
+                        <h2><span class="icon icon-lg">${getIcon('activity')}</span> ${t('history.title')}</h2>
                         <button class="modal-close" onclick="window.closeHistoryModal()">&times;</button>
                     </div>
                     <div class="modal-body">
@@ -166,7 +165,7 @@ export function initUI() {
                             <div class="stat-box">
                                 <div class="stat-header">
                                     <div class="stat-label">${t('statistics.totalRequests')}</div>
-                                    <span class="trend" id="historyRequestsTrend">→ 0%</span>
+                                    <span class="trend" id="historyRequestsTrend"><span class="icon">${getIcon('arrowRight')}</span> 0%</span>
                                 </div>
                                 <div class="stat-value">
                                     <span id="historyTotalRequests">0</span>
@@ -182,7 +181,7 @@ export function initUI() {
                             <div class="stat-box">
                                 <div class="stat-header">
                                     <div class="stat-label">${t('statistics.totalTokens')}</div>
-                                    <span class="trend" id="historyTokensTrend">→ 0%</span>
+                                    <span class="trend" id="historyTokensTrend"><span class="icon">${getIcon('arrowRight')}</span> 0%</span>
                                 </div>
                                 <div class="stat-value">
                                     <span id="historyTotalTokens">0</span>
@@ -235,13 +234,13 @@ export function initUI() {
                 <div class="workspace-header">
                     <div class="workspace-tabs">
                         <button class="workspace-tab active" data-tab="endpoints" onclick="window.switchWorkspaceTab('endpoints')">
-                            🔗 ${t('endpoints.title')}
+                            <span class="icon">${getIcon('server')}</span> ${t('endpoints.title')}
                         </button>
                         <button class="workspace-tab" data-tab="traffic" onclick="window.switchWorkspaceTab('traffic')">
-                            📡 ${t('traffic.title')} <span class="tab-badge" id="trafficTabBadge"></span>
+                            <span class="icon">${getIcon('activity')}</span> ${t('traffic.title')} <span class="tab-badge" id="trafficTabBadge"></span>
                         </button>
                         <button class="workspace-tab" data-tab="logs" onclick="window.switchWorkspaceTab('logs')">
-                            📋 ${t('logs.title')}
+                            <span class="icon">${getIcon('terminal')}</span> ${t('logs.title')}
                         </button>
                     </div>
                     <div class="workspace-actions">
@@ -266,13 +265,13 @@ export function initUI() {
                             </div>
                             ${isShowBtn ? `
                             <button class="btn btn-secondary" onclick="window.showTerminalModal()">
-                                🖥️ ${t('terminal.title')}
+                                <span class="icon">${getIcon('terminal')}</span> ${t('terminal.title')}
                             </button>` : ''}
                             <button class="btn btn-secondary" onclick="window.showDataSyncDialog()">
-                                🔄 ${t('webdav.dataSync')}
+                                <span class="icon">${getIcon('refresh')}</span> ${t('webdav.dataSync')}
                             </button>
                             <button class="btn btn-primary" onclick="window.showAddEndpointModal()">
-                                ➕ ${t('header.addEndpoint')}
+                                <span class="icon">${getIcon('plus')}</span> ${t('header.addEndpoint')}
                             </button>
                         </div>
                         <!-- Traffic Actions -->
@@ -284,7 +283,7 @@ export function initUI() {
                                 <option value="false">${t('traffic.filterSuccess')}</option>
                             </select>
                             <button class="btn btn-secondary btn-sm" onclick="window.clearTrafficLogs()">
-                                🗑️ ${t('traffic.clear')}
+                                <span class="icon">${getIcon('trash')}</span> ${t('traffic.clear')}
                             </button>
                             <button id="trafficRecordBtn" class="traffic-record-btn" onclick="window.toggleTrafficRecording()">
                                 <span class="record-dot"></span> ${t('traffic.startRecording')}
@@ -293,16 +292,16 @@ export function initUI() {
                         <!-- Logs Actions -->
                         <div id="logsActions" class="tab-actions">
                             <select id="logLevel" class="log-level-select-btn" onchange="window.changeLogLevel()">
-                                <option value="0">🔍 ${t('logs.levels.0')}</option>
-                                <option value="1" selected>ℹ️ ${t('logs.levels.1')}</option>
-                                <option value="2">⚠️ ${t('logs.levels.2')}</option>
-                                <option value="3">❌ ${t('logs.levels.3')}</option>
+                                <option value="0"><span class="icon">${getIcon('search')}</span> ${t('logs.levels.0')}</option>
+                                <option value="1" selected><span class="icon">${getIcon('info')}</span> ${t('logs.levels.1')}</option>
+                                <option value="2"><span class="icon">${getIcon('alertTriangle')}</span> ${t('logs.levels.2')}</option>
+                                <option value="3"><span class="icon">${getIcon('x')}</span> ${t('logs.levels.3')}</option>
                             </select>
                             <button class="btn btn-secondary btn-sm" onclick="window.copyLogs()">
-                                📋 ${t('logs.copy')}
+                                <span class="icon">${getIcon('copy')}</span> ${t('logs.copy')}
                             </button>
                             <button class="btn btn-secondary btn-sm" onclick="window.clearLogs()">
-                                🗑️ ${t('logs.clear')}
+                                <span class="icon">${getIcon('trash')}</span> ${t('logs.clear')}
                             </button>
                         </div>
                     </div>
@@ -357,7 +356,7 @@ export function initUI() {
         <div id="endpointModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 id="modalTitle">➕ ${t('modal.addEndpoint')}</h2>
+                    <h2 id="modalTitle"><span class="icon icon-lg">${getIcon('plus')}</span> ${t('modal.addEndpoint')}</h2>
                     <button class="modal-close" onclick="window.closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -430,7 +429,7 @@ export function initUI() {
         <div id="terminalModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>🖥️ ${t('terminal.title')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('terminal')}</span> ${t('terminal.title')}</h2>
                     <button class="modal-close" onclick="window.closeTerminalModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -463,7 +462,7 @@ export function initUI() {
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-primary btn-add-dir" onclick="window.addProjectDir()">
-                        ➕ ${t('terminal.addDir')}
+                        <span class="icon">${getIcon('plus')}</span> ${t('terminal.addDir')}
                     </button>
                 </div>
             </div>
@@ -473,7 +472,7 @@ export function initUI() {
         <div id="sessionModal" class="modal">
             <div class="modal-content session-modal-content">
                 <div class="modal-header">
-                    <h2>📋 ${t('session.title')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('clipboard')}</span> ${t('session.title')}</h2>
                     <button class="modal-close" onclick="window.closeSessionModal()">&times;</button>
                 </div>
                 <div class="modal-body session-modal-body">
@@ -484,7 +483,7 @@ export function initUI() {
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-primary btn-add-dir" onclick="window.confirmSessionSelection()">
-                        ✅ ${t('session.confirmAndReturn')}
+                        <span class="icon">${getIcon('check')}</span> ${t('session.confirmAndReturn')}
                     </button>
                 </div>
             </div>
@@ -494,7 +493,7 @@ export function initUI() {
         <div id="portModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>⚙️ ${t('modal.changePort')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('settings')}</span> ${t('modal.changePort')}</h2>
                     <button class="modal-close" onclick="window.closePortModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -503,7 +502,7 @@ export function initUI() {
                         <input type="number" id="portInput" min="1" max="65535" placeholder="3000">
                     </div>
                     <p style="color: #666; font-size: 14px; margin-top: 10px;">
-                        ⚠️ ${t('modal.portNote')}
+                        <span class="icon">${getIcon('alertTriangle')}</span> ${t('modal.portNote')}
                     </p>
                 </div>
                 <div class="modal-footer">
@@ -517,7 +516,7 @@ export function initUI() {
         <div id="welcomeModal" class="modal">
             <div class="modal-content" style="max-width: min(600px, 90vw);">
                 <div class="modal-header">
-                    <h2>👋 ${t('welcome.title')}</h2>
+                    <h2><span class="icon">${getIcon('wave')}</span> ${t('welcome.title')}</h2>
                     <button class="modal-close" onclick="window.closeWelcomeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -543,13 +542,13 @@ export function initUI() {
 
                     <div style="display: flex; gap: 15px; justify-content: center; margin-top: 20px;">
                         <button class="btn btn-secondary" onclick="window.openArticle()">
-                            ${t('welcome.readArticle')}
+                            <span class="icon">${getIcon('book')}</span> ${t('welcome.readArticle')}
                         </button>
                         <button class="btn btn-secondary" onclick="window.showChangelogModal()">
-                            ${t('welcome.changelog')}
+                            <span class="icon">${getIcon('list')}</span> ${t('welcome.changelog')}
                         </button>
                         <button class="btn btn-secondary check-update-btn" onclick="window.checkForUpdates()">
-                            🔄 ${t('update.checkForUpdates')}
+                            <span class="icon">${getIcon('refresh')}</span> ${t('update.checkForUpdates')}
                             <span class="update-badge" id="checkUpdateBadge"></span>
                         </button>
                     </div>
@@ -568,7 +567,7 @@ export function initUI() {
         <div id="testResultModal" class="modal">
             <div class="modal-content" style="max-width: min(600px, 90vw);">
                 <div class="modal-header">
-                    <h2 id="testResultTitle">🧪 ${t('test.title')}</h2>
+                    <h2 id="testResultTitle"><span class="icon icon-lg">${getIcon('test')}</span> ${t('test.title')}</h2>
                     <button class="modal-close" onclick="window.closeTestResultModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -583,7 +582,7 @@ export function initUI() {
         <div id="changelogModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>📋 ${t('changelog.title')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('clipboard')}</span> ${t('changelog.title')}</h2>
                     <button class="modal-close" onclick="window.closeChangelogModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -596,7 +595,7 @@ export function initUI() {
         <!-- Error Toast -->
         <div id="errorToast" class="error-toast">
             <div class="error-toast-content">
-                <span class="error-toast-icon">⚠️</span>
+                <span class="error-toast-icon">${getIcon('alertTriangle')}</span>
                 <span id="errorToastMessage"></span>
             </div>
         </div>
@@ -649,7 +648,7 @@ export function initUI() {
         <div id="settingsModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>⚙️ ${t('settings.title')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('settings')}</span> ${t('settings.title')}</h2>
                     <button class="modal-close" onclick="window.closeSettingsModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -746,7 +745,7 @@ export function initUI() {
         <div id="autoThemeConfigModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>🌓 ${t('settings.autoThemeConfigTitle')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('moon')}</span> ${t('settings.autoThemeConfigTitle')}</h2>
                     <button class="modal-close" onclick="window.closeAutoThemeConfigModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -793,7 +792,7 @@ export function initUI() {
         <div id="sponsorModal" class="modal">
             <div class="modal-content sponsor-modal-content">
                 <div class="modal-header">
-                    <h2>❤️ ${t('sponsor.title')}</h2>
+                    <h2><span class="icon icon-lg">${getIcon('heart')}</span> ${t('sponsor.title')}</h2>
                     <button class="modal-close" onclick="window.closeSponsorModal()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -806,7 +805,7 @@ export function initUI() {
         <div id="trafficDetailModal" class="modal">
             <div class="modal-content traffic-detail-modal">
                 <div class="modal-header">
-                    <h2>📡 ${t('traffic.detailTitle')}</h2>
+                    <h2><span class="icon">${getIcon('satellite')}</span> ${t('traffic.detailTitle')}</h2>
                     <button class="modal-close" onclick="window.closeTrafficDetailModal()">&times;</button>
                 </div>
                 <div class="modal-body" id="trafficDetailContent">

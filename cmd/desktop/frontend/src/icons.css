@@ -1,0 +1,164 @@
+/* Icon System Styles */
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+  position: relative;
+  top: -0.05em;
+}
+
+.icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Icon sizes */
+.icon-xs {
+  font-size: 12px;
+}
+
+.icon-sm {
+  font-size: 14px;
+}
+
+.icon-md {
+  font-size: 16px;
+}
+
+.icon-lg {
+  font-size: 20px;
+}
+
+.icon-xl {
+  font-size: 24px;
+}
+
+.icon-2xl {
+  font-size: 32px;
+}
+
+/* Icon animations */
+.icon-spin {
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icon-pulse {
+  animation: icon-pulse 2s ease-in-out infinite;
+}
+
+@keyframes icon-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Icon with text spacing */
+.icon + span,
+span + .icon {
+  margin-left: 0.5em;
+}
+
+/* Button icons */
+button .icon {
+  margin-right: 0.5em;
+}
+
+button .icon:last-child:not(:first-child) {
+  margin-right: 0;
+  margin-left: 0.5em;
+}
+
+button .icon:only-child {
+  margin: 0;
+}
+
+/* Header link icons */
+.header-link .icon {
+  font-size: 20px;
+}
+
+/* Stat box icons */
+.stat-label .icon {
+  margin-right: 0.5em;
+  opacity: 0.9;
+}
+
+/* Tab icons */
+.workspace-tab .icon,
+.stats-tab-btn .icon {
+  margin-right: 0.5em;
+  font-size: 16px;
+}
+
+/* Trend icons */
+.trend .icon {
+  font-size: 12px;
+  margin-right: 0.25em;
+}
+
+/* Action button icons */
+.action-btn .icon {
+  font-size: 16px;
+}
+
+/* Modal icons */
+.modal-header .icon {
+  margin-right: 0.75em;
+  font-size: 24px;
+}
+
+/* Endpoint card icons */
+.endpoint-card .icon {
+  font-size: 18px;
+}
+
+/* Status indicators with icons */
+.status-active .icon {
+  color: var(--success-color);
+}
+
+.status-inactive .icon {
+  color: var(--text-tertiary);
+}
+
+.status-error .icon {
+  color: var(--error-color);
+}
+
+/* Icon colors */
+.icon-primary {
+  color: var(--primary-color);
+}
+
+.icon-success {
+  color: var(--success-color);
+}
+
+.icon-warning {
+  color: var(--warning-color);
+}
+
+.icon-error {
+  color: var(--error-color);
+}
+
+.icon-muted {
+  color: var(--text-tertiary);
+}

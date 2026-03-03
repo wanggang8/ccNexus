@@ -173,9 +173,9 @@ func (h *Handler) handleStatsTrends(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, trends)
 }
 
-// getStatsForPeriod retrieves statistics for a date range
+// getStatsForPeriod retrieves statistics for a date range using a single aggregated query
 func (h *Handler) getStatsForPeriod(startDate, endDate string) (map[string]interface{}, error) {
-	allStats, err := h.storage.GetAllStats()
+	endpointStats, err := h.storage.GetPeriodStatsAggregated(startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -184,35 +184,20 @@ func (h *Handler) getStatsForPeriod(startDate, endDate string) (map[string]inter
 	totalErrors := 0
 	var totalInputTokens int64 = 0
 	var totalOutputTokens int64 = 0
-	endpointStats := make(map[string]interface{})
+	epStats := make(map[string]interface{})
 
-	for endpointName, stats := range allStats {
-		epRequests := 0
-		epErrors := 0
-		var epInputTokens int64 = 0
-		var epOutputTokens int64 = 0
-
-		for _, stat := range stats {
-			if stat.Date >= startDate && stat.Date <= endDate {
-				epRequests += stat.Requests
-				epErrors += stat.Errors
-				epInputTokens += int64(stat.InputTokens)
-				epOutputTokens += int64(stat.OutputTokens)
+	for endpointName, stats := range endpointStats {
+		if stats.Requests > 0 {
+			epStats[endpointName] = map[string]interface{}{
+				"requests":     stats.Requests,
+				"errors":       stats.Errors,
+				"inputTokens":  stats.InputTokens,
+				"outputTokens": stats.OutputTokens,
 			}
-		}
-
-		if epRequests > 0 {
-			endpointStats[endpointName] = map[string]interface{}{
-				"requests":     epRequests,
-				"errors":       epErrors,
-				"inputTokens":  epInputTokens,
-				"outputTokens": epOutputTokens,
-			}
-
-			totalRequests += epRequests
-			totalErrors += epErrors
-			totalInputTokens += epInputTokens
-			totalOutputTokens += epOutputTokens
+			totalRequests += stats.Requests
+			totalErrors += stats.Errors
+			totalInputTokens += stats.InputTokens
+			totalOutputTokens += stats.OutputTokens
 		}
 	}
 
@@ -222,7 +207,7 @@ func (h *Handler) getStatsForPeriod(startDate, endDate string) (map[string]inter
 		"totalSuccess":      totalRequests - totalErrors,
 		"totalInputTokens":  totalInputTokens,
 		"totalOutputTokens": totalOutputTokens,
-		"endpoints":         endpointStats,
+		"endpoints":         epStats,
 	}, nil
 }
 

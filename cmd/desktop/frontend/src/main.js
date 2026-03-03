@@ -1,6 +1,8 @@
 import './style.css'
+import './icons.css'
 import './effects/festival-effects.css'
 import '../wailsjs/runtime/runtime.js'
+import { getIcon } from './icons.js'
 import { setLanguage } from './i18n/index.js'
 import { initUI, changeLanguage, switchWorkspaceTab } from './modules/ui.js'
 import { loadConfig } from './modules/config.js'
@@ -15,7 +17,7 @@ import { showSettingsModal, closeSettingsModal, saveSettings, applyTheme, initTh
 import { checkUpdatesOnStartup, checkForUpdates, initUpdateSettings } from './modules/updater.js'
 import { initBroadcast } from './modules/broadcast.js'
 import { initSponsor, showSponsorModal, closeSponsorModal, openSponsorLink } from './modules/sponsor.js'
-import { initTraffic, toggleTrafficRecording, loadTrafficLogs, showTrafficDetail, closeTrafficDetailModal, clearTrafficLogs, filterTrafficByStatus, filterTrafficByEndpoint, switchTrafficTab, toggleJSONNode } from './modules/traffic.js'
+import { initTraffic, toggleTrafficRecording, loadTrafficLogs, showTrafficDetail, closeTrafficDetailModal, clearTrafficLogs, filterTrafficByStatus, filterTrafficByEndpoint, switchTrafficTab, copyTrafficJson } from './modules/traffic.js'
 import {
     showAddEndpointModal,
     editEndpoint,
@@ -49,6 +51,9 @@ import {
 
 // Load data on startup
 window.addEventListener('DOMContentLoaded', async () => {
+    // Prevent transitions on page load
+    document.body.classList.add('preload');
+
     // Wait for Wails runtime to be ready
     while (!window.go) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -158,6 +163,11 @@ window.addEventListener('DOMContentLoaded', async () => {
             window.runtime.WindowHide();
         }
     });
+
+    // Remove preload class after initialization
+    setTimeout(() => {
+        document.body.classList.remove('preload');
+    }, 100);
 });
 
 // Helper function to load config and render endpoints
@@ -169,6 +179,7 @@ async function loadConfigAndRender() {
 }
 
 // Expose functions to window for onclick handlers
+window.getIcon = getIcon;
 window.loadConfig = loadConfigAndRender;
 window.showAddEndpointModal = showAddEndpointModal;
 window.editEndpoint = editEndpoint;
@@ -223,7 +234,7 @@ window.clearTrafficLogs = clearTrafficLogs;
 window.filterTrafficByStatus = filterTrafficByStatus;
 window.filterTrafficByEndpoint = filterTrafficByEndpoint;
 window.switchTrafficTab = switchTrafficTab;
-window.toggleJSONNode = toggleJSONNode;
+window.copyTrafficJson = copyTrafficJson;
 
 // History modal functions
 window.closeHistoryModal = async () => {

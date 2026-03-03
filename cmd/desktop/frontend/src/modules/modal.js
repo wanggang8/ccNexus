@@ -1,4 +1,5 @@
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 import { escapeHtml } from '../utils/format.js';
 import { addEndpoint, updateEndpoint, removeEndpoint, testEndpoint, testEndpointLight, updatePort } from './config.js';
 import { setTestState, clearTestState, saveEndpointTestStatus } from './endpoints.js';
@@ -97,7 +98,7 @@ export function togglePasswordVisibility() {
 // Endpoint Modal
 export function showAddEndpointModal() {
     currentEditIndex = -1;
-    document.getElementById('modalTitle').textContent = '➕ ' + t('modal.addEndpoint');
+    document.getElementById('modalTitle').innerHTML = '<span class="icon">' + getIcon('plus') + '</span> ' + escapeHtml(t('modal.addEndpoint'));
     document.getElementById('endpointName').value = '';
     document.getElementById('endpointUrl').value = '';
     document.getElementById('endpointKey').value = '';
@@ -116,7 +117,7 @@ export async function editEndpoint(index) {
     const config = JSON.parse(configStr);
     const ep = config.endpoints[index];
 
-    document.getElementById('modalTitle').textContent = '✏️ ' + t('modal.editEndpoint');
+    document.getElementById('modalTitle').innerHTML = '<span class="icon">' + getIcon('edit') + '</span> ' + escapeHtml(t('modal.editEndpoint'));
     document.getElementById('endpointName').value = ep.name;
     document.getElementById('endpointUrl').value = ep.apiUrl;
     document.getElementById('endpointKey').value = ep.apiKey;
@@ -254,7 +255,7 @@ export async function fetchModels() {
 
     // Show loading state
     fetchBtn.disabled = true;
-    fetchIcon.textContent = '⏳';
+    fetchIcon.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
 
     try {
         const resultStr = await window.go.main.App.FetchModels(apiUrl, apiKey, transformer);
@@ -515,12 +516,12 @@ export async function testEndpointHandler(index, buttonElement) {
     const moreBtn = endpointItem ? endpointItem.querySelector('[data-action="more"]') : null;
     if (moreBtn) {
         moreBtn.disabled = true;
-        moreBtn.innerHTML = '⏳';
+        moreBtn.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
     }
 
     try {
         buttonElement.disabled = true;
-        buttonElement.innerHTML = '⏳';
+        buttonElement.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
 
         // 使用轻量级测试（优先零消耗方法）
         const result = await testEndpointLight(index);
@@ -529,7 +530,7 @@ export async function testEndpointHandler(index, buttonElement) {
         const resultTitle = document.getElementById('testResultTitle');
 
         if (result.success) {
-            resultTitle.innerHTML = t('test.successTitle');
+            resultTitle.innerHTML = `<span class="icon icon-sm" style="color: var(--success-color)">${getIcon('check')}</span> ${t('test.successTitle')}`;
             resultContent.innerHTML = `
                 <div style="padding: 15px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; margin-bottom: 15px;">
                     <strong style="color: #155724;">${t('test.connectionSuccess')}</strong>
@@ -555,7 +556,7 @@ export async function testEndpointHandler(index, buttonElement) {
             }
             return; // 不显示测试结果弹窗
         } else {
-            resultTitle.innerHTML = t('test.failedTitle');
+            resultTitle.innerHTML = `<span class="icon icon-sm" style="color: var(--danger-color)">${getIcon('x')}</span> ${t('test.failedTitle')}`;
             resultContent.innerHTML = `
                 <div style="padding: 15px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 15px;">
                     <strong style="color: #721c24;">${t('test.connectionFailed')}</strong>
@@ -580,7 +581,7 @@ export async function testEndpointHandler(index, buttonElement) {
         const resultContent = document.getElementById('testResultContent');
         const resultTitle = document.getElementById('testResultTitle');
 
-        resultTitle.innerHTML = t('test.failedTitle');
+        resultTitle.innerHTML = `<span class="icon icon-sm" style="color: var(--danger-color)">${getIcon('x')}</span> ${t('test.failedTitle')}`;
         resultContent.innerHTML = `
             <div style="padding: 15px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 15px;">
                 <strong style="color: #721c24;">${t('test.testError')}</strong>

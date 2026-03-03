@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -283,6 +284,7 @@ func CreateProxyTransport(proxyURL string) (*http.Transport, error) {
 	}
 
 	transport := &http.Transport{
+		TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
 		MaxIdleConns:           100,
 		MaxIdleConnsPerHost:    10,
 		IdleConnTimeout:        90 * time.Second,

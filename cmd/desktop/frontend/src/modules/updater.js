@@ -1,5 +1,6 @@
 import { CheckForUpdates, GetUpdateSettings, SetUpdateSettings, SkipVersion, DownloadUpdate, GetDownloadProgress, CancelDownload, InstallUpdate, ApplyUpdate, SendUpdateNotification } from '../../wailsjs/go/main/App';
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 import { showNotification } from './modal.js';
 
 let downloadInterval = null;
@@ -145,7 +146,7 @@ function showUpdateNotification(info) {
     modal.innerHTML = `
         <div class="modal-content update-modal-content">
             <div class="modal-header">
-                <h2>🎉 ${t('update.newVersionAvailable')}</h2>
+                <h2><span class="icon">${getIcon('party')}</span> ${t('update.newVersionAvailable')}</h2>
                 <button class="modal-close">&times;</button>
             </div>
             <div class="modal-body">
@@ -154,14 +155,14 @@ function showUpdateNotification(info) {
                         <span class="update-version-label">${t('update.currentVersion')}</span>
                         <span class="update-version-value">v${info.currentVersion}</span>
                     </div>
-                    <div class="update-version-arrow">→</div>
+                    <div class="update-version-arrow"><span class="icon">${getIcon('arrowRight')}</span></div>
                     <div class="update-version-item">
                         <span class="update-version-label">${t('update.latestVersion')}</span>
                         <span class="update-version-value update-version-new">${info.latestVersion}</span>
                     </div>
                 </div>
                 <div class="update-release-date">
-                    📅 ${t('update.releaseDate')}: ${info.releaseDate}
+                    <span class="icon">${getIcon('calendar')}</span> ${t('update.releaseDate')}: ${info.releaseDate}
                 </div>
                 <div class="update-changelog">
                     <div class="update-changelog-title">${t('update.changelog')}</div>
@@ -316,7 +317,7 @@ function showInstallButton(filePath) {
 
     progressContainer.innerHTML = `
         <div class="download-complete-row">
-            <p class="success-message">🎉 ${t('update.downloadComplete')}</p>
+            <p class="success-message"><span class="icon">${getIcon('party')}</span> ${t('update.downloadComplete')}</p>
             <button id="btn-install-update" class="btn btn-primary">${btnText}</button>
         </div>
     `;

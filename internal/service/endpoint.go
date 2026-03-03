@@ -188,6 +188,7 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, transf
     apiUrl = normalizeAPIUrl(apiUrl)
 
     endpoints[index] = config.Endpoint{
+        ID:          endpoints[index].ID, // Preserve ID for rename support
         Name:        name,
         APIUrl:      apiUrl,
         APIKey:      apiKey,

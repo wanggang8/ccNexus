@@ -166,10 +166,13 @@
 
 /* Compact View Elements */
 .compact-status {
-    font-size: 16px;
+    font-size: 14px;
     flex-shrink: 0;
-    width: 24px;
+    width: 20px;
     text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .compact-name {

@@ -62,10 +62,15 @@ func main() {
 
     // Initialize and register Web UI (optional plugin)
     // If webui package is not available, this will be skipped at compile time
-    if err := registerWebUI(mux, cfg, p, sqliteStorage); err != nil {
+    uiToken := os.Getenv("CCNEXUS_UI_TOKEN")
+    if err := registerWebUI(mux, cfg, p, sqliteStorage, uiToken); err != nil {
         logger.Warn("Web UI not available: %v", err)
     } else {
-        logger.Info("Web UI available at /ui/")
+        if uiToken != "" {
+            logger.Info("Web UI available at /ui/ (token required)")
+        } else {
+            logger.Info("Web UI available at /ui/")
+        }
     }
 
     errCh := make(chan error, 1)

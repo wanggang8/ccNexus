@@ -84,7 +84,9 @@ func (b *BackupService) backupToLocal(filename string) error {
 
 	finalPath := filepath.Join(dir, filename)
 	tmpPath := finalPath + ".tmp"
-	_ = os.Remove(tmpPath)
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		logger.Warn("Failed to remove temp backup file %s: %v", tmpPath, err)
+	}
 
 	if err := b.storage.CreateBackupCopy(tmpPath); err != nil {
 		logger.Error("Failed to create backup copy: %v", err)
@@ -92,12 +94,16 @@ func (b *BackupService) backupToLocal(filename string) error {
 	}
 
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
+		if rmErr := os.Remove(tmpPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			logger.Warn("Failed to remove temp backup file after rename failure: %v", rmErr)
+		}
 		logger.Error("Failed to rename backup file: %v", err)
 		return fmt.Errorf("backup_write_failed")
 	}
 
-	_ = os.WriteFile(finalPath+".meta.json", nowMeta(b.version), 0644)
+	if err := os.WriteFile(finalPath+".meta.json", nowMeta(b.version), 0644); err != nil {
+		logger.Warn("Failed to write backup metadata: %v", err)
+	}
 	return nil
 }
 
@@ -178,8 +184,12 @@ func (b *BackupService) deleteLocalBackups(filenames []string) error {
 		if name == "" {
 			continue
 		}
-		_ = os.Remove(filepath.Join(dir, name))
-		_ = os.Remove(filepath.Join(dir, name+".meta.json"))
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			logger.Warn("Failed to remove backup file %s: %v", name, err)
+		}
+		if err := os.Remove(filepath.Join(dir, name+".meta.json")); err != nil && !os.IsNotExist(err) {
+			logger.Warn("Failed to remove backup metadata %s: %v", name+".meta.json", err)
+		}
 	}
 	return nil
 }

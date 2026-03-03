@@ -1,7 +1,9 @@
 import { t } from '../i18n/index.js';
 import { formatTokens, maskApiKey } from '../utils/format.js';
+import { getIcon } from '../icons.js';
 import { getEndpointStats } from './stats.js';
 import { toggleEndpoint, testAllEndpointsZeroCost } from './config.js';
+import { showNotification } from './modal.js';
 
 const ENDPOINT_TEST_STATUS_KEY = 'ccNexus_endpointTestStatus';
 const ENDPOINT_VIEW_MODE_KEY = 'ccNexus_endpointViewMode';
@@ -103,7 +105,7 @@ export function clearTestState() {
             const moreBtn = endpointItem.querySelector('[data-action="more"]');
             if (moreBtn) {
                 moreBtn.disabled = false;
-                moreBtn.innerHTML = '⋯';
+                moreBtn.innerHTML = '<span class="icon">' + getIcon('moreHorizontal') + '</span>';
             }
         }
 
@@ -171,33 +173,33 @@ export async function renderEndpoints(endpoints) {
         item.draggable = true;
         item.dataset.name = ep.name;
         item.dataset.index = index;
-        // 获取测试状态：true=成功显示✅，false=失败显示❌，undefined/unknown=未测试/未知显示⚠️
+        // 获取测试状态：true=成功显示check，false=失败显示x，undefined/unknown=未测试/未知显示warning
         const testStatus = getEndpointTestStatus(ep.name);
-        let testStatusIcon = '⚠️';
+        let testStatusIcon = getIcon('warning');
         let testStatusTip = t('endpoints.testTipUnknown');
         if (testStatus === true) {
-            testStatusIcon = '✅';
+            testStatusIcon = getIcon('check');
             testStatusTip = t('endpoints.testTipSuccess');
         } else if (testStatus === false) {
-            testStatusIcon = '❌';
+            testStatusIcon = getIcon('x');
             testStatusTip = t('endpoints.testTipFailed');
         }
 
         item.innerHTML = `
             <div class="endpoint-info">
                 <h3>
-                    <span title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
+                    <span class="icon icon-sm test-status-icon" title="${testStatusTip}" style="cursor: help; margin-right: 4px;">${testStatusIcon}</span>
                     ${ep.name}
                     ${!enabled ? '<span class="disabled-badge">' + t('endpoints.disabled') + '</span>' : ''}
                     ${isCurrentEndpoint ? '<span class="current-badge">' + t('endpoints.current') + '</span>' : ''}
                     ${enabled && !isCurrentEndpoint ? '<button class="btn btn-switch" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : ''}
                 </h3>
-                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">🌐 ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
-                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">🔑 ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
-                <p style="color: #666; font-size: 14px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">🔄 ${t('endpoints.transformer')}: ${transformer}${model ? ` (${model})` : ''}</p>
-                <p style="color: #666; font-size: 14px; margin-top: 3px;">📊 ${t('endpoints.requests')}: ${stats.requests} | ${t('endpoints.errors')}: ${stats.errors}</p>
-                <p style="color: #666; font-size: 14px; margin-top: 3px;">🎯 ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(stats.inputTokens)}, ${t('statistics.out')}: ${formatTokens(stats.outputTokens)})</p>
-                ${ep.remark ? `<p style="color: #888; font-size: 13px; margin-top: 5px; font-style: italic;" title="${ep.remark}">💬 ${ep.remark.length > 20 ? ep.remark.substring(0, 20) + '...' : ep.remark}</p>` : ''}
+                <p class="endpoint-url-line" style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('globe')}</span> ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
+                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('key')}</span> ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
+                <p style="color: #666; font-size: 14px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('refresh')}</span> ${t('endpoints.transformer')}: ${transformer}${model ? ` (${model})` : ''}</p>
+                <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('chart')}</span> ${t('endpoints.requests')}: ${stats.requests} | ${t('endpoints.errors')}: ${stats.errors}</p>
+                <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('target')}</span> ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(stats.inputTokens)}, ${t('statistics.out')}: ${formatTokens(stats.outputTokens)})</p>
+                ${ep.remark ? `<p style="color: #888; font-size: 13px; margin-top: 5px; font-style: italic;" title="${ep.remark}"><span class="icon">${getIcon('comment')}</span> ${ep.remark.length > 20 ? ep.remark.substring(0, 20) + '...' : ep.remark}</p>` : ''}
             </div>
             <div class="endpoint-actions">
                 <label class="toggle-switch">
@@ -218,7 +220,7 @@ export async function renderEndpoints(endpoints) {
 
         if (currentTestIndex === index) {
             testBtn.disabled = true;
-            testBtn.innerHTML = '⏳';
+            testBtn.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
             currentTestButton = testBtn;
         }
 
@@ -259,7 +261,7 @@ export async function renderEndpoints(endpoints) {
                 const name = switchBtn.getAttribute('data-name');
                 try {
                     switchBtn.disabled = true;
-                    switchBtn.innerHTML = '⏳';
+                    switchBtn.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
                     await window.go.main.App.SwitchToEndpoint(name);
                     window.loadConfig(); // Refresh display
                 } catch (error) {
@@ -463,13 +465,13 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName) {
 
         // 获取测试状态
         const testStatus = getEndpointTestStatus(ep.name);
-        let testStatusIcon = '⚠️';
+        let testStatusIcon = getIcon('warning');
         let testStatusTip = t('endpoints.testTipUnknown');
         if (testStatus === true) {
-            testStatusIcon = '✅';
+            testStatusIcon = getIcon('check');
             testStatusTip = t('endpoints.testTipSuccess');
         } else if (testStatus === false) {
-            testStatusIcon = '❌';
+            testStatusIcon = getIcon('x');
             testStatusTip = t('endpoints.testTipFailed');
         }
 
@@ -498,23 +500,24 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName) {
                 <div class="drag-handle-dots"><span></span><span></span></div>
                 <div class="drag-handle-dots"><span></span><span></span></div>
             </div>
-            <span class="compact-status" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
+            <span class="compact-status icon icon-sm" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
             <span class="compact-name" title="${ep.name}">${ep.name}</span>
             ${isCurrentEndpoint ? '<span class="btn btn-primary compact-badge-btn">' + t('endpoints.current') + '</span>' : (enabled ? '<button class="btn btn-primary compact-badge-btn" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : '<span class="btn btn-primary compact-badge-btn compact-badge-disabled">' + t('endpoints.disabled') + '</span>')}
-            <span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon">🌐</span>${displayUrl}</span>
-            <span class="compact-transformer">🔄 ${transformer}</span>
-            <span class="compact-stats" title="${statsTooltip}">📊 ${stats.requests} | 🎯 ${formatTokens(stats.inputTokens + stats.outputTokens)}</span>
+            <span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon"><span class="icon">${getIcon('globe')}</span></span>${displayUrl}</span>
+            <span class="compact-transformer"><span class="icon">${getIcon('refresh')}</span> ${transformer}</span>
+            <span class="compact-stats" title="${statsTooltip}"><span class="icon">${getIcon('chart')}</span> ${stats.requests} | <span class="icon">${getIcon('target')}</span> ${formatTokens(stats.inputTokens + stats.outputTokens)}</span>
             <div class="compact-actions">
                 <label class="toggle-switch">
                     <input type="checkbox" data-index="${index}" ${enabled ? 'checked' : ''}>
                     <span class="toggle-slider"></span>
                 </label>
                 <div class="compact-more-dropdown">
-                    <button class="compact-btn" data-action="more" title="${t('endpoints.moreActions')}">⋯</button>
+                    <button class="compact-btn" data-action="more" title="${t('endpoints.moreActions')}"><span class="icon">${getIcon('moreHorizontal')}</span></button>
                     <div class="compact-more-menu">
-                        <button data-action="test" data-index="${index}">🧪 ${t('endpoints.test')}</button>
-                        <button data-action="edit" data-index="${index}">✏️ ${t('endpoints.edit')}</button>
-                        <button data-action="delete" data-index="${index}" class="danger">🗑️ ${t('endpoints.delete')}</button>
+                        <button data-action="copyUrl" data-index="${index}"><span class="icon">${getIcon('copy')}</span> ${t('endpoints.copyUrl')}</button>
+                        <button data-action="test" data-index="${index}"><span class="icon">${getIcon('flask')}</span> ${t('endpoints.test')}</button>
+                        <button data-action="edit" data-index="${index}"><span class="icon">${getIcon('edit')}</span> ${t('endpoints.edit')}</button>
+                        <button data-action="delete" data-index="${index}" class="danger"><span class="icon">${getIcon('trash')}</span> ${t('endpoints.delete')}</button>
                     </div>
                 </div>
             </div>
@@ -540,13 +543,14 @@ function bindCompactItemEvents(item, index, enabled) {
     const switchBtn = item.querySelector('[data-action="switch"]');
     const moreBtn = item.querySelector('[data-action="more"]');
     const moreMenu = item.querySelector('.compact-more-menu');
+    const copyUrlBtn = item.querySelector('[data-action="copyUrl"]');
     const testBtn = item.querySelector('[data-action="test"]');
     const editBtn = item.querySelector('[data-action="edit"]');
     const deleteBtn = item.querySelector('[data-action="delete"]');
 
     // 如果当前正在测试这个端点，显示加载状态
     if (currentTestIndex === index) {
-        moreBtn.innerHTML = '⏳';
+        moreBtn.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
         moreBtn.disabled = true;
         currentTestButton = testBtn;
     }
@@ -571,7 +575,7 @@ function bindCompactItemEvents(item, index, enabled) {
             const name = switchBtn.getAttribute('data-name');
             try {
                 switchBtn.disabled = true;
-                switchBtn.innerHTML = '⏳';
+                switchBtn.innerHTML = '<span class="icon icon-spin">' + getIcon('loader') + '</span>';
                 await window.go.main.App.SwitchToEndpoint(name);
                 window.loadConfig(); // Refresh display
             } catch (error) {
@@ -585,6 +589,17 @@ function bindCompactItemEvents(item, index, enabled) {
             }
         });
     }
+
+    // 复制地址按钮
+    copyUrlBtn.addEventListener('click', () => {
+        closeAllDropdowns();
+        const urlSpan = item.querySelector('.compact-url');
+        const apiUrl = urlSpan ? urlSpan.getAttribute('title') || '' : '';
+        if (apiUrl) {
+            copyToClipboard(apiUrl, copyUrlBtn);
+            showNotification(t('endpoints.copied'), 'success');
+        }
+    });
 
     // 更多操作按钮
     moreBtn.addEventListener('click', (e) => {

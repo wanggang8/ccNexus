@@ -1,3 +1,5 @@
+import { getIcon } from '../icons.js';
+
 // Configuration management
 export async function loadConfig() {
     try {
@@ -5,7 +7,7 @@ export async function loadConfig() {
             console.error('Not running in Wails environment');
             document.getElementById('endpointList').innerHTML = `
                 <div class="empty-state">
-                    <p>⚠️ Please run this app through Wails</p>
+                    <p><span class="icon">${getIcon('warning')}</span> Please run this app through Wails</p>
                     <p>Use: wails dev or run the built application</p>
                 </div>
             `;

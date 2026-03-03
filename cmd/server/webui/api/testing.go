@@ -113,6 +113,8 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 				},
 			},
 		})
+	case "passthrough":
+		return "", fmt.Errorf("passthrough transformer does not support connectivity test (API format is provider-specific)")
 	default:
 		return "", fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
 	}
@@ -246,7 +248,7 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 		url = fmt.Sprintf("%s/v1/models", apiUrl)
 		authHeader = "Bearer " + apiKey
 	case "claude":
-		// Claude doesn't have a models endpoint, return known models
+		// Claude has no public models list API; return static list (may be outdated)
 		return []string{
 			"claude-3-5-sonnet-20241022",
 			"claude-3-5-haiku-20241022",
@@ -255,7 +257,7 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 			"claude-3-haiku-20240307",
 		}, nil
 	case "gemini":
-		// Gemini models are typically known
+		// Gemini has no standard models list; return static list (may be outdated)
 		return []string{
 			"gemini-pro",
 			"gemini-pro-vision",

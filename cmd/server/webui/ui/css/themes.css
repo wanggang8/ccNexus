@@ -1,18 +1,113 @@
-/* Dark theme */
+/* Dark Theme - Modern & Professional */
 body.dark-theme {
     --primary-color: #60a5fa;
     --primary-hover: #3b82f6;
+    --primary-light: rgba(96, 165, 250, 0.1);
     --success-color: #34d399;
     --danger-color: #f87171;
     --warning-color: #fbbf24;
+    --info-color: #818cf8;
+
     --bg-primary: #1f2937;
     --bg-secondary: #111827;
     --bg-tertiary: #374151;
+    --bg-hover: #2d3748;
+
     --text-primary: #f9fafb;
     --text-secondary: #9ca3af;
+    --text-tertiary: #6b7280;
+
     --border-color: #374151;
+    --border-light: #4b5563;
+
     --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+}
+
+/* Ocean Theme - Calm & Professional */
+body.ocean-theme {
+    --primary-color: #06b6d4;
+    --primary-hover: #0891b2;
+    --primary-light: rgba(6, 182, 212, 0.1);
+    --success-color: #10b981;
+    --danger-color: #ef4444;
+    --warning-color: #f59e0b;
+    --info-color: #3b82f6;
+
+    --bg-primary: #0f172a;
+    --bg-secondary: #020617;
+    --bg-tertiary: #1e293b;
+    --bg-hover: #334155;
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-tertiary: #64748b;
+
+    --border-color: #1e293b;
+    --border-light: #334155;
+
+    --shadow: 0 1px 3px 0 rgba(6, 182, 212, 0.2);
+    --shadow-md: 0 4px 6px -1px rgba(6, 182, 212, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(6, 182, 212, 0.4);
+    --shadow-xl: 0 20px 25px -5px rgba(6, 182, 212, 0.5);
+}
+
+/* Purple Theme - Creative & Modern */
+body.purple-theme {
+    --primary-color: #a855f7;
+    --primary-hover: #9333ea;
+    --primary-light: rgba(168, 85, 247, 0.1);
+    --success-color: #22c55e;
+    --danger-color: #ef4444;
+    --warning-color: #f59e0b;
+    --info-color: #8b5cf6;
+
+    --bg-primary: #1e1b4b;
+    --bg-secondary: #0f0a2e;
+    --bg-tertiary: #312e81;
+    --bg-hover: #3730a3;
+
+    --text-primary: #f5f3ff;
+    --text-secondary: #c4b5fd;
+    --text-tertiary: #a78bfa;
+
+    --border-color: #312e81;
+    --border-light: #4c1d95;
+
+    --shadow: 0 1px 3px 0 rgba(168, 85, 247, 0.2);
+    --shadow-md: 0 4px 6px -1px rgba(168, 85, 247, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(168, 85, 247, 0.4);
+    --shadow-xl: 0 20px 25px -5px rgba(168, 85, 247, 0.5);
+}
+
+/* Green Theme - Fresh & Natural */
+body.green-theme {
+    --primary-color: #10b981;
+    --primary-hover: #059669;
+    --primary-light: rgba(16, 185, 129, 0.1);
+    --success-color: #22c55e;
+    --danger-color: #ef4444;
+    --warning-color: #f59e0b;
+    --info-color: #06b6d4;
+
+    --bg-primary: #064e3b;
+    --bg-secondary: #022c22;
+    --bg-tertiary: #065f46;
+    --bg-hover: #047857;
+
+    --text-primary: #ecfdf5;
+    --text-secondary: #a7f3d0;
+    --text-tertiary: #6ee7b7;
+
+    --border-color: #065f46;
+    --border-light: #047857;
+
+    --shadow: 0 1px 3px 0 rgba(16, 185, 129, 0.2);
+    --shadow-md: 0 4px 6px -1px rgba(16, 185, 129, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(16, 185, 129, 0.4);
+    --shadow-xl: 0 20px 25px -5px rgba(16, 185, 129, 0.5);
 }
 
 /* Dark theme badge adjustments */

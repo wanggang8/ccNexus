@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,6 +58,7 @@ func New(cfg *config.Config, statsStorage StatsStorage, deviceID string) *Proxy 
 	httpClient := &http.Client{
 		Timeout: 300 * time.Second,
 		Transport: &http.Transport{
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
 			MaxIdleConns:           100,
 			MaxIdleConnsPerHost:    10,
 			IdleConnTimeout:        90 * time.Second,
@@ -124,8 +126,11 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux) error {
 	return p.server.ListenAndServe()
 }
 
-// Stop stops the proxy server
+// Stop stops the proxy server and closes idle connections
 func (p *Proxy) Stop() error {
+	if p.httpClient != nil {
+		p.httpClient.CloseIdleConnections()
+	}
 	if p.server != nil {
 		return p.server.Close()
 	}
@@ -589,11 +594,14 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if shouldRetry(resp.StatusCode) {
 			var errBody []byte
 			if resp.Header.Get("Content-Encoding") == "gzip" {
-				errBody, _ = decompressGzip(resp.Body)
+				errBody, err = decompressGzip(resp.Body)
 			} else {
-				errBody, _ = io.ReadAll(resp.Body)
+				errBody, err = io.ReadAll(resp.Body)
 			}
 			resp.Body.Close()
+			if err != nil {
+				logger.Warn("[%s] Failed to read error response body: %v", endpoint.Name, err)
+			}
 			errMsg := string(errBody)
 			if len(errMsg) > 200 {
 				errMsg = errMsg[:200] + "..."
@@ -627,11 +635,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		var respBody []byte
 		if resp.Header.Get("Content-Encoding") == "gzip" {
-			respBody, _ = decompressGzip(resp.Body)
+			respBody, err = decompressGzip(resp.Body)
 		} else {
-			respBody, _ = io.ReadAll(resp.Body)
+			respBody, err = io.ReadAll(resp.Body)
 		}
 		resp.Body.Close()
+		if err != nil {
+			logger.Error("[%s] Failed to read response body: %v", endpoint.Name, err)
+			p.markRequestInactive(endpoint.Name)
+			http.Error(w, "Failed to read upstream response", http.StatusBadGateway)
+			return
+		}
 		p.markRequestInactive(endpoint.Name)
 		// Log non-200 responses for debugging
 		if resp.StatusCode != http.StatusOK {

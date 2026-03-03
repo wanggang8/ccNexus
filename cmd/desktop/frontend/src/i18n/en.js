@@ -3,6 +3,15 @@ export default {
         title: 'ccNexus',
         version: 'Version'
     },
+    sidebar: {
+        dashboard: 'Dashboard',
+        endpoints: 'Endpoints',
+        traffic: 'Traffic',
+        history: 'History',
+        logs: 'Logs',
+        terminal: 'Terminal',
+        hideWindow: 'Hide to Tray'
+    },
     header: {
         title: 'API Endpoint Round-Robin Proxy, Auto-switch to Available Endpoints for Seamless Failover',
         port: 'Port',
@@ -37,12 +46,14 @@ export default {
         testTipSuccess: 'Connection test passed',
         testTipFailed: 'Connection test failed or endpoint does not support API testing',
         testTipUnknown: 'Not tested or test result unknown',
-        expand: 'Expand',
         viewDetail: 'Default Mode',
         viewCompact: 'List Mode',
         dragToReorder: 'Drag to Reorder',
         moreActions: 'More Actions',
-        disabled: 'Off'
+        disabled: 'Off',
+        configFirst: 'Please fill in API URL and key first',
+        fetchFailed: 'Fetch failed: ',
+        copyUrl: 'Copy URL'
     },
     modal: {
         addEndpoint: 'Add Endpoint',
@@ -93,6 +104,8 @@ export default {
         title: 'Logs',
         level: 'Level',
         copy: 'Copy',
+        copyLogs: 'Copy Logs',
+        clearLogs: 'Clear Logs',
         clear: 'Clear',
         collapse: 'Collapse',
         expand: 'Expand',
@@ -108,8 +121,8 @@ export default {
         testing: 'Testing...',
         success: 'Success',
         failed: 'Failed',
-        successTitle: '✅ Test Successful',
-        failedTitle: '❌ Test Failed',
+        successTitle: 'Test Successful',
+        failedTitle: 'Test Failed',
         connectionSuccess: 'Connection successful!',
         connectionFailed: 'Connection failed',
         testError: 'Test error',
@@ -117,7 +130,7 @@ export default {
     },
     welcome: {
         title: 'Welcome to ccNexus!',
-        titleWithVersion: '👋 Welcome to ccNexus v{version}',
+        titleWithVersion: 'Welcome to ccNexus v{version}',
         message: 'ccNexus is a smart API endpoint round-robin proxy for Claude Code',
         features: 'Features',
         feature1: 'Automatic failover between multiple API endpoints',
@@ -129,9 +142,9 @@ export default {
         qrCodeTip: 'Scan to follow the official account for more',
         chatGroupTip: 'Join the group for feedback, learning and discussion',
         chatGroupFallbackTip: 'Scan to contact, please note "join group"',
-        readArticle: '📖 Read Introduction',
-        githubRepo: '🔗 GitHub Repository',
-        changelog: '📋 Changelog'
+        readArticle: 'Read Introduction',
+        githubRepo: 'GitHub Repository',
+        changelog: 'Changelog'
     },
     changelog: {
         title: 'Changelog',
@@ -498,11 +511,19 @@ export default {
         delete: 'Delete',
         confirmDeleteTitle: 'Confirm Deletion',
         close: 'Close',
-        retry: 'Retry'
+        retry: 'Retry',
+        loading: 'Loading...',
+        success: 'Success'
+    },
+    quit: {
+        title: 'Quit Confirmation',
+        message: 'Are you sure you want to quit ccNexus?',
+        minimize: 'Minimize',
+        quit: 'Quit'
     },
     sponsor: {
-        ribbon: '❤️SPN',
-        ribbonTip: '❤️Click to support the author',
+        ribbon: 'SPN',
+        ribbonTip: 'Click to support the author',
         title: 'Support the Author'
     },
     traffic: {
@@ -512,6 +533,8 @@ export default {
         startRecording: 'Start Recording',
         stopRecording: 'Stop Recording',
         clear: 'Clear',
+        clearLogs: 'Clear Logs',
+        confirmClear: 'Are you sure you want to clear all traffic logs?',
         noLogs: 'No requests recorded. Click "Start Recording" to capture requests.',
         filterAll: 'All',
         filterErrors: 'Errors Only',
@@ -527,11 +550,18 @@ export default {
         truncated: 'Truncated',
         in: 'In',
         out: 'Out',
+        detail: 'Request Details',
         detailTitle: 'Request Details',
         originalRequest: 'Original Request',
         transformedRequest: 'Transformed Request',
         originalResponse: 'Original Response',
         transformedResponse: 'Transformed Response',
+        copyJson: 'Copy',
+        copied: 'Copied',
+        expandAll: 'Expand All',
+        collapseAll: 'Collapse All',
+        treeView: 'Tree',
+        sourceView: 'Source',
     },
     tips: [
         'Tip: Enable multiple API endpoints for automatic failover',

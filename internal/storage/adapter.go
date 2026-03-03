@@ -22,6 +22,7 @@ func (a *ConfigStorageAdapter) GetEndpoints() ([]config.StorageEndpoint, error) 
 	result := make([]config.StorageEndpoint, len(endpoints))
 	for i, ep := range endpoints {
 		result[i] = config.StorageEndpoint{
+			ID:          ep.ID,
 			Name:        ep.Name,
 			APIUrl:      ep.APIUrl,
 			APIKey:      ep.APIKey,
@@ -53,6 +54,7 @@ func (a *ConfigStorageAdapter) SaveEndpoint(ep *config.StorageEndpoint) error {
 // UpdateEndpoint updates an endpoint
 func (a *ConfigStorageAdapter) UpdateEndpoint(ep *config.StorageEndpoint) error {
 	endpoint := &Endpoint{
+		ID:          ep.ID,
 		Name:        ep.Name,
 		APIUrl:      ep.APIUrl,
 		APIKey:      ep.APIKey,

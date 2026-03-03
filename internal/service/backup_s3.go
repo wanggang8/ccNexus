@@ -189,7 +189,9 @@ func (b *BackupService) backupToS3(filename string) error {
 	}
 
 	metaPath := filepath.Join(tmpDir, "backup.meta.json")
-	_ = os.WriteFile(metaPath, nowMeta(b.version), 0644)
+	if err := os.WriteFile(metaPath, nowMeta(b.version), 0644); err != nil {
+		logger.Warn("Failed to write S3 backup metadata: %v", err)
+	}
 	if _, err := client.FPutObject(ctx, cfg.Bucket, objectKey+".meta.json", metaPath, minio.PutObjectOptions{ContentType: "application/json"}); err != nil {
 		logger.Warn("Failed to upload S3 metadata: %v", err)
 	}

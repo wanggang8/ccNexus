@@ -34,6 +34,10 @@ export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
 
+export function ClearTrafficLogs() {
+  return window['go']['main']['App']['ClearTrafficLogs']();
+}
+
 export function DeleteArchive(arg1) {
   return window['go']['main']['App']['DeleteArchive'](arg1);
 }
@@ -198,6 +202,14 @@ export function GetThemeAuto() {
   return window['go']['main']['App']['GetThemeAuto']();
 }
 
+export function GetTrafficLogDetail(arg1) {
+  return window['go']['main']['App']['GetTrafficLogDetail'](arg1);
+}
+
+export function GetTrafficLogs(arg1) {
+  return window['go']['main']['App']['GetTrafficLogs'](arg1);
+}
+
 export function GetUpdateSettings() {
   return window['go']['main']['App']['GetUpdateSettings']();
 }
@@ -212,6 +224,10 @@ export function HideWindow() {
 
 export function InstallUpdate(arg1) {
   return window['go']['main']['App']['InstallUpdate'](arg1);
+}
+
+export function IsTrafficRecording() {
+  return window['go']['main']['App']['IsTrafficRecording']();
 }
 
 export function LaunchCodexSessionTerminal(arg1, arg2) {
@@ -324,6 +340,10 @@ export function SetTheme(arg1) {
 
 export function SetThemeAuto(arg1) {
   return window['go']['main']['App']['SetThemeAuto'](arg1);
+}
+
+export function SetTrafficRecording(arg1) {
+  return window['go']['main']['App']['SetTrafficRecording'](arg1);
 }
 
 export function SetUpdateSettings(arg1, arg2) {
