@@ -17,6 +17,13 @@ const testClientTimeout = 8 * time.Second
 
 // testEndpoint tests an endpoint's connectivity using tiered strategy (matches Desktop TestEndpointLight)
 func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
@@ -390,46 +397,32 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fetchModelsFromProvider fetches available models from a provider
+// fetchModelsFromProvider fetches available models from a provider (matches Desktop FetchModels)
 func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([]string, error) {
-	var url string
-	var authHeader string
+	normalizedURL := normalizeAPIUrl(apiUrl)
+	if !strings.HasPrefix(normalizedURL, "http://") && !strings.HasPrefix(normalizedURL, "https://") {
+		normalizedURL = "https://" + normalizedURL
+	}
 
 	switch transformer {
-	case "openai", "openai2":
-		url = fmt.Sprintf("%s/v1/models", apiUrl)
-		authHeader = "Bearer " + apiKey
-	case "claude":
-		// Claude has no public models list API; return static list (may be outdated)
-		return []string{
-			"claude-3-5-sonnet-20241022",
-			"claude-3-5-haiku-20241022",
-			"claude-3-opus-20240229",
-			"claude-3-sonnet-20240229",
-			"claude-3-haiku-20240307",
-		}, nil
+	case "claude", "openai", "openai2":
+		return h.fetchOpenAIModels(normalizedURL, apiKey)
 	case "gemini":
-		// Gemini has no standard models list; return static list (may be outdated)
-		return []string{
-			"gemini-pro",
-			"gemini-pro-vision",
-			"gemini-ultra",
-		}, nil
+		return h.fetchGeminiModels(normalizedURL, apiKey)
 	default:
 		return nil, fmt.Errorf("unsupported transformer: %s", transformer)
 	}
+}
 
+func (h *Handler) fetchOpenAIModels(apiUrl, apiKey string) ([]string, error) {
+	url := fmt.Sprintf("%s/v1/models", apiUrl)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	req.Header.Set("Authorization", authHeader)
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -446,15 +439,57 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
 
+	seen := make(map[string]bool)
 	models := make([]string, 0, len(result.Data))
-	for _, model := range result.Data {
-		models = append(models, model.ID)
+	for _, m := range result.Data {
+		id := strings.TrimSpace(m.ID)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			models = append(models, id)
+		}
+	}
+	return models, nil
+}
+
+func (h *Handler) fetchGeminiModels(apiUrl, apiKey string) ([]string, error) {
+	url := fmt.Sprintf("%s/v1beta/models?key=%s", apiUrl, apiKey)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
 	}
 
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]string, 0, len(result.Models))
+	for _, m := range result.Models {
+		name := m.Name
+		if strings.HasPrefix(name, "models/") {
+			name = strings.TrimPrefix(name, "models/")
+		}
+		models = append(models, name)
+	}
 	return models, nil
 }
