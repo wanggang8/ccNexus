@@ -37,7 +37,6 @@ class APIClient {
             // Return data field if it exists, otherwise return the whole result
             return result.data !== undefined ? result.data : result;
         } catch (error) {
-            console.error(`API Error [${method} ${path}]:`, error);
             throw error;
         }
     }

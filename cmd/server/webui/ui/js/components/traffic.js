@@ -148,7 +148,7 @@ class Traffic {
                 select.appendChild(option);
             });
         } catch (error) {
-            console.error('Failed to load endpoints:', error);
+            notifications.error('Failed to load endpoints: ' + error.message);
         }
     }
 

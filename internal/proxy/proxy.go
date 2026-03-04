@@ -354,7 +354,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Write full request body to debug.log file only
 	if len(bodyBytes) == 0 {
 		logger.DebugLog("Request body is EMPTY")
-		logger.Warn("Received empty request body for %s %s", r.Method, r.URL.Path)
 	} else {
 		logger.DebugLog("Request body: %s", string(bodyBytes))
 	}
@@ -400,9 +399,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for transformer error
-			// Make a copy of bodyBytes to avoid reference issues
-			bodyCopy := make([]byte, len(bodyBytes))
-			copy(bodyCopy, bodyBytes)
 			p.trafficRecorder.Record(&TrafficLog{
 				Timestamp:       startTime,
 				EndpointName:    endpoint.Name,
@@ -411,7 +407,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				Path:            r.URL.Path,
 				Duration:        time.Since(startTime),
 				Error:           err.Error(),
-				OriginalRequest: bodyCopy,
+				OriginalRequest: bodyBytes,
 			})
 
 			if endpointAttempts >= 2 {
