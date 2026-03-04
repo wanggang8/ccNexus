@@ -100,8 +100,8 @@ func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (stri
 		return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
 	}
 
-	// Step 2: Try token count (Claude) or billing API (OpenAI)
-	if transformer == "claude" {
+	// Step 2: Try token count (Claude/CLI) or billing API (OpenAI)
+	if transformer == "claude" || transformer == "cli" {
 		statusCode, err = h.testTokenCountAPI(client, apiUrl, apiKey)
 		if err == nil {
 			return "Token count API accessible", nil
@@ -273,7 +273,7 @@ func (h *Handler) testMinimalRequest(client *http.Client, apiUrl, apiKey, transf
 	var body []byte
 
 	switch transformer {
-	case "claude":
+	case "claude", "cli":
 		url = fmt.Sprintf("%s/v1/messages", apiUrl)
 		if model == "" {
 			model = "claude-sonnet-4-5-20250929"
@@ -322,7 +322,7 @@ func (h *Handler) testMinimalRequest(client *http.Client, apiUrl, apiKey, transf
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if transformer == "claude" {
+	if transformer == "claude" || transformer == "cli" {
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else if transformer != "gemini" {
@@ -405,7 +405,7 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 	}
 
 	switch transformer {
-	case "claude", "openai", "openai2":
+	case "claude", "openai", "openai2", "cli":
 		return h.fetchOpenAIModels(normalizedURL, apiKey)
 	case "gemini":
 		return h.fetchGeminiModels(normalizedURL, apiKey)

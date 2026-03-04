@@ -25,17 +25,22 @@ func (h *Handler) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
 // handleEndpointByName handles GET, PUT, DELETE, PATCH for specific endpoint
 func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
-	// Extract endpoint name from path
+	// Extract endpoint name from path (name may contain "/", so use full path for CRUD)
 	path := strings.TrimPrefix(r.URL.Path, "/api/endpoints/")
-	parts := strings.Split(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	parts := strings.SplitN(path, "/", 2) // at most 2: name, optional subpath
 	if len(parts) == 0 || parts[0] == "" {
 		WriteError(w, http.StatusBadRequest, "Endpoint name required")
 		return
 	}
 
 	name := parts[0]
+	subpath := ""
+	if len(parts) > 1 {
+		subpath = parts[1]
+	}
 
-	// Handle export/import
+	// Handle export/import (exact path)
 	if name == "export" {
 		h.exportEndpoints(w, r)
 		return
@@ -45,16 +50,19 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle /test and /toggle sub-paths
-	if len(parts) > 1 {
-		switch parts[1] {
-		case "test":
-			h.testEndpoint(w, r, name)
-			return
-		case "toggle":
-			h.toggleEndpoint(w, r, name)
-			return
-		}
+	// Handle /test and /toggle sub-paths (only when subpath is exactly "test" or "toggle")
+	if subpath == "test" {
+		h.testEndpoint(w, r, name)
+		return
+	}
+	if subpath == "toggle" {
+		h.toggleEndpoint(w, r, name)
+		return
+	}
+
+	// CRUD: name is the full path so that names containing "/" work
+	if subpath != "" {
+		name = path
 	}
 
 	switch r.Method {
