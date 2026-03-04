@@ -219,8 +219,15 @@ func (s *SQLiteStorage) DeleteEndpoint(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`DELETE FROM endpoints WHERE name=?`, name)
-	return err
+	result, err := s.db.Exec(`DELETE FROM endpoints WHERE name=?`, name)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrEndpointNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStorage) RecordDailyStat(stat *DailyStat) error {

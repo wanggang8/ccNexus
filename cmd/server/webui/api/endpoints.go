@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -63,6 +65,10 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 	// CRUD: name is the full path so that names containing "/" work
 	if subpath != "" {
 		name = path
+	}
+	// Decode URL-encoded name (e.g. "https%3A%2F%2Fapi.example.com" -> "https://api.example.com")
+	if decoded, err := url.PathUnescape(name); err == nil {
+		name = decoded
 	}
 
 	switch r.Method {
@@ -264,6 +270,10 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 // deleteEndpoint deletes an endpoint
 func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request, name string) {
 	if err := h.storage.DeleteEndpoint(name); err != nil {
+		if errors.Is(err, storage.ErrEndpointNotFound) {
+			WriteError(w, http.StatusNotFound, "Endpoint not found")
+			return
+		}
 		logger.Error("Failed to delete endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to delete endpoint")
 		return

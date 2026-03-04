@@ -1,6 +1,12 @@
 package storage
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrEndpointNotFound is returned when an endpoint is not found by name (e.g. delete/update).
+var ErrEndpointNotFound = errors.New("endpoint not found")
 
 type Endpoint struct {
 	ID          int64     `json:"id"`
