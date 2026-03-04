@@ -2,6 +2,7 @@ package convert
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
@@ -333,6 +334,33 @@ func TestClaudeStreamToOpenAI_InvalidSSE(t *testing.T) {
 	// Invalid SSE should return nil (graceful handling)
 	if result != nil {
 		t.Errorf("Expected nil for invalid SSE, got %v", result)
+	}
+}
+
+// TestClaudeStreamToOpenAI_DataOnlyFormat verifies handling of SSE without event: line
+// (some third-party APIs return data: {"type":"content_block_delta",...} only)
+func TestClaudeStreamToOpenAI_DataOnlyFormat(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+
+	// Format: data-only, type in JSON, Unicode in text
+	claudeEvent := `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\u5e76\u4e14\u6709"}}
+
+`
+
+	result, err := ClaudeStreamToOpenAI([]byte(claudeEvent), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected non-nil result for data-only format with type in JSON")
+	}
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "并且有") {
+		t.Errorf("Expected Unicode text '并且有' in result, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "chat.completion.chunk") {
+		t.Errorf("Expected OpenAI chunk format, got '%s'", resultStr)
 	}
 }
 

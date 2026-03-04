@@ -327,6 +327,13 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 		return nil, nil
 	}
 
+	// Fallback: some APIs return type in JSON payload without event: line
+	if eventType == "" {
+		if t, ok := data["type"].(string); ok {
+			eventType = t
+		}
+	}
+
 	switch eventType {
 	case "content_block_delta":
 		delta, ok := data["delta"].(map[string]interface{})

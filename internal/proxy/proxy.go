@@ -318,13 +318,14 @@ const (
 	ClientFormatOpenAIResponses ClientFormat = "openai_responses" // Codex (responses): /v1/responses
 )
 
-// detectClientFormat identifies the client format based on request path
+// detectClientFormat identifies the client format based on request path.
+// Uses Contains so that paths with a prefix (e.g. reverse proxy /ccnexus/v1/chat/completions) are still detected correctly.
 func detectClientFormat(path string) ClientFormat {
 	var format ClientFormat
 	switch {
-	case strings.HasPrefix(path, "/v1/chat/completions") || strings.HasPrefix(path, "/chat/completions"):
+	case strings.Contains(path, "/v1/chat/completions") || strings.Contains(path, "/chat/completions"):
 		format = ClientFormatOpenAIChat
-	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses"):
+	case strings.Contains(path, "/v1/responses") || strings.Contains(path, "/responses"):
 		format = ClientFormatOpenAIResponses
 	default:
 		format = ClientFormatClaude
