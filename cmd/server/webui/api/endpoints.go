@@ -27,9 +27,8 @@ func (h *Handler) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
 // handleEndpointByName handles GET, PUT, DELETE, PATCH for specific endpoint
 func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
-	// Extract endpoint name from path (name may contain "/", so use full path for CRUD)
+	// Extract endpoint name from path (name may contain "/" or trailing "/", so preserve path as-is)
 	path := strings.TrimPrefix(r.URL.Path, "/api/endpoints/")
-	path = strings.TrimSuffix(path, "/")
 	parts := strings.SplitN(path, "/", 2) // at most 2: name, optional subpath
 	if len(parts) == 0 || parts[0] == "" {
 		WriteError(w, http.StatusBadRequest, "Endpoint name required")
