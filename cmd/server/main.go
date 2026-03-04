@@ -9,6 +9,7 @@ import (
     "strconv"
     "syscall"
 
+    "github.com/lich0821/ccNexus/cmd/server/webui/api"
     "github.com/lich0821/ccNexus/internal/config"
     "github.com/lich0821/ccNexus/internal/logger"
     "github.com/lich0821/ccNexus/internal/proxy"
@@ -75,7 +76,7 @@ func main() {
 
     errCh := make(chan error, 1)
     go func() {
-        errCh <- p.StartWithMux(mux)
+        errCh <- p.StartWithMux(mux, api.CORSMiddleware)
     }()
 
     logger.Info("ccNexus headless API listening on :%d (data dir: %s, db: %s)", cfg.GetPort(), dataDir, dbPath)

@@ -88,6 +88,7 @@ func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (stri
 	if err == nil {
 		return "Models API accessible", nil
 	}
+	logger.Debug("Test step 1 (models API) failed: %v (status %d)", err, statusCode)
 	if statusCode == 401 || statusCode == 403 {
 		return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
 	}
@@ -98,6 +99,7 @@ func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (stri
 		if err == nil {
 			return "Token count API accessible", nil
 		}
+		logger.Debug("Test step 2 (token count) failed: %v (status %d)", err, statusCode)
 		if statusCode == 401 || statusCode == 403 {
 			return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
 		}
@@ -106,6 +108,7 @@ func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (stri
 		if err == nil {
 			return "Billing API accessible", nil
 		}
+		logger.Debug("Test step 2 (billing) failed: %v (status %d)", err, statusCode)
 		if statusCode == 401 || statusCode == 403 {
 			return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
 		}
@@ -116,13 +119,42 @@ func (h *Handler) runTieredTest(apiUrl, apiKey, transformer, model string) (stri
 	if err == nil {
 		return "Minimal request successful", nil
 	}
+	logger.Debug("Test step 3 (minimal request) failed: %v (status %d)", err, statusCode)
 	if statusCode == 401 || statusCode == 403 {
 		return "", fmt.Errorf("authentication failed: HTTP %d", statusCode)
 	}
 	if statusCode == 405 {
 		return "", fmt.Errorf("method not allowed (may work in real client)")
 	}
+	// Extract user-friendly message from JSON error body when possible
+	if statusCode >= 400 && statusCode < 600 {
+		if friendly := extractErrorMessage(err.Error()); friendly != "" {
+			return "", fmt.Errorf("%s", friendly)
+		}
+	}
 	return "", err
+}
+
+// extractErrorMessage tries to extract error.message from JSON in "API returned status N: {...}" format
+func extractErrorMessage(errStr string) string {
+	idx := strings.Index(errStr, ": ")
+	if idx < 0 {
+		return ""
+	}
+	jsonPart := strings.TrimSpace(errStr[idx+2:])
+	if len(jsonPart) == 0 || (jsonPart[0] != '{' && jsonPart[0] != '[') {
+		return ""
+	}
+	var v map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonPart), &v); err != nil {
+		return ""
+	}
+	if errObj, ok := v["error"].(map[string]interface{}); ok {
+		if msg, ok := errObj["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func (h *Handler) testModelsAPI(client *http.Client, apiUrl, apiKey, transformer string) (int, error) {
