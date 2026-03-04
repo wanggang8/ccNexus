@@ -4,6 +4,7 @@ import { dashboard } from './components/dashboard.js';
 import { endpoints } from './components/endpoints.js';
 import { stats } from './components/stats.js';
 import { testing } from './components/testing.js';
+import { traffic } from './components/traffic.js';
 import { icons, getIcon } from './icons.js';
 import { api, AUTH_TOKEN_KEY } from './api.js';
 
@@ -128,6 +129,7 @@ async function init() {
     router.register('endpoints', endpoints);
     router.register('stats', stats);
     router.register('testing', testing);
+    router.register('traffic', traffic);
 
     // Initialize icons
     initIcons();

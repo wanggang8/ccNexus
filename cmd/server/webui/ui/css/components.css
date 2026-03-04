@@ -425,3 +425,184 @@
 .table tbody tr[draggable="true"]:active {
     cursor: grabbing;
 }
+
+/* Traffic logs */
+.traffic-logs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.traffic-log-item {
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.traffic-log-item:hover {
+    background-color: var(--bg-secondary);
+    border-color: var(--primary-color);
+}
+
+.traffic-log-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.traffic-log-time {
+    color: var(--text-secondary);
+    min-width: 150px;
+}
+
+.traffic-log-endpoint {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.traffic-log-format {
+    padding: 0.125rem 0.5rem;
+    background-color: var(--bg-tertiary);
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+}
+
+.traffic-log-status {
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+
+.traffic-log-status.status-success {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.traffic-log-status.status-error {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.traffic-log-duration {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.traffic-log-details {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.traffic-log-error {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #fee2e2;
+    color: #991b1b;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+}
+
+.traffic-detail {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.traffic-detail-section {
+    margin-bottom: 1.5rem;
+}
+
+.traffic-detail-section h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: var(--text-primary);
+}
+
+.detail-table {
+    width: 100%;
+    font-size: 0.875rem;
+}
+
+.detail-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.detail-table td:first-child {
+    font-weight: 600;
+    width: 150px;
+    color: var(--text-secondary);
+}
+
+.modal-lg {
+    max-width: 900px;
+}
+
+.recording-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.25rem;
+    background-color: var(--bg-tertiary);
+    font-weight: 500;
+}
+
+.recording-status.recording {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.recording-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-secondary);
+}
+
+.recording-status.recording .recording-dot {
+    background-color: #dc2626;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.error-block {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.form-select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.form-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.form-select-sm {
+    padding: 0.375rem 0.5rem;
+    font-size: 0.8125rem;
+}

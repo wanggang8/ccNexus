@@ -65,4 +65,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Real-time events
 	mux.HandleFunc("/api/events", h.authWrap(h.handleEvents))
+
+	// Traffic logs
+	mux.HandleFunc("/api/traffic/logs", h.authWrap(h.handleTrafficLogs))
+	mux.HandleFunc("/api/traffic/recording", h.authWrap(h.handleTrafficRecording))
+	mux.HandleFunc("/api/traffic/clear", h.authWrap(h.handleTrafficClear))
 }

@@ -154,6 +154,31 @@ class APIClient {
         const data = await res.json();
         return { ok: res.ok, ...data };
     }
+
+    // Traffic logs
+    async getTrafficLogs(filter = {}) {
+        const params = new URLSearchParams();
+        if (filter.endpoint) params.append('endpoint', filter.endpoint);
+        if (filter.format) params.append('format', filter.format);
+        if (filter.status) params.append('status', filter.status);
+        if (filter.error !== undefined) params.append('error', filter.error);
+        if (filter.limit) params.append('limit', filter.limit);
+        
+        const query = params.toString();
+        return this.request('GET', `/traffic/logs${query ? '?' + query : ''}`);
+    }
+
+    async getTrafficLogDetail(id) {
+        return this.request('GET', `/traffic/logs?id=${encodeURIComponent(id)}`);
+    }
+
+    async setTrafficRecording(enabled) {
+        return this.request('POST', '/traffic/recording', { enabled });
+    }
+
+    async clearTrafficLogs() {
+        return this.request('DELETE', '/traffic/clear');
+    }
 }
 
 export const api = new APIClient();
