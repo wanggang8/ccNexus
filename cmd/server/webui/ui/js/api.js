@@ -34,7 +34,11 @@ class APIClient {
                 throw new Error(result.error || 'Request failed');
             }
 
-            return result.data || result;
+            // Log API responses for debugging
+            console.log(`API Response [${method} ${path}]:`, result);
+            
+            // Return data field if it exists, otherwise return the whole result
+            return result.data !== undefined ? result.data : result;
         } catch (error) {
             console.error(`API Error [${method} ${path}]:`, error);
             throw error;

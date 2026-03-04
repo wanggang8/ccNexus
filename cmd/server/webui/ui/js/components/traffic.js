@@ -139,12 +139,14 @@ class Traffic {
     async loadLogs() {
         try {
             const data = await api.getTrafficLogs(this.filter);
+            console.log('Traffic logs response:', data);
             this.logs = data.logs || [];
-            this.recording = data.recording || false;
+            this.recording = data.recording !== undefined ? data.recording : false;
             this.updateRecordingButton();
             this.updateStats(data);
             this.renderLogs();
         } catch (error) {
+            console.error('Failed to load traffic logs:', error);
             notifications.error('Failed to load traffic logs: ' + error.message);
         }
     }
@@ -167,10 +169,12 @@ class Traffic {
 
     updateStats(data) {
         const statsEl = document.getElementById('traffic-stats');
+        const total = data.total !== undefined ? data.total : 0;
+        const count = data.count !== undefined ? data.count : 0;
         statsEl.innerHTML = `
             <div class="flex gap-3 text-sm">
-                <span><strong>Total:</strong> ${data.total || 0}</span>
-                <span><strong>Filtered:</strong> ${data.count || 0}</span>
+                <span><strong>Total:</strong> ${total}</span>
+                <span><strong>Filtered:</strong> ${count}</span>
                 <span class="recording-status ${this.recording ? 'recording' : ''}">
                     <span class="recording-dot"></span>
                     ${this.recording ? 'Recording' : 'Not Recording'}
@@ -336,11 +340,17 @@ class Traffic {
     async toggleRecording() {
         try {
             const newState = !this.recording;
-            await api.setTrafficRecording(newState);
-            this.recording = newState;
+            console.log('Toggling recording to:', newState);
+            const result = await api.setTrafficRecording(newState);
+            console.log('Toggle recording response:', result);
+            // Use server's confirmed state instead of assuming success
+            this.recording = result.recording !== undefined ? result.recording : newState;
             this.updateRecordingButton();
-            notifications.success(`Recording ${newState ? 'enabled' : 'disabled'}`);
+            notifications.success(`Recording ${this.recording ? 'enabled' : 'disabled'}`);
+            // Refresh logs to sync state and show any new logs
+            await this.loadLogs();
         } catch (error) {
+            console.error('Failed to toggle recording:', error);
             notifications.error('Failed to toggle recording: ' + error.message);
         }
     }
