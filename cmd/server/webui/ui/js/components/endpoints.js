@@ -374,7 +374,7 @@ class Endpoints {
                                     <option value="openai" ${endpoint?.transformer === 'openai' ? 'selected' : ''}>OpenAI</option>
                                     <option value="openai2" ${endpoint?.transformer === 'openai2' ? 'selected' : ''}>OpenAI Responses</option>
                                     <option value="gemini" ${endpoint?.transformer === 'gemini' ? 'selected' : ''}>Gemini</option>
-                                    <option value="deepseek" ${endpoint?.transformer === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+                                    <option value="cli" ${endpoint?.transformer === 'cli' ? 'selected' : ''}>Claude CLI</option>
                                 </select>
                             </div>
                             <div class="form-group">
