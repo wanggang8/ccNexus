@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { notifications } from '../utils/notifications.js';
 import { formatNumber, formatTokens } from '../utils/formatters.js';
+import { getIcon } from '../icons.js';
 
 class Stats {
     constructor() {
@@ -65,20 +66,40 @@ class Stats {
         container.innerHTML = `
             <div class="grid grid-cols-4 mb-4">
                 <div class="stat-card">
-                    <div class="stat-label">Total Requests</div>
-                    <div class="stat-value">${formatNumber(stats.totalRequests || 0)}</div>
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">
+                        <span class="icon">${getIcon('activity')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Total Requests</div>
+                        <div class="stat-value">${formatNumber(stats.totalRequests || 0)}</div>
+                    </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Successful</div>
-                    <div class="stat-value">${formatNumber(stats.totalSuccess || 0)}</div>
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                        <span class="icon">${getIcon('checkCircle')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Successful</div>
+                        <div class="stat-value">${formatNumber(stats.totalSuccess || 0)}</div>
+                    </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Errors</div>
-                    <div class="stat-value">${formatNumber(stats.totalErrors || 0)}</div>
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);">
+                        <span class="icon">${getIcon('alert-circle')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Errors</div>
+                        <div class="stat-value">${formatNumber(stats.totalErrors || 0)}</div>
+                    </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Total Tokens</div>
-                    <div class="stat-value">${formatTokens((stats.totalInputTokens || 0) + (stats.totalOutputTokens || 0))}</div>
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);">
+                        <span class="icon">${getIcon('hash')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Total Tokens</div>
+                        <div class="stat-value">${formatTokens((stats.totalInputTokens || 0) + (stats.totalOutputTokens || 0))}</div>
+                    </div>
                 </div>
             </div>
 
@@ -115,11 +136,16 @@ class Stats {
                     <tbody>
                         ${endpointNames.map(name => {
                             const ep = endpoints[name];
+                            const requests = ep.requests || 0;
+                            const errors = ep.errors || 0;
+                            const errorRate = requests > 0 ? errors / requests : 0;
+                            const highError = errorRate >= 0.05 && errors >= 5;
+                            const rowClass = highError ? 'stats-endpoint-row-high-error' : '';
                             return `
-                                <tr>
+                                <tr class="${rowClass}">
                                     <td><strong>${this.escapeHtml(name)}</strong></td>
-                                    <td>${formatNumber(ep.requests || 0)}</td>
-                                    <td>${formatNumber(ep.errors || 0)}</td>
+                                    <td>${formatNumber(requests)}</td>
+                                    <td>${formatNumber(errors)}</td>
                                     <td>${formatTokens(ep.inputTokens || 0)}</td>
                                     <td>${formatTokens(ep.outputTokens || 0)}</td>
                                 </tr>

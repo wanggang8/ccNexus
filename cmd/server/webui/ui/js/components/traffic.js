@@ -50,9 +50,20 @@ class Traffic {
 
                 <!-- Filters -->
                 <div class="card mb-4">
-                    <div class="card-body">
-                        <div class="flex gap-3 align-center flex-wrap">
-                            <span class="text-sm font-semibold text-muted">Filters:</span>
+                    <div class="card-body traffic-filters">
+                        <div class="traffic-filters-header">
+                            <div class="traffic-filters-title">
+                                <span class="text-sm font-semibold text-muted">Filters</span>
+                                <span id="filter-summary" class="text-xs text-muted"></span>
+                            </div>
+                            <div class="traffic-filters-actions">
+                                <button id="reset-filter-btn" class="btn btn-sm btn-secondary">
+                                    <span class="icon">${getIcon('x')}</span>
+                                    Reset
+                                </button>
+                            </div>
+                        </div>
+                        <div class="traffic-filters-grid">
                             <select id="filter-endpoint" class="form-select form-select-sm">
                                 <option value="">All Endpoints</option>
                             </select>
@@ -74,10 +85,6 @@ class Traffic {
                                 <option value="true">Errors Only</option>
                                 <option value="false">Success Only</option>
                             </select>
-                            <button id="reset-filter-btn" class="btn btn-sm btn-secondary">
-                                <span class="icon">${getIcon('x')}</span>
-                                Reset
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -122,6 +129,7 @@ class Traffic {
             document.getElementById(id).addEventListener('change', (e) => {
                 const key = id.replace('filter-', '');
                 this.filter[key] = e.target.value;
+                this.updateFilterSummary();
                 this.loadLogs();
             });
         });
@@ -133,6 +141,7 @@ class Traffic {
             document.getElementById('filter-format').value = '';
             document.getElementById('filter-status').value = '';
             document.getElementById('filter-error').value = '';
+            this.updateFilterSummary();
             this.loadLogs();
         });
     }
@@ -160,9 +169,31 @@ class Traffic {
             this.updateRecordingButton();
             this.updateStats(data);
             this.renderLogs();
+            this.updateFilterSummary();
         } catch (error) {
             notifications.error('Failed to load traffic logs: ' + error.message);
         }
+    }
+
+    updateFilterSummary() {
+        const summaryEl = document.getElementById('filter-summary');
+        if (!summaryEl) return;
+
+        const parts = [];
+        if (this.filter.endpoint) {
+            parts.push(`Endpoint=${this.filter.endpoint}`);
+        }
+        if (this.filter.format) {
+            parts.push(`Format=${this.filter.format}`);
+        }
+        if (this.filter.status) {
+            parts.push(`Status=${this.filter.status}`);
+        }
+        if (typeof this.filter.error !== 'undefined' && this.filter.error !== '') {
+            parts.push(this.filter.error === 'true' ? 'Errors only' : 'Success only');
+        }
+
+        summaryEl.textContent = parts.length > 0 ? `Current: ${parts.join(', ')}` : '';
     }
 
     updateRecordingButton() {
@@ -369,8 +400,12 @@ class Traffic {
                                     <tr><td>Endpoint:</td><td>${detail.endpointName}</td></tr>
                                     <tr><td>Format:</td><td>${detail.clientFormat}</td></tr>
                                     <tr><td>Transformer:</td><td>${detail.transformerName || '-'}</td></tr>
-                                    <tr><td>Method:</td><td>${detail.method}</td></tr>
-                                    <tr><td>Path:</td><td>${detail.path}</td></tr>
+                                    <tr><td>Request:</td><td>
+                                        <span id="traffic-request-line">${detail.method} ${detail.path}</span>
+                                        <button class="btn btn-sm btn-secondary traffic-copy-btn" data-copy="${this.escapeHtml(`${detail.method} ${detail.path}`)}" style="margin-left: 0.5rem;">
+                                            <span class="icon">${getIcon('clipboard')}</span>
+                                        </button>
+                                    </td></tr>
                                     <tr><td>Status:</td><td>${detail.statusCode}</td></tr>
                                     <tr><td>Duration:</td><td>${detail.duration}ms</td></tr>
                                     <tr><td>Input Tokens:</td><td>${detail.inputTokens || 0}</td></tr>
@@ -408,8 +443,15 @@ class Traffic {
                                                 class="tab-panel ${index === 0 ? 'active' : ''}" 
                                                 id="${tab.id}"
                                                 role="tabpanel"
+                                                data-raw="${this.escapeHtml(tab.content || '')}"
                                             >
-                                                <pre class="code-block">${this.formatJSON(tab.content)}</pre>
+                                                <div class="traffic-detail-tab-toolbar">
+                                                    <button class="btn btn-sm btn-secondary traffic-copy-tab-btn" data-tab-id="${tab.id}">
+                                                        <span class="icon">${getIcon('clipboard')}</span>
+                                                        Copy
+                                                    </button>
+                                                </div>
+                                                <pre class="code-block traffic-detail-code-block">${this.formatJSON(tab.content)}</pre>
                                             </div>
                                         `).join('')}
                                     </div>
@@ -454,6 +496,69 @@ class Traffic {
                 modal.innerHTML = '';
             }
         });
+
+        // Copy request line
+        modal.querySelectorAll('.traffic-copy-btn').forEach(btn => {
+            btn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const text = btn.dataset.copy || '';
+                this.copyText(text);
+            });
+        });
+
+        // Copy tab content
+        modal.querySelectorAll('.traffic-copy-tab-btn').forEach(btn => {
+            btn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const tabId = btn.getAttribute('data-tab-id');
+                const panel = modal.querySelector(`#${tabId}`);
+                if (!panel) return;
+                const raw = panel.dataset.raw || '';
+                this.copyText(raw);
+            });
+        });
+    }
+
+    copyText(text) {
+        if (!text) {
+            notifications.error('Nothing to copy');
+            return;
+        }
+
+        try {
+            if (typeof navigator !== 'undefined' &&
+                navigator.clipboard &&
+                typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(text).then(() => {
+                    notifications.success('Copied to clipboard');
+                }).catch(() => {
+                    notifications.error('Failed to copy to clipboard');
+                });
+                return;
+            }
+        } catch {
+            // fall through
+        }
+
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.left = '-1000px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const ok = document.execCommand && document.execCommand('copy');
+            document.body.removeChild(textarea);
+            if (ok) {
+                notifications.success('Copied to clipboard');
+            } else {
+                notifications.error('Failed to copy to clipboard');
+            }
+        } catch {
+            notifications.error('Failed to copy to clipboard');
+        }
     }
 
     formatJSON(str) {

@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
 import { formatNumber, formatTokens } from '../utils/formatters.js';
+import { getIcon } from '../icons.js';
 
 class Dashboard {
     constructor() {
@@ -14,20 +15,40 @@ class Dashboard {
                 <h1>Dashboard</h1>
                 <div id="stats-cards" class="grid grid-cols-4 mt-3">
                     <div class="stat-card">
-                        <div class="stat-label">Total Requests</div>
-                        <div class="stat-value" id="stat-requests">-</div>
+                        <div class="stat-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">
+                            <span class="icon">${getIcon('activity')}</span>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Total Requests</div>
+                            <div class="stat-value" id="stat-requests">-</div>
+                        </div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Success Rate</div>
-                        <div class="stat-value" id="stat-success">-</div>
+                        <div class="stat-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                            <span class="icon">${getIcon('trendUp')}</span>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Success Rate</div>
+                            <div class="stat-value" id="stat-success">-</div>
+                        </div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Input Tokens</div>
-                        <div class="stat-value" id="stat-input-tokens">-</div>
+                        <div class="stat-icon" style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);">
+                            <span class="icon">${getIcon('hash')}</span>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Input Tokens</div>
+                            <div class="stat-value" id="stat-input-tokens">-</div>
+                        </div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Output Tokens</div>
-                        <div class="stat-value" id="stat-output-tokens">-</div>
+                        <div class="stat-icon" style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);">
+                            <span class="icon">${getIcon('hash')}</span>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Output Tokens</div>
+                            <div class="stat-value" id="stat-output-tokens">-</div>
+                        </div>
                     </div>
                 </div>
 

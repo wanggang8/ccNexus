@@ -127,12 +127,17 @@ class Endpoints {
             <tr data-endpoint="${this.escapeHtml(ep.name)}" data-index="${index}" draggable="true" style="cursor: move;">
                 <td style="cursor: grab; text-align: center;">⋮⋮</td>
                 <td>
-                    <strong>${this.escapeHtml(ep.name)}</strong>
-                    <span title="${testStatusTitle}" style="margin-left: 5px;">${testStatusIcon}</span>
-                    ${isCurrentEndpoint ? '<span class="badge badge-primary" style="margin-left: 5px;">Current</span>' : ''}
+                    <div>
+                        <strong>${this.escapeHtml(ep.name)}</strong>
+                        <span title="${testStatusTitle}" style="margin-left: 5px;">${testStatusIcon}</span>
+                        ${isCurrentEndpoint ? '<span class="badge badge-primary" style="margin-left: 5px;">Current</span>' : ''}
+                    </div>
+                    ${ep.remark ? `<div class="endpoint-remark text-xs text-muted">${this.escapeHtml(ep.remark)}</div>` : ''}
                 </td>
-                <td>
-                    <code style="font-size: 12px;">${this.escapeHtml(ep.apiUrl)}</code>
+                <td class="endpoint-url-cell">
+                    <span class="endpoint-url" title="${this.escapeHtml(ep.apiUrl)}">
+                        <code>${this.escapeHtml(ep.apiUrl)}</code>
+                    </span>
                     <button class="btn-icon copy-btn" data-copy="${this.escapeHtml(ep.apiUrl)}" title="Copy URL">
                         <span class="icon">${getIcon('clipboard')}</span>
                     </button>
@@ -300,15 +305,57 @@ class Endpoints {
     }
 
     copyToClipboard(text, button) {
-        navigator.clipboard.writeText(text).then(() => {
+        if (!button) {
+            notifications.error('Failed to copy to clipboard');
+            return;
+        }
+
+        const showSuccess = () => {
             const originalHTML = button.innerHTML;
             button.innerHTML = `<span class="icon icon-success">${getIcon('check')}</span>`;
             setTimeout(() => {
                 button.innerHTML = originalHTML;
             }, 1000);
-        }).catch(err => {
+        };
+
+        try {
+            // Prefer modern Clipboard API when available and permitted
+            if (typeof navigator !== 'undefined' &&
+                navigator.clipboard &&
+                typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(text)
+                    .then(showSuccess)
+                    .catch(() => {
+                        notifications.error('Failed to copy to clipboard');
+                    });
+                return;
+            }
+        } catch {
+            // Ignore and fall through to legacy path
+        }
+
+        // Fallback: use a temporary textarea and execCommand
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.left = '-1000px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+
+            const successful = document.execCommand && document.execCommand('copy');
+            document.body.removeChild(textarea);
+
+            if (successful) {
+                showSuccess();
+            } else {
+                notifications.error('Failed to copy to clipboard');
+            }
+        } catch (error) {
             notifications.error('Failed to copy to clipboard');
-        });
+        }
     }
 
     getTestStatus(endpointName) {

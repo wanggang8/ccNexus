@@ -87,6 +87,7 @@ body {
 .nav-link.active {
     background-color: var(--primary-color);
     color: white;
+    font-weight: 600;
 }
 
 .nav-link .icon {
