@@ -152,6 +152,8 @@ class Traffic {
     updateRecordingButton() {
         const btn = document.getElementById('recording-toggle');
         const text = document.getElementById('recording-text');
+        if (!btn || !text) return; // 添加空指针检查
+        
         if (this.recording) {
             btn.classList.remove('btn-secondary');
             btn.classList.add('btn-danger');

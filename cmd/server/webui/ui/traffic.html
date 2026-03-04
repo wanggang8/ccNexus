@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>流量记录 - ccNexus</title>
+    <link rel="stylesheet" href="css/common.css">
+    <style>
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #333;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0056b3;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #218838;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .status.recording {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.stopped {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status.recording .status-indicator {
+            background: #28a745;
+        }
+
+        .status.stopped .status-indicator {
+            background: #dc3545;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .logs-table {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: #f8f9fa;
+        }
+
+        th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #495057;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+            cursor: pointer;
+        }
+
+        .method {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .method.GET { background: #d1ecf1; color: #0c5460; }
+        .method.POST { background: #d4edda; color: #155724; }
+        .method.PUT { background: #fff3cd; color: #856404; }
+        .method.DELETE { background: #f8d7da; color: #721c24; }
+
+        .status-code {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-code.success { background: #d4edda; color: #155724; }
+        .status-code.error { background: #f8d7da; color: #721c24; }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 8px;
+            max-width: 900px;
+            max-height: 80vh;
+            width: 90%;
+            overflow: auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 20px;
+        }
+
+        .close {
+            font-size: 28px;
+            font-weight: bold;
+            color: #aaa;
+            cursor: pointer;
+            border: none;
+            background: none;
+        }
+
+        .close:hover {
+            color: #000;
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: #495057;
+        }
+
+        .detail-content {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6c757d;
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>流量记录</h1>
+                <div id="recordingStatus" class="status stopped" style="margin-top: 10px;">
+                    <span class="status-indicator"></span>
+                    <span>未录制</span>
+                </div>
+            </div>
+            <div class="controls">
+                <button id="toggleRecording" class="btn btn-primary">开始录制</button>
+                <button id="clearLogs" class="btn btn-danger">清空日志</button>
+                <button id="refreshLogs" class="btn btn-success">刷新</button>
+            </div>
+        </div>
+
+        <div class="logs-table">
+            <div id="loading" class="loading">加载中...</div>
+            <div id="emptyState" class="empty-state" style="display: none;">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                </svg>
+                <p>暂无流量记录</p>
+            </div>
+            <table id="logsTable" style="display: none;">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>方法</th>
+                        <th>路径</th>
+                        <th>状态码</th>
+                        <th>耗时</th>
+                    </tr>
+                </thead>
+                <tbody id="logsBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>请求详情</h2>
+                <button class="close">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isRecording = false;
+        let logs = [];
+
+        // 初始化
+        async function init() {
+            await checkRecordingStatus();
+            await loadLogs();
+        }
+
+        // 检查录制状态
+        async function checkRecordingStatus() {
+            try {
+                const response = await fetch('/api/traffic/recording');
+                const data = await response.json();
+                isRecording = data.recording;
+                updateRecordingUI();
+            } catch (error) {
+                console.error('Failed to check recording status:', error);
+            }
+        }
+
+        // 更新录制状态UI
+        function updateRecordingUI() {
+            const statusEl = document.getElementById('recordingStatus');
+            const toggleBtn = document.getElementById('toggleRecording');
+            
+            if (isRecording) {
+                statusEl.className = 'status recording';
+                statusEl.querySelector('span:last-child').textContent = '录制中';
+                toggleBtn.textContent = '停止录制';
+                toggleBtn.className = 'btn btn-danger';
+            } else {
+                statusEl.className = 'status stopped';
+                statusEl.querySelector('span:last-child').textContent = '未录制';
+                toggleBtn.textContent = '开始录制';
+                toggleBtn.className = 'btn btn-primary';
+            }
+        }
+
+        // 切换录制状态
+        async function toggleRecording() {
+            try {
+                const response = await fetch('/api/traffic/recording', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ recording: !isRecording })
+                });
+                const data = await response.json();
+                isRecording = data.recording;
+                updateRecordingUI();
+            } catch (error) {
+                console.error('Failed to toggle recording:', error);
+                alert('切换录制状态失败');
+            }
+        }
+
+        // 加载日志列表
+        async function loadLogs() {
+            const loading = document.getElementById('loading');
+            const emptyState = document.getElementById('emptyState');
+            const table = document.getElementById('logsTable');
+            
+            loading.style.display = 'block';
+            emptyState.style.display = 'none';
+            table.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/traffic/logs');
+                logs = await response.json();
+                
+                loading.style.display = 'none';
+                
+                if (logs.length === 0) {
+                    emptyState.style.display = 'block';
+                } else {
+                    table.style.display = 'table';
+                    renderLogs();
+                }
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+                loading.style.display = 'none';
+                emptyState.style.display = 'block';
+            }
+        }
+
+        // 渲染日志列表
+        function renderLogs() {
+            const tbody = document.getElementById('logsBody');
+            tbody.innerHTML = logs.map(log => `
+                <tr onclick="showDetail('${log.id}')">
+                    <td>${formatTime(log.timestamp)}</td>
+                    <td><span class="method ${log.method}">${log.method}</span></td>
+                    <td>${log.path}</td>
+                    <td><span class="status-code ${log.status_code >= 200 && log.status_code < 300 ? 'success' : 'error'}">${log.status_code}</span></td>
+                    <td>${log.duration}ms</td>
+                </tr>
+            `).join('');
+        }
+
+        // 显示详情
+        async function showDetail(id) {
+            try {
+                const response = await fetch(`/api/traffic/logs/${id}`);
+                const log = await response.json();
+                
+                const modalBody = document.getElementById('modalBody');
+                modalBody.innerHTML = `
+                    <div class="detail-section">
+                        <h3>基本信息</h3>
+                        <div class="detail-content">时间: ${formatTime(log.timestamp)}
+方法: ${log.method}
+路径: ${log.path}
+状态码: ${log.status_code}
+耗时: ${log.duration}ms</div>
+                    </div>
+                    <div class="detail-section">
+                        <h3>请求头</h3>
+                        <div class="detail-content">${formatHeaders(log.request_headers)}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h3>请求体</h3>
+                        <div class="detail-content">${log.request_body || '(空)'}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h3>响应头</h3>
+                        <div class="detail-content">${formatHeaders(log.response_headers)}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h3>响应体</h3>
+                        <div class="detail-content">${log.response_body || '(空)'}</div>
+                    </div>
+                `;
+                
+                document.getElementById('detailModal').classList.add('active');
+            } catch (error) {
+                console.error('Failed to load log detail:', error);
+                alert('加载详情失败');
+            }
+        }
+
+        // 清空日志
+        async function clearLogs() {
+            if (!confirm('确定要清空所有日志吗？')) {
+                return;
+            }
+            
+            try {
+                await fetch('/api/traffic/clear', { method: 'POST' });
+                await loadLogs();
+            } catch (error) {
+                console.error('Failed to clear logs:', error);
+                alert('清空日志失败');
+            }
+        }
+
+        // 格式化时间
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString('zh-CN', { 
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // 格式化请求头
+        function formatHeaders(headers) {
+            if (!headers) return '(空)';
+            return Object.entries(headers)
+                .map(([key, value]) => `${key}: ${value}`)
+                .join('\n');
+        }
+
+        // 事件监听
+        document.getElementById('toggleRecording').addEventListener('click', toggleRecording);
+        document.getElementById('clearLogs').addEventListener('click', clearLogs);
+        document.getElementById('refreshLogs').addEventListener('click', loadLogs);
+        document.querySelector('.close').addEventListener('click', () => {
+            document.getElementById('detailModal').classList.remove('active');
+        });
+        document.getElementById('detailModal').addEventListener('click', (e) => {
+            if (e.target.id === 'detailModal') {
+                document.getElementById('detailModal').classList.remove('active');
+            }
+        });
+
+        // 初始化
+        init();
+        
+        // 自动刷新（录制时）
+        setInterval(() => {
+            if (isRecording) {
+                loadLogs();
+            }
+        }, 5000);
+    </script>
+</body>
+</html>

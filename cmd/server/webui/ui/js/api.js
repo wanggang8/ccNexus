@@ -173,7 +173,7 @@ class APIClient {
     }
 
     async setTrafficRecording(enabled) {
-        return this.request('POST', '/traffic/recording', { enabled });
+        return this.request('POST', '/traffic/recording', { recording: enabled });
     }
 
     async clearTrafficLogs() {
