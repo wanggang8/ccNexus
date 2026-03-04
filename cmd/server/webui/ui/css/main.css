@@ -263,11 +263,17 @@ p {
 .text-sm { font-size: 0.875rem; }
 .text-xs { font-size: 0.75rem; }
 
+.font-semibold { font-weight: 600; }
+
 .text-muted { color: var(--text-secondary); }
 
 .flex {
     display: flex;
 }
+
+.justify-between { justify-content: space-between; }
+.align-center { align-items: center; }
+.flex-wrap { flex-wrap: wrap; }
 
 .flex-between {
     display: flex;

@@ -174,13 +174,13 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 	// Parse as map first to handle Cursor's Claude-format tools
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(openaiReq, &reqMap); err != nil {
-		return nil, nil, fmt.Errorf("CLI: failed to parse request: %w", err)
+		return nil, nil, fmt.Errorf("CLI: failed to parse request (len=%d): %w", len(openaiReq), err)
 	}
 
 	// Also parse as struct for convenience
 	var req transformer.OpenAIRequest
 	if err := json.Unmarshal(openaiReq, &req); err != nil {
-		return nil, nil, fmt.Errorf("CLI: failed to parse request: %w", err)
+		return nil, nil, fmt.Errorf("CLI: failed to parse request (len=%d): %w", len(openaiReq), err)
 	}
 
 	// 错误处理：消息校验

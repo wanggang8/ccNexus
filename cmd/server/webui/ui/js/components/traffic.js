@@ -12,20 +12,29 @@ class Traffic {
         this.refreshInterval = null;
     }
 
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     async render() {
         this.container.innerHTML = `
             <div class="traffic">
-                <div class="flex justify-between align-center mb-3">
-                    <h1>Traffic Logs</h1>
+                <div class="flex justify-between align-center mb-4">
+                    <div>
+                        <h1 class="mb-1">Traffic Logs</h1>
+                        <p class="text-sm text-muted">Monitor and analyze API traffic in real-time</p>
+                    </div>
                     <div class="flex gap-2">
-                        <button id="auto-refresh-btn" class="btn btn-sm btn-secondary" title="Auto refresh">
+                        <button id="auto-refresh-btn" class="btn btn-sm btn-secondary" title="Auto refresh every 5s">
                             <span class="icon">${getIcon('refresh')}</span>
                             <span>Auto</span>
                         </button>
-                        <button id="refresh-btn" class="btn btn-sm btn-secondary" title="Refresh">
+                        <button id="refresh-btn" class="btn btn-sm btn-secondary" title="Refresh now">
                             <span class="icon">${getIcon('refresh')}</span>
                         </button>
-                        <button id="clear-btn" class="btn btn-sm btn-danger" title="Clear logs">
+                        <button id="clear-btn" class="btn btn-sm btn-danger" title="Clear all logs">
                             <span class="icon">${getIcon('trash')}</span>
                             <span>Clear</span>
                         </button>
@@ -36,10 +45,14 @@ class Traffic {
                     </div>
                 </div>
 
-                <div class="card mb-3">
+                <!-- Stats Cards -->
+                <div id="traffic-stats" class="mb-4"></div>
+
+                <!-- Filters -->
+                <div class="card mb-4">
                     <div class="card-body">
-                        <div class="flex gap-2 align-center">
-                            <span class="text-sm text-muted">Filter:</span>
+                        <div class="flex gap-3 align-center flex-wrap">
+                            <span class="text-sm font-semibold text-muted">Filters:</span>
                             <select id="filter-endpoint" class="form-select form-select-sm">
                                 <option value="">All Endpoints</option>
                             </select>
@@ -57,18 +70,21 @@ class Traffic {
                                 <option value="500">500 Server Error</option>
                             </select>
                             <select id="filter-error" class="form-select form-select-sm">
-                                <option value="">All</option>
+                                <option value="">All Requests</option>
                                 <option value="true">Errors Only</option>
                                 <option value="false">Success Only</option>
                             </select>
-                            <button id="reset-filter-btn" class="btn btn-sm btn-secondary">Reset</button>
+                            <button id="reset-filter-btn" class="btn btn-sm btn-secondary">
+                                <span class="icon">${getIcon('x')}</span>
+                                Reset
+                            </button>
                         </div>
                     </div>
                 </div>
 
+                <!-- Logs List -->
                 <div class="card">
                     <div class="card-body">
-                        <div id="traffic-stats" class="mb-3"></div>
                         <div id="traffic-list"></div>
                     </div>
                 </div>
@@ -139,14 +155,12 @@ class Traffic {
     async loadLogs() {
         try {
             const data = await api.getTrafficLogs(this.filter);
-            console.log('Traffic logs response:', data);
             this.logs = data.logs || [];
             this.recording = data.recording !== undefined ? data.recording : false;
             this.updateRecordingButton();
             this.updateStats(data);
             this.renderLogs();
         } catch (error) {
-            console.error('Failed to load traffic logs:', error);
             notifications.error('Failed to load traffic logs: ' + error.message);
         }
     }
@@ -169,16 +183,54 @@ class Traffic {
 
     updateStats(data) {
         const statsEl = document.getElementById('traffic-stats');
+        if (!statsEl) return;
         const total = data.total !== undefined ? data.total : 0;
         const count = data.count !== undefined ? data.count : 0;
+        const filtered = Math.max(0, total - count);
+        
         statsEl.innerHTML = `
-            <div class="flex gap-3 text-sm">
-                <span><strong>Total:</strong> ${total}</span>
-                <span><strong>Filtered:</strong> ${count}</span>
-                <span class="recording-status ${this.recording ? 'recording' : ''}">
-                    <span class="recording-dot"></span>
-                    ${this.recording ? 'Recording' : 'Not Recording'}
-                </span>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                        <span class="icon">${getIcon('activity')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Total Requests</div>
+                        <div class="stat-value">${total}</div>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                        <span class="icon">${getIcon('filter')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Filtered Results</div>
+                        <div class="stat-value">${count}</div>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                        <span class="icon">${getIcon('eye-off')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Hidden</div>
+                        <div class="stat-value">${filtered}</div>
+                    </div>
+                </div>
+                
+                <div class="stat-card ${this.recording ? 'recording-active' : ''}">
+                    <div class="stat-icon" style="background: ${this.recording ? 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' : 'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)'};">
+                        <span class="icon">${this.recording ? getIcon('circle') : getIcon('circle')}</span>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Recording Status</div>
+                        <div class="stat-value" style="font-size: 1.25rem; font-weight: 600;">
+                            ${this.recording ? 'Active' : 'Inactive'}
+                        </div>
+                    </div>
+                </div>
             </div>
         `;
     }
@@ -210,24 +262,59 @@ class Traffic {
         const truncatedBadge = log.truncated ? '<span class="badge badge-warning">Truncated</span>' : '';
         const errorBadge = log.error ? '<span class="badge badge-danger">Error</span>' : '';
 
+        // Method badge color
+        const methodColors = {
+            'GET': 'badge-info',
+            'POST': 'badge-success',
+            'PUT': 'badge-warning',
+            'DELETE': 'badge-danger',
+            'PATCH': 'badge-primary'
+        };
+        const methodClass = methodColors[log.method] || 'badge-primary';
+
         return `
             <div class="traffic-log-item" data-id="${log.id}">
                 <div class="traffic-log-header">
-                    <span class="traffic-log-time">${timestamp}</span>
+                    <span class="traffic-log-time">
+                        <span class="icon" style="font-size: 0.875rem;">${getIcon('clock')}</span>
+                        ${timestamp}
+                    </span>
+                    <span class="badge ${methodClass}">${log.method}</span>
                     <span class="traffic-log-endpoint">${log.endpointName}</span>
                     <span class="traffic-log-format">${log.clientFormat}</span>
                     <span class="traffic-log-status ${statusClass}">${log.statusCode}</span>
-                    <span class="traffic-log-duration">${duration}</span>
+                    <span class="traffic-log-duration">
+                        <span class="icon" style="font-size: 0.75rem;">${getIcon('zap')}</span>
+                        ${duration}
+                    </span>
                     ${streamBadge}
                     ${truncatedBadge}
                     ${errorBadge}
                 </div>
                 <div class="traffic-log-details">
-                    <span>${log.method} ${log.path}</span>
-                    ${log.transformerName ? `<span class="text-muted">→ ${log.transformerName}</span>` : ''}
-                    ${log.inputTokens || log.outputTokens ? `<span class="text-muted">Tokens: ${log.inputTokens}/${log.outputTokens}</span>` : ''}
+                    <span class="traffic-log-path">
+                        <span class="icon" style="font-size: 0.875rem;">${getIcon('link')}</span>
+                        ${log.path}
+                    </span>
+                    ${log.transformerName ? `
+                        <span class="text-muted">
+                            <span class="icon" style="font-size: 0.875rem;">${getIcon('arrow-right')}</span>
+                            ${log.transformerName}
+                        </span>
+                    ` : ''}
+                    ${log.inputTokens || log.outputTokens ? `
+                        <span class="text-muted">
+                            <span class="icon" style="font-size: 0.875rem;">${getIcon('hash')}</span>
+                            Tokens: ${log.inputTokens || 0}/${log.outputTokens || 0}
+                        </span>
+                    ` : ''}
                 </div>
-                ${log.error ? `<div class="traffic-log-error">${log.error}</div>` : ''}
+                ${log.error ? `
+                    <div class="traffic-log-error">
+                        <span class="icon" style="font-size: 0.875rem;">${getIcon('alert-circle')}</span>
+                        ${this.escapeHtml(log.error)}
+                    </div>
+                ` : ''}
             </div>
         `;
     }
@@ -244,6 +331,21 @@ class Traffic {
     renderDetailModal(detail) {
         const modal = document.getElementById('modal-container');
         const timestamp = new Date(detail.timestamp).toLocaleString();
+
+        // Build tabs array
+        const tabs = [
+            { id: 'original-request', label: 'Original Request', content: detail.originalRequest }
+        ];
+        
+        if (detail.transformedRequest) {
+            tabs.push({ id: 'transformed-request', label: 'Transformed Request', content: detail.transformedRequest });
+        }
+        
+        tabs.push({ id: 'original-response', label: 'Original Response', content: detail.originalResponse });
+        
+        if (detail.transformedResponse) {
+            tabs.push({ id: 'transformed-response', label: 'Transformed Response', content: detail.transformedResponse });
+        }
 
         modal.innerHTML = `
             <div class="modal-overlay" id="detail-modal-overlay">
@@ -282,33 +384,62 @@ class Traffic {
                             ` : ''}
 
                             <div class="traffic-detail-section">
-                                <h3>Original Request</h3>
-                                <pre class="code-block">${this.formatJSON(detail.originalRequest)}</pre>
-                            </div>
-
-                            ${detail.transformedRequest ? `
-                                <div class="traffic-detail-section">
-                                    <h3>Transformed Request</h3>
-                                    <pre class="code-block">${this.formatJSON(detail.transformedRequest)}</pre>
+                                <h3>Request & Response</h3>
+                                <div class="tabs">
+                                    <div class="tab-list" role="tablist">
+                                        ${tabs.map((tab, index) => `
+                                            <button 
+                                                class="tab-button ${index === 0 ? 'active' : ''}" 
+                                                data-tab="${tab.id}"
+                                                role="tab"
+                                                aria-selected="${index === 0}"
+                                            >
+                                                ${tab.label}
+                                            </button>
+                                        `).join('')}
+                                    </div>
+                                    <div class="tab-content">
+                                        ${tabs.map((tab, index) => `
+                                            <div 
+                                                class="tab-panel ${index === 0 ? 'active' : ''}" 
+                                                id="${tab.id}"
+                                                role="tabpanel"
+                                            >
+                                                <pre class="code-block">${this.formatJSON(tab.content)}</pre>
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                 </div>
-                            ` : ''}
-
-                            <div class="traffic-detail-section">
-                                <h3>Original Response</h3>
-                                <pre class="code-block">${this.formatJSON(detail.originalResponse)}</pre>
                             </div>
-
-                            ${detail.transformedResponse ? `
-                                <div class="traffic-detail-section">
-                                    <h3>Transformed Response</h3>
-                                    <pre class="code-block">${this.formatJSON(detail.transformedResponse)}</pre>
-                                </div>
-                            ` : ''}
                         </div>
                     </div>
                 </div>
             </div>
         `;
+
+        // Setup tab switching
+        const tabButtons = modal.querySelectorAll('.tab-button');
+        const tabPanels = modal.querySelectorAll('.tab-panel');
+        
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                const targetTab = button.getAttribute('data-tab');
+                
+                // Update buttons
+                tabButtons.forEach(btn => {
+                    btn.classList.remove('active');
+                    btn.setAttribute('aria-selected', 'false');
+                });
+                button.classList.add('active');
+                button.setAttribute('aria-selected', 'true');
+                
+                // Update panels
+                tabPanels.forEach(panel => {
+                    panel.classList.remove('active');
+                });
+                document.getElementById(targetTab).classList.add('active');
+            });
+        });
 
         document.getElementById('close-detail-modal').addEventListener('click', () => {
             modal.innerHTML = '';
@@ -340,9 +471,7 @@ class Traffic {
     async toggleRecording() {
         try {
             const newState = !this.recording;
-            console.log('Toggling recording to:', newState);
             const result = await api.setTrafficRecording(newState);
-            console.log('Toggle recording response:', result);
             // Use server's confirmed state instead of assuming success
             this.recording = result.recording !== undefined ? result.recording : newState;
             this.updateRecordingButton();
@@ -350,7 +479,6 @@ class Traffic {
             // Refresh logs to sync state and show any new logs
             await this.loadLogs();
         } catch (error) {
-            console.error('Failed to toggle recording:', error);
             notifications.error('Failed to toggle recording: ' + error.message);
         }
     }
