@@ -237,6 +237,10 @@ class Traffic {
 
     renderLogs() {
         const listEl = document.getElementById('traffic-list');
+        if (!listEl) {
+            // 视图未渲染或已被销毁，直接跳过，避免空指针错误
+            return;
+        }
         
         if (this.logs.length === 0) {
             listEl.innerHTML = '<div class="empty-state"><p>No traffic logs</p></div>';
