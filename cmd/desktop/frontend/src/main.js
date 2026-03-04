@@ -5,10 +5,9 @@ import '../wailsjs/runtime/runtime.js'
 import { getIcon } from './icons.js'
 import { setLanguage } from './i18n/index.js'
 import { initUI, changeLanguage, switchWorkspaceTab } from './modules/ui.js'
-import { exportEndpoints, importEndpoints } from './modules/endpoints.js'
+import { exportEndpoints, importEndpoints, renderEndpoints, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen, updateEndpointStatsIncremental } from './modules/endpoints.js'
 import { loadConfig } from './modules/config.js'
-import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod } from './modules/stats.js'
-import { renderEndpoints, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen } from './modules/endpoints.js'
+import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod, updateEndpointStatsCache, updateTotalStatsCache } from './modules/stats.js'
 import { loadLogs, changeLogLevel, copyLogs, clearLogs } from './modules/logs.js'
 import { showDataSyncDialog } from './modules/webdav.js'
 import { initTips } from './modules/tips.js'
@@ -19,6 +18,8 @@ import { checkUpdatesOnStartup, checkForUpdates, initUpdateSettings } from './mo
 import { initBroadcast } from './modules/broadcast.js'
 import { initSponsor, showSponsorModal, closeSponsorModal, openSponsorLink } from './modules/sponsor.js'
 import { initTraffic, toggleTrafficRecording, loadTrafficLogs, showTrafficDetail, closeTrafficDetailModal, clearTrafficLogs, filterTrafficByStatus, filterTrafficByEndpoint, switchTrafficTab, copyTrafficJson } from './modules/traffic.js'
+import { initFilterDropdowns, clearAllFilters } from './modules/filters.js'
+import { formatTokens } from './utils/format.js'
 import {
     showAddEndpointModal,
     editEndpoint,
@@ -50,6 +51,47 @@ import {
     minimizeToTray
 } from './modules/modal.js'
 
+// Handle real-time stats update events from backend (4-period data)
+function handleStatsUpdate(data) {
+    if (!data || !data.endpointName) {
+        return;
+    }
+
+    // Update all 4-period caches first (before DOM updates)
+    if (data.endpoint) {
+        updateEndpointStatsCache(data.endpointName, data.endpoint);
+    }
+    if (data.totals) {
+        updateTotalStatsCache(data.totals);
+    }
+
+    const currentPeriod = getCurrentPeriod(); // Get current selected period
+
+    // 1. Update header stats (top summary) using backend-provided aggregated data
+    const totalStats = data.totals && data.totals[currentPeriod];
+    if (totalStats) {
+        const totalRequestsEl = document.getElementById('periodTotalRequests');
+        const successRequestsEl = document.getElementById('periodSuccess');
+        const failedRequestsEl = document.getElementById('periodFailed');
+        const totalTokensEl = document.getElementById('periodTotalTokens');
+        const totalInputTokensEl = document.getElementById('periodInputTokens');
+        const totalOutputTokensEl = document.getElementById('periodOutputTokens');
+
+        if (totalRequestsEl) totalRequestsEl.textContent = totalStats.requests;
+        if (successRequestsEl) successRequestsEl.textContent = totalStats.requests - totalStats.errors;
+        if (failedRequestsEl) failedRequestsEl.textContent = totalStats.errors;
+        if (totalTokensEl) totalTokensEl.textContent = formatTokens(totalStats.inputTokens + totalStats.outputTokens);
+        if (totalInputTokensEl) totalInputTokensEl.textContent = formatTokens(totalStats.inputTokens);
+        if (totalOutputTokensEl) totalOutputTokensEl.textContent = formatTokens(totalStats.outputTokens);
+    }
+
+    // 2. Update endpoint card using single endpoint period data
+    const endpointStats = data.endpoint && data.endpoint[currentPeriod];
+    if (endpointStats) {
+        updateEndpointStatsIncremental(data.endpointName, endpointStats);
+    }
+}
+
 // Load data on startup
 window.addEventListener('DOMContentLoaded', async () => {
     // Prevent transitions on page load
@@ -73,6 +115,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Initialize endpoint view mode
     initEndpointViewMode();
 
+    // Initialize filter dropdowns
+    initFilterDropdowns();
+
     // Initialize terminal module
     initTerminal();
 
@@ -91,8 +136,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Load initial data
-    await loadConfigAndRender();
-    loadStatsByPeriod('daily'); // Load today's stats by default
+    // IMPORTANT: Load stats first to populate cache, then render endpoints
+    await loadStatsByPeriod('daily'); // Load today's stats by default (ensure initialization completes before events)
+    await loadConfigAndRender();      // Render endpoints after stats are loaded
 
     // Restore log level from config
     try {
@@ -113,20 +159,27 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Check all endpoints on startup (zero-cost methods only)
     checkAllEndpointsOnStartup();
 
-    // Refresh stats every 3 seconds
-    setInterval(async () => {
-        await loadStats(); // Refresh cumulative stats for endpoint cards
-        const currentPeriod = getCurrentPeriod(); // Get current selected period
-        await loadStatsByPeriod(currentPeriod); // Refresh period stats (daily/weekly/monthly)
-        // 如果下拉菜单打开，跳过渲染避免菜单消失
-        if (isDropdownOpen()) {
-            return;
-        }
-        const config = await window.go.main.App.GetConfig();
-        if (config) {
-            renderEndpoints(JSON.parse(config).endpoints);
-        }
-    }, 3000);
+    // Listen for real-time stats updates from backend
+    if (window.runtime && window.runtime.EventsOn) {
+        window.runtime.EventsOn('stats:updated', (data) => {
+            handleStatsUpdate(data);
+        });
+    }
+
+    // Fallback: If event-based updates fail, uncomment the following to restore polling
+    // setInterval(async () => {
+    //     await loadStats(); // Refresh cumulative stats for endpoint cards
+    //     const currentPeriod = getCurrentPeriod(); // Get current selected period
+    //     await loadStatsByPeriod(currentPeriod); // Refresh period stats (daily/weekly/monthly)
+    //     // 如果下拉菜单打开，跳过渲染避免菜单消失
+    //     if (isDropdownOpen()) {
+    //         return;
+    //     }
+    //     const config = await window.go.main.App.GetConfig();
+    //     if (config) {
+    //         renderEndpoints(JSON.parse(config).endpoints);
+    //     }
+    // }, 30000); // 降低频率到 30 秒
 
     // Refresh logs every 2 seconds
     setInterval(loadLogs, 2000);
@@ -175,7 +228,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 async function loadConfigAndRender() {
     const config = await loadConfig();
     if (config) {
-        renderEndpoints(config.endpoints);
+        await renderEndpoints(config.endpoints);
     }
 }
 
@@ -222,6 +275,7 @@ window.importEndpoints = async (e) => {
     e.target.value = '';
 };
 window.switchWorkspaceTab = switchWorkspaceTab;
+window.clearAllFilters = clearAllFilters;
 window.showSettingsModal = showSettingsModal;
 window.closeSettingsModal = closeSettingsModal;
 window.saveSettings = saveSettings;

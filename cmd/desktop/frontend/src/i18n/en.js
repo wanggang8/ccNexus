@@ -55,7 +55,25 @@ export default {
         fetchFailed: 'Fetch failed: ',
         copyUrl: 'Copy URL',
         export: 'Export',
-        import: 'Import'
+        import: 'Import',
+        // Filter feature
+        filterTypeTooltip: 'Filter by endpoint type',
+        filterAvailabilityTooltip: 'Filter by availability',
+        filterEnabledTooltip: 'Filter by enabled state',
+        filterClearDimension: 'Clear',
+        filterApply: 'Apply',
+        filterClearAll: 'Clear All Filters',
+        filterActiveWarning: 'Filter mode active - Drag sorting disabled',
+        filterAvailable: 'Available',
+        filterUnknown: 'Unknown',
+        filterUnavailable: 'Unavailable',
+        filterEnabled: 'Enabled',
+        filterDisabled: 'Disabled',
+        dragDisabledDuringFilter: 'Cannot drag in filter mode. Clear filters first.',
+        noMatchingEndpoints: 'No endpoints match the filter criteria',
+        filterStatsTotal: 'Total {total} endpoints',
+        filterStatsFiltered: 'Showing {filtered} / {total} endpoints',
+        clearFilters: 'Clear Filters'
     },
     modal: {
         addEndpoint: 'Add Endpoint',
