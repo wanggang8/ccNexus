@@ -553,16 +553,16 @@ func getPeriodDates() (today, yesterday, weekStart, monthStart string) {
 }
 
 // aggregateDailyStats aggregates daily statistics for a single endpoint across multiple days
-func aggregateDailyStats(stats []interface{}) map[string]interface{} {
+func aggregateDailyStats(stats []*DailyRecord) map[string]interface{} {
 	var totalRequests, totalErrors int
 	var totalInputTokens, totalOutputTokens int64
 
 	for _, stat := range stats {
-		if dailyStat := extractDailyRecord(stat); dailyStat != nil {
-			totalRequests += dailyStat.Requests
-			totalErrors += dailyStat.Errors
-			totalInputTokens += int64(dailyStat.InputTokens)
-			totalOutputTokens += int64(dailyStat.OutputTokens)
+		if stat != nil {
+			totalRequests += stat.Requests
+			totalErrors += stat.Errors
+			totalInputTokens += int64(stat.InputTokens)
+			totalOutputTokens += int64(stat.OutputTokens)
 		}
 	}
 

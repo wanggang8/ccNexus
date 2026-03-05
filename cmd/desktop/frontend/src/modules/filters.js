@@ -1,6 +1,7 @@
 // 端点筛选功能模块
 import { getEndpointTestStatus } from './endpoints.js';
 import { t } from '../i18n/index.js';
+import { getIcon } from '../icons.js';
 
 // 筛选状态（多选数组）
 let filterState = {
@@ -128,7 +129,7 @@ function togglePanel(dropdown) {
 
     if (!isOpen) {
         panel.classList.remove('hidden');
-        arrow.textContent = '▲';
+        arrow.innerHTML = getIcon('chevronUp');
     }
 }
 
@@ -138,14 +139,14 @@ function closeAllPanels() {
         panel.classList.add('hidden');
     });
     document.querySelectorAll('.filter-arrow').forEach(arrow => {
-        arrow.textContent = '▼';
+        arrow.innerHTML = getIcon('chevronDown');
     });
 }
 
 // 关闭单个面板
 function closePanel(dropdown) {
     dropdown.querySelector('.filter-dropdown-panel').classList.add('hidden');
-    dropdown.querySelector('.filter-arrow').textContent = '▼';
+    dropdown.querySelector('.filter-arrow').innerHTML = getIcon('chevronDown');
 }
 
 // 临时状态（用于"确定"前的预览）
@@ -294,7 +295,4 @@ export function updateFilterStats(total, filtered) {
     }
 }
 
-// 暴露全局方法
-if (typeof window !== 'undefined') {
-    window.clearAllFilters = clearAllFilters;
-}
+// 全局方法由 main.js 统一挂载

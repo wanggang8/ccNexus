@@ -5029,16 +5029,30 @@ body {
 .workspace-actions {
     display: flex;
     align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
 .tab-actions {
     display: none;
-    gap: 10px;
+    gap: 12px;
     align-items: center;
 }
 
 .tab-actions.active {
     display: flex;
+}
+
+/* 功能按钮分组：视图 | 数据操作 | 添加端点 | 筛选 */
+.toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.toolbar-group--data {
+    border-left: 1px solid var(--border-color, #e0e0e0);
+    padding-left: 12px;
 }
 
 .workspace-content {

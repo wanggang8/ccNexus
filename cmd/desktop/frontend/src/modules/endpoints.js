@@ -253,8 +253,8 @@ export async function renderEndpoints(endpoints) {
                     ${isCurrentEndpoint ? '<span class="current-badge">' + t('endpoints.current') + '</span>' : ''}
                     ${enabled && !isCurrentEndpoint ? '<button class="btn btn-switch" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : ''}
                 </h3>
-                <p class="endpoint-url-line" style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('globe')}</span> ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
-                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('key')}</span> ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
+                <p class="endpoint-url-line" style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('globe')}</span> ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></p>
+                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('key')}</span> ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></p>
                 <p style="color: #666; font-size: 14px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('refresh')}</span> ${t('endpoints.transformer')}: ${transformer}${model ? ` (${model})` : ''}</p>
                 <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('chart')}</span> ${t('endpoints.requests')}: ${stats.requests} | ${t('endpoints.errors')}: ${stats.errors}</p>
                 <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('target')}</span> ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(stats.inputTokens)}, ${t('statistics.out')}: ${formatTokens(stats.outputTokens)})</p>
@@ -334,9 +334,6 @@ export async function renderEndpoints(endpoints) {
                 }
             });
         }
-
-        // Add drag and drop event listeners
-        setupDragAndDrop(item, container);
 
         container.appendChild(item);
     });
@@ -571,7 +568,7 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
             <span class="compact-status icon icon-sm" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
             <span class="compact-name" title="${ep.name}">${ep.name}</span>
             ${isCurrentEndpoint ? '<span class="btn btn-primary compact-badge-btn">' + t('endpoints.current') + '</span>' : (enabled ? '<button class="btn btn-primary compact-badge-btn" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : '<span class="btn btn-primary compact-badge-btn compact-badge-disabled">' + t('endpoints.disabled') + '</span>')}
-            <span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon"><span class="icon">${getIcon('globe')}</span></span>${displayUrl}</span>
+            <span class="compact-url-wrap"><span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon"><span class="icon">${getIcon('globe')}</span></span>${displayUrl}</span><button type="button" class="copy-btn compact-url-copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></span>
             <span class="compact-transformer"><span class="icon">${getIcon('refresh')}</span> ${transformer}</span>
             <span class="compact-stats" title="${statsTooltip}"><span class="icon">${getIcon('chart')}</span> ${stats.requests} | <span class="icon">${getIcon('target')}</span> ${formatTokens(stats.inputTokens + stats.outputTokens)}</span>
             <div class="compact-actions">
@@ -582,7 +579,6 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
                 <div class="compact-more-dropdown">
                     <button class="compact-btn" data-action="more" title="${t('endpoints.moreActions')}"><span class="icon">${getIcon('moreHorizontal')}</span></button>
                     <div class="compact-more-menu">
-                        <button data-action="copyUrl" data-index="${index}"><span class="icon">${getIcon('copy')}</span> ${t('endpoints.copyUrl')}</button>
                         <button data-action="test" data-index="${index}"><span class="icon">${getIcon('flask')}</span> ${t('endpoints.test')}</button>
                         <button data-action="edit" data-index="${index}"><span class="icon">${getIcon('edit')}</span> ${t('endpoints.edit')}</button>
                         <button data-action="delete" data-index="${index}" class="danger"><span class="icon">${getIcon('trash')}</span> ${t('endpoints.delete')}</button>
@@ -593,9 +589,6 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
 
         // 绑定事件
         bindCompactItemEvents(item, index, enabled);
-
-        // 设置拖拽
-        setupCompactDragAndDrop(item, container);
 
         container.appendChild(item);
     });
@@ -611,7 +604,7 @@ function bindCompactItemEvents(item, index, enabled) {
     const switchBtn = item.querySelector('[data-action="switch"]');
     const moreBtn = item.querySelector('[data-action="more"]');
     const moreMenu = item.querySelector('.compact-more-menu');
-    const copyUrlBtn = item.querySelector('[data-action="copyUrl"]');
+    const copyUrlInlineBtn = item.querySelector('.compact-url-copy-btn');
     const testBtn = item.querySelector('[data-action="test"]');
     const editBtn = item.querySelector('[data-action="edit"]');
     const deleteBtn = item.querySelector('[data-action="delete"]');
@@ -658,16 +651,17 @@ function bindCompactItemEvents(item, index, enabled) {
         });
     }
 
-    // 复制地址按钮
-    copyUrlBtn.addEventListener('click', () => {
-        closeAllDropdowns();
-        const urlSpan = item.querySelector('.compact-url');
-        const apiUrl = urlSpan ? urlSpan.getAttribute('title') || '' : '';
-        if (apiUrl) {
-            copyToClipboard(apiUrl, copyUrlBtn);
-            showNotification(t('endpoints.copied'), 'success');
-        }
-    });
+    // 复制地址（列表行内紧贴地址的按钮，下拉内已移除重复项）
+    if (copyUrlInlineBtn) {
+        copyUrlInlineBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const url = copyUrlInlineBtn.getAttribute('data-copy') || '';
+            if (url) {
+                copyToClipboard(url, copyUrlInlineBtn);
+                showNotification(t('endpoints.copied'), 'success');
+            }
+        });
+    }
 
     // 更多操作按钮
     moreBtn.addEventListener('click', (e) => {
@@ -948,29 +942,26 @@ export function updateEndpointStatsIncremental(endpointName, data) {
 
     const totalTokens = (data.inputTokens || 0) + (data.outputTokens || 0);
 
-    // Update stats in detail view
+    // Update stats in detail view (icons are SVG via getIcon, match by i18n key)
     const paragraphs = endpointCard.querySelectorAll('p');
     for (const p of paragraphs) {
         const text = p.textContent;
 
         // Update requests/errors line
-        if (text.includes('📊') && text.includes(t('endpoints.requests'))) {
-            p.innerHTML = `📊 ${t('endpoints.requests')}: ${data.requests} | ${t('endpoints.errors')}: ${data.errors}`;
+        if (text.includes(t('endpoints.requests')) && text.includes(t('endpoints.errors'))) {
+            p.innerHTML = `<span class="icon">${getIcon('chart')}</span> ${t('endpoints.requests')}: ${data.requests} | ${t('endpoints.errors')}: ${data.errors}`;
         }
 
         // Update tokens line
-        if (text.includes('🎯') && text.includes(t('endpoints.tokens'))) {
-            p.innerHTML = `🎯 ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(data.inputTokens)}, ${t('statistics.out')}: ${formatTokens(data.outputTokens)})`;
+        if (text.includes(t('endpoints.tokens')) && text.includes(t('statistics.in'))) {
+            p.innerHTML = `<span class="icon">${getIcon('target')}</span> ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(data.inputTokens)}, ${t('statistics.out')}: ${formatTokens(data.outputTokens)})`;
         }
     }
 
-    // Update stats in compact view
+    // Update stats in compact view (keep SVG icons consistent with render)
     const compactStats = endpointCard.querySelector('.compact-stats');
     if (compactStats) {
-        compactStats.textContent = `📊 ${data.requests} | 🎯 ${formatTokens(totalTokens)}`;
-
-        // Update tooltip
-        const tooltip = `${t('endpoints.requests')}: ${data.requests} | ${t('endpoints.errors')}: ${data.errors}\n${t('statistics.in')}: ${formatTokens(data.inputTokens)} | ${t('statistics.out')}: ${formatTokens(data.outputTokens)}`;
-        compactStats.title = tooltip;
+        compactStats.innerHTML = `<span class="icon">${getIcon('chart')}</span> ${data.requests} | <span class="icon">${getIcon('target')}</span> ${formatTokens(totalTokens)}`;
+        compactStats.title = `${t('endpoints.requests')}: ${data.requests} | ${t('endpoints.errors')}: ${data.errors}\n${t('statistics.in')}: ${formatTokens(data.inputTokens)} | ${t('statistics.out')}: ${formatTokens(data.outputTokens)}`;
     }
 }
