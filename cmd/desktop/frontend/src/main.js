@@ -18,7 +18,8 @@ import { checkUpdatesOnStartup, checkForUpdates, initUpdateSettings } from './mo
 import { initBroadcast } from './modules/broadcast.js'
 import { initSponsor, showSponsorModal, closeSponsorModal, openSponsorLink } from './modules/sponsor.js'
 import { initTraffic, toggleTrafficRecording, loadTrafficLogs, showTrafficDetail, closeTrafficDetailModal, clearTrafficLogs, filterTrafficByStatus, filterTrafficByEndpoint, switchTrafficTab, copyTrafficJson } from './modules/traffic.js'
-import { initFilterDropdowns, clearAllFilters } from './modules/filters.js'
+import { initFilterDropdowns, clearAllFilters, toggleUnifiedFilterPanel, closeUnifiedFilterPanel, applyUnifiedFilter } from './modules/filters.js'
+import { initMoreDropdown, toggleMoreMenu, closeMoreMenu, openTerminal, openDataSync } from './modules/toolbar.js'
 import { formatTokens } from './utils/format.js'
 import {
     showAddEndpointModal,
@@ -117,6 +118,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     // Initialize filter dropdowns
     initFilterDropdowns();
+    initMoreDropdown();
 
     // Initialize terminal module
     initTerminal();
@@ -276,6 +278,9 @@ window.importEndpoints = async (e) => {
 };
 window.switchWorkspaceTab = switchWorkspaceTab;
 window.clearAllFilters = clearAllFilters;
+window.applyUnifiedFilter = applyUnifiedFilter;
+window.openTerminal = openTerminal;
+window.openDataSync = openDataSync;
 window.showSettingsModal = showSettingsModal;
 window.closeSettingsModal = closeSettingsModal;
 window.saveSettings = saveSettings;
@@ -307,3 +312,11 @@ window.deleteHistoryArchive = async () => {
     const { deleteHistoryArchive } = await import('./modules/history.js');
     deleteHistoryArchive();
 };
+
+// 统一筛选面板
+window.toggleUnifiedFilterPanel = toggleUnifiedFilterPanel;
+window.closeUnifiedFilterPanel = closeUnifiedFilterPanel;
+
+// 更多菜单
+window.toggleMoreMenu = toggleMoreMenu;
+window.closeMoreMenu = closeMoreMenu;

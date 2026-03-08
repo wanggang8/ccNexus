@@ -73,7 +73,15 @@ export default {
         noMatchingEndpoints: 'No endpoints match the filter criteria',
         filterStatsTotal: 'Total {total} endpoints',
         filterStatsFiltered: 'Showing {filtered} / {total} endpoints',
-        clearFilters: 'Clear Filters'
+        clearFilters: 'Clear Filters',
+        // New: Unified filter and more menu
+        more: 'More',
+        filterUnified: 'Filter',
+        filterPanel: 'Filter Endpoints',
+        clearAll: 'Clear All',
+        apply: 'Apply',
+        terminal: 'Terminal',
+        dataSync: 'Data Sync'
     },
     modal: {
         addEndpoint: 'Add Endpoint',

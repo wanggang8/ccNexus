@@ -69,7 +69,15 @@ export default {
         noMatchingEndpoints: '没有符合筛选条件的端点',
         filterStatsTotal: '共 {total} 个端点',
         filterStatsFiltered: '显示 {filtered} / {total} 个端点',
-        clearFilters: '清除筛选'
+        clearFilters: '清除筛选',
+        // 新增：统一筛选和更多菜单
+        more: '更多',
+        filterUnified: '筛选',
+        filterPanel: '筛选端点',
+        clearAll: '清除所有',
+        apply: '应用',
+        terminal: '终端',
+        dataSync: '数据同步'
     },
     modal: {
         addEndpoint: '添加端点',

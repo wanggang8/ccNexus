@@ -244,8 +244,22 @@ export function initUI() {
                         </button>
                     </div>
                     <div class="workspace-actions">
+                        /* ORIGINAL STRUCTURE - DO NOT DELETE
+                        <div id="endpointsActions" class="tab-actions active">
+                            <div class="toolbar-group toolbar-group--view">...</div>
+                            <div class="toolbar-group toolbar-group--data">
+                                终端、数据同步、导出、导入
+                            </div>
+                            <button class="btn btn-primary">添加端点</button>
+                            <div class="filter-dropdowns">
+                                3个独立筛选下拉 + 清除按钮
+                            </div>
+                        </div>
+                        */
+
                         <!-- Endpoints Actions -->
                         <div id="endpointsActions" class="tab-actions active">
+                            <!-- 1. 视图切换组（保持不变） -->
                             <div class="toolbar-group toolbar-group--view">
                                 <div class="view-mode-tabs">
                                     <button class="view-mode-btn active" data-view="detail" onclick="window.switchEndpointViewMode('detail')" title="${t('endpoints.viewDetail')}">
@@ -265,94 +279,79 @@ export function initUI() {
                                     </button>
                                 </div>
                             </div>
+
+                            <!-- 2. 数据操作组（简化：导出、导入、更多） -->
                             <div class="toolbar-group toolbar-group--data">
-                                ${isShowBtn ? `
-                                <button class="btn btn-secondary" onclick="window.showTerminalModal()">
-                                    <span class="icon">${getIcon('terminal')}</span> ${t('terminal.title')}
-                                </button>` : ''}
-                                <button class="btn btn-secondary" onclick="window.showDataSyncDialog()">
-                                    <span class="icon">${getIcon('refresh')}</span> ${t('webdav.dataSync')}
-                                </button>
                                 <button class="btn btn-secondary" onclick="window.exportEndpoints()" title="${t('endpoints.export')}">
-                                    <span class="icon">${getIcon('download')}</span> ${t('endpoints.export')}
+                                    <span class="icon">${getIcon('download')}</span> <span data-i18n="endpoints.export">${t('endpoints.export')}</span>
                                 </button>
                                 <button class="btn btn-secondary" onclick="document.getElementById('importEndpointsInput').click()" title="${t('endpoints.import')}">
-                                    <span class="icon">${getIcon('upload')}</span> ${t('endpoints.import')}
+                                    <span class="icon">${getIcon('upload')}</span> <span data-i18n="endpoints.import">${t('endpoints.import')}</span>
                                 </button>
                                 <input type="file" id="importEndpointsInput" accept=".json" style="display:none" onchange="window.importEndpoints(event)">
+
+                                <!-- 更多下拉菜单 -->
+                                <div class="dropdown">
+                                    <button id="moreDropdownBtn" class="btn btn-secondary dropdown-toggle" onclick="window.toggleMoreMenu()">
+                                        <span class="icon">${getIcon('moreVertical')}</span> <span data-i18n="endpoints.more">${t('endpoints.more')}</span>
+                                    </button>
+                                    <div id="moreDropdownMenu" class="dropdown-menu hidden">
+                                        ${isShowBtn ? `
+                                        <button class="dropdown-item" onclick="window.openTerminal(); window.closeMoreMenu();">
+                                            <span class="icon">${getIcon('terminal')}</span> <span data-i18n="terminal.title">${t('terminal.title')}</span>
+                                        </button>` : ''}
+                                        <button class="dropdown-item" onclick="window.openDataSync(); window.closeMoreMenu();">
+                                            <span class="icon">${getIcon('refreshCw')}</span> <span data-i18n="webdav.dataSync">${t('webdav.dataSync')}</span>
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
+
+                            <!-- 3. 筛选组（统一筛选按钮） -->
+                            <div class="toolbar-group toolbar-group--filter">
+                                <button id="unifiedFilterBtn" class="btn btn-secondary filter-unified-btn" onclick="window.toggleUnifiedFilterPanel()">
+                                    <span class="icon">${getIcon('filter')}</span> <span data-i18n="endpoints.filterUnified">${t('endpoints.filterUnified')}</span>
+                                    <span id="unifiedFilterBadge" class="filter-badge hidden">0</span>
+                                </button>
+                            </div>
+
+                            <!-- 4. 添加端点按钮（主操作） -->
                             <button class="btn btn-primary btn-toolbar-primary" onclick="window.showAddEndpointModal()">
-                                <span class="icon">${getIcon('plus')}</span> ${t('header.addEndpoint')}
+                                <span class="icon">${getIcon('plus')}</span> <span data-i18n="header.addEndpoint">${t('header.addEndpoint')}</span>
                             </button>
 
-                            <!-- 筛选下拉按钮组 -->
-                            <div class="filter-dropdowns">
-                            <!-- 类型筛选 -->
-                            <div class="filter-dropdown" data-filter="types">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterTypeTooltip')}">
-                                    <span class="icon">${getIcon('folder')}</span>
-                                    <span class="filter-badge hidden" id="filterBadgeTypes">0</span>
-                                    <span class="icon filter-arrow">${getIcon('chevronDown')}</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="claude"> Claude</label>
-                                        <label><input type="checkbox" value="gemini"> Gemini</label>
-                                        <label><input type="checkbox" value="openai"> OpenAI</label>
-                                        <label><input type="checkbox" value="openai2"> OpenAI2</label>
-                                        <label><input type="checkbox" value="cli"> CLI</label>
+                            <!-- 统一筛选面板（在工具栏下方） -->
+                            <div id="unifiedFilterPanel" class="unified-filter-panel hidden">
+                                <div class="filter-panel-header">
+                                    <h3 data-i18n="endpoints.filterPanel">${t('endpoints.filterPanel')}</h3>
+                                    <button class="btn-close" onclick="window.hideUnifiedFilterPanel()">×</button>
+                                </div>
+                                <div class="filter-panel-body">
+                                    <!-- 类型筛选 -->
+                                    <div class="filter-section">
+                                        <h4 data-i18n="endpoints.type">${t('endpoints.type')}</h4>
+                                        <div id="filterTypeOptions" class="filter-options"></div>
                                     </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
+                                    <!-- 可用性筛选 -->
+                                    <div class="filter-section">
+                                        <h4 data-i18n="endpoints.availability">${t('endpoints.availability')}</h4>
+                                        <div id="filterAvailabilityOptions" class="filter-options"></div>
+                                    </div>
+                                    <!-- 启用状态筛选 -->
+                                    <div class="filter-section">
+                                        <h4 data-i18n="endpoints.enabledStatus">${t('endpoints.enabledStatus')}</h4>
+                                        <div id="filterEnabledOptions" class="filter-options"></div>
                                     </div>
                                 </div>
-                            </div>
-
-                            <!-- 可用性筛选 -->
-                            <div class="filter-dropdown" data-filter="availabilities">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterAvailabilityTooltip')}">
-                                    <span class="icon">${getIcon('network')}</span>
-                                    <span class="filter-badge hidden" id="filterBadgeAvailabilities">0</span>
-                                    <span class="icon filter-arrow">${getIcon('chevronDown')}</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="available"> ${t('endpoints.filterAvailable')}</label>
-                                        <label><input type="checkbox" value="unknown"> ${t('endpoints.filterUnknown')}</label>
-                                        <label><input type="checkbox" value="unavailable"> ${t('endpoints.filterUnavailable')}</label>
-                                    </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
-                                    </div>
+                                <div class="filter-panel-footer">
+                                    <button class="btn btn-secondary btn-clear-all" onclick="window.clearAllFilters()">
+                                        <span data-i18n="endpoints.clearAll">${t('endpoints.clearAll')}</span>
+                                    </button>
+                                    <button class="btn btn-primary btn-apply-unified" onclick="window.applyUnifiedFilter()">
+                                        <span data-i18n="endpoints.apply">${t('endpoints.apply')}</span>
+                                    </button>
                                 </div>
                             </div>
-
-                            <!-- 启用状态筛选 -->
-                            <div class="filter-dropdown" data-filter="enabledStates">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterEnabledTooltip')}">
-                                    <span class="icon">${getIcon('zap')}</span>
-                                    <span class="filter-badge hidden" id="filterBadgeEnabledStates">0</span>
-                                    <span class="icon filter-arrow">${getIcon('chevronDown')}</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="enabled"> ${t('endpoints.filterEnabled')}</label>
-                                        <label><input type="checkbox" value="disabled"> ${t('endpoints.filterDisabled')}</label>
-                                    </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- 清除所有筛选按钮 -->
-                            <button id="filterClearBtn" class="btn btn-secondary btn-filter-bar hidden" onclick="window.clearAllFilters()" title="${t('endpoints.filterClearAll')}">
-                                <span class="icon">${getIcon('x')}</span> ${t('endpoints.clearFilters')}
-                            </button>
-                        </div>
                         </div>
                         <!-- Traffic Actions -->
                         <div id="trafficActions" class="tab-actions">

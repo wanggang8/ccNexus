@@ -66,7 +66,10 @@ function loadFilterState() {
 export function initFilterDropdowns() {
     loadFilterState();
 
-    // 为每个下拉按钮绑定事件
+    // 初始化统一筛选面板
+    initUnifiedFilterPanel();
+
+    // 为每个下拉按钮绑定事件（保留旧代码兼容性）
     document.querySelectorAll('.filter-dropdown').forEach(dropdown => {
         const btn = dropdown.querySelector('.filter-dropdown-btn');
         const panel = dropdown.querySelector('.filter-dropdown-panel');
@@ -90,13 +93,13 @@ export function initFilterDropdowns() {
         });
 
         // "清空"按钮
-        panel.querySelector('.btn-clear-dimension').addEventListener('click', () => {
+        panel.querySelector('.btn-clear-dimension')?.addEventListener('click', () => {
             checkboxes.forEach(cb => cb.checked = false);
             updateTempState(filterKey, checkboxes);
         });
 
         // "确定"按钮
-        panel.querySelector('.btn-apply').addEventListener('click', () => {
+        panel.querySelector('.btn-apply')?.addEventListener('click', () => {
             applyTempState(filterKey, checkboxes);
             closePanel(dropdown);
         });
@@ -105,6 +108,7 @@ export function initFilterDropdowns() {
     // 点击外部关闭所有面板
     document.addEventListener('click', () => {
         closeAllPanels();
+        closeUnifiedFilterPanel();
     });
 
     // 阻止面板内点击冒泡
@@ -116,6 +120,145 @@ export function initFilterDropdowns() {
 
     // 初始化徽章显示
     updateAllBadges();
+}
+
+// 初始化统一筛选面板
+function initUnifiedFilterPanel() {
+    const filterBtn = document.getElementById('unifiedFilterBtn');
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+
+    if (!filterBtn || !filterPanel) return;
+
+    // 点击按钮切换面板
+    filterBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleUnifiedFilterPanel();
+    });
+
+    // 阻止面板内点击冒泡
+    filterPanel.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+
+    // 初始化所有复选框状态
+    initUnifiedFilterCheckboxes();
+
+    // "清空全部"按钮
+    const clearAllBtn = filterPanel.querySelector('.btn-clear-all');
+    clearAllBtn?.addEventListener('click', () => {
+        filterPanel.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.checked = false;
+        });
+        updateUnifiedTempState();
+    });
+
+    // "确定"按钮
+    const applyBtn = filterPanel.querySelector('.btn-apply-unified');
+    applyBtn?.addEventListener('click', () => {
+        applyUnifiedFilters();
+        closeUnifiedFilterPanel();
+    });
+}
+
+// 初始化统一筛选面板的复选框
+function initUnifiedFilterCheckboxes() {
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+    if (!filterPanel) return;
+
+    // 类型筛选
+    filterPanel.querySelectorAll('[data-filter-type="types"] input[type="checkbox"]').forEach(cb => {
+        cb.checked = filterState.types.includes(cb.value);
+        cb.addEventListener('change', updateUnifiedTempState);
+    });
+
+    // 可用性筛选
+    filterPanel.querySelectorAll('[data-filter-type="availabilities"] input[type="checkbox"]').forEach(cb => {
+        cb.checked = filterState.availabilities.includes(cb.value);
+        cb.addEventListener('change', updateUnifiedTempState);
+    });
+
+    // 启用状态筛选
+    filterPanel.querySelectorAll('[data-filter-type="enabledStates"] input[type="checkbox"]').forEach(cb => {
+        cb.checked = filterState.enabledStates.includes(cb.value);
+        cb.addEventListener('change', updateUnifiedTempState);
+    });
+}
+
+// 更新统一筛选的临时状态
+function updateUnifiedTempState() {
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+    if (!filterPanel) return;
+
+    tempState.types = Array.from(filterPanel.querySelectorAll('[data-filter-type="types"] input:checked'))
+        .map(cb => cb.value);
+    tempState.availabilities = Array.from(filterPanel.querySelectorAll('[data-filter-type="availabilities"] input:checked'))
+        .map(cb => cb.value);
+    tempState.enabledStates = Array.from(filterPanel.querySelectorAll('[data-filter-type="enabledStates"] input:checked'))
+        .map(cb => cb.value);
+}
+
+// 应用统一筛选
+export function applyUnifiedFilter() {
+    filterState.types = tempState.types || [];
+    filterState.availabilities = tempState.availabilities || [];
+    filterState.enabledStates = tempState.enabledStates || [];
+
+    saveFilterState();
+    updateUnifiedFilterBadge();
+    applyFilters();
+    closeUnifiedFilterPanel();
+}
+
+// 切换统一筛选面板
+export function toggleUnifiedFilterPanel() {
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+    const filterBtn = document.getElementById('unifiedFilterBtn');
+
+    if (!filterPanel || !filterBtn) return;
+
+    const isOpen = !filterPanel.classList.contains('hidden');
+
+    if (isOpen) {
+        closeUnifiedFilterPanel();
+    } else {
+        closeAllPanels(); // 关闭其他面板
+        filterPanel.classList.remove('hidden');
+        filterBtn.classList.add('active');
+    }
+}
+
+// 关闭统一筛选面板
+export function closeUnifiedFilterPanel() {
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+    const filterBtn = document.getElementById('unifiedFilterBtn');
+
+    if (filterPanel) {
+        filterPanel.classList.add('hidden');
+    }
+    if (filterBtn && !isFilterActive()) {
+        filterBtn.classList.remove('active');
+    }
+}
+
+// 更新统一筛选按钮徽章
+function updateUnifiedFilterBadge() {
+    const totalCount = filterState.types.length +
+                      filterState.availabilities.length +
+                      filterState.enabledStates.length;
+
+    const badge = document.getElementById('unifiedFilterBadge');
+    const btn = document.getElementById('unifiedFilterBtn');
+
+    if (badge) {
+        if (totalCount > 0) {
+            badge.textContent = totalCount;
+            badge.classList.remove('hidden');
+            btn?.classList.add('active');
+        } else {
+            badge.classList.add('hidden');
+            btn?.classList.remove('active');
+        }
+    }
 }
 
 // 切换面板显示
@@ -192,6 +335,7 @@ function updateAllBadges() {
     updateBadge('types');
     updateBadge('availabilities');
     updateBadge('enabledStates');
+    updateUnifiedFilterBadge();
 }
 
 function capitalizeFirst(str) {
