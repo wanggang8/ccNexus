@@ -24,7 +24,7 @@ export function initMoreDropdown() {
     });
 
     // 菜单项点击后关闭菜单
-    moreMenu.querySelectorAll('.more-menu-item').forEach(item => {
+    moreMenu.querySelectorAll('.dropdown-item').forEach(item => {
         item.addEventListener('click', () => {
             closeMoreMenu();
         });

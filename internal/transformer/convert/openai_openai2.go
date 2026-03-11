@@ -29,6 +29,36 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 			continue
 		}
 
+		// tool result messages → function_call_output
+		if msg.Role == "tool" {
+			content, _ := msg.Content.(string)
+			input = append(input, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": msg.ToolCallID,
+				"output":  content,
+			})
+			continue
+		}
+
+		// assistant messages with tool_calls → function_call items (optionally preceded by a text message item)
+		if len(msg.ToolCalls) > 0 {
+			if text, ok := msg.Content.(string); ok && text != "" {
+				input = append(input, map[string]interface{}{
+					"type": "message", "role": "assistant",
+					"content": []map[string]interface{}{{"type": "output_text", "text": text}},
+				})
+			}
+			for _, tc := range msg.ToolCalls {
+				input = append(input, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				})
+			}
+			continue
+		}
+
 		item := map[string]interface{}{"type": "message", "role": msg.Role}
 		var contentParts []map[string]interface{}
 
@@ -38,7 +68,21 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 			if msg.Role == "assistant" {
 				textType = "output_text"
 			}
-			contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
+			if content != "" {
+				contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
+			}
+		case []interface{}:
+			textType := "input_text"
+			if msg.Role == "assistant" {
+				textType = "output_text"
+			}
+			for _, part := range content {
+				if p, ok := part.(map[string]interface{}); ok {
+					if p["type"] == "text" {
+						contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": p["text"]})
+					}
+				}
+			}
 		}
 		item["content"] = contentParts
 		input = append(input, item)
@@ -293,8 +337,10 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				result.WriteString(fmt.Sprintf("data: %s\n\n", d))
 			}
 			if ctx.ContentBlockStarted {
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+				accText := ctx.ContentText
+				ctx.ContentText = ""
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
 			writeEvent(map[string]interface{}{
@@ -358,6 +404,7 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
+			ctx.ContentText += delta.Content
 			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": delta.Content})
 		}
 
@@ -390,8 +437,10 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		// Handle finish
 		if finishReason != nil && *finishReason != "" {
 			if ctx.ContentBlockStarted {
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+				accText := ctx.ContentText
+				ctx.ContentText = ""
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 				ctx.ContentBlockStarted = false
 			}

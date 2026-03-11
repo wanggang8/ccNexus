@@ -244,19 +244,6 @@ export function initUI() {
                         </button>
                     </div>
                     <div class="workspace-actions">
-                        /* ORIGINAL STRUCTURE - DO NOT DELETE
-                        <div id="endpointsActions" class="tab-actions active">
-                            <div class="toolbar-group toolbar-group--view">...</div>
-                            <div class="toolbar-group toolbar-group--data">
-                                终端、数据同步、导出、导入
-                            </div>
-                            <button class="btn btn-primary">添加端点</button>
-                            <div class="filter-dropdowns">
-                                3个独立筛选下拉 + 清除按钮
-                            </div>
-                        </div>
-                        */
-
                         <!-- Endpoints Actions -->
                         <div id="endpointsActions" class="tab-actions active">
                             <!-- 1. 视图切换组（保持不变） -->
@@ -292,7 +279,7 @@ export function initUI() {
 
                                 <!-- 更多下拉菜单 -->
                                 <div class="dropdown">
-                                    <button id="moreDropdownBtn" class="btn btn-secondary dropdown-toggle" onclick="window.toggleMoreMenu()">
+                                    <button id="moreDropdownBtn" class="btn btn-secondary dropdown-toggle">
                                         <span class="icon">${getIcon('moreVertical')}</span> <span data-i18n="endpoints.more">${t('endpoints.more')}</span>
                                     </button>
                                     <div id="moreDropdownMenu" class="dropdown-menu hidden">
@@ -309,7 +296,7 @@ export function initUI() {
 
                             <!-- 3. 筛选组（统一筛选按钮） -->
                             <div class="toolbar-group toolbar-group--filter">
-                                <button id="unifiedFilterBtn" class="btn btn-secondary filter-unified-btn" onclick="window.toggleUnifiedFilterPanel()">
+                                <button id="unifiedFilterBtn" class="btn btn-secondary filter-unified-btn">
                                     <span class="icon">${getIcon('filter')}</span> <span data-i18n="endpoints.filterUnified">${t('endpoints.filterUnified')}</span>
                                     <span id="unifiedFilterBadge" class="filter-badge hidden">0</span>
                                 </button>
@@ -324,7 +311,7 @@ export function initUI() {
                             <div id="unifiedFilterPanel" class="unified-filter-panel hidden">
                                 <div class="filter-panel-header">
                                     <h3 data-i18n="endpoints.filterPanel">${t('endpoints.filterPanel')}</h3>
-                                    <button class="btn-close" onclick="window.hideUnifiedFilterPanel()">×</button>
+                                    <button class="btn-close">×</button>
                                 </div>
                                 <div class="filter-panel-body">
                                     <!-- 类型筛选 -->
@@ -344,10 +331,10 @@ export function initUI() {
                                     </div>
                                 </div>
                                 <div class="filter-panel-footer">
-                                    <button class="btn btn-secondary btn-clear-all" onclick="window.clearAllFilters()">
+                                    <button class="btn btn-secondary btn-clear-all">
                                         <span data-i18n="endpoints.clearAll">${t('endpoints.clearAll')}</span>
                                     </button>
-                                    <button class="btn btn-primary btn-apply-unified" onclick="window.applyUnifiedFilter()">
+                                    <button class="btn btn-primary btn-apply-unified">
                                         <span data-i18n="endpoints.apply">${t('endpoints.apply')}</span>
                                     </button>
                                 </div>

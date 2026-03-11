@@ -33,12 +33,38 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		}
 	}
 
-	// Second pass: convert messages
-	for _, msg := range req.Messages {
+	// Second pass: convert messages (index loop to merge consecutive tool messages)
+	i := 0
+	for i < len(req.Messages) {
+		msg := req.Messages[i]
+
 		if msg.Role == "system" {
 			if content, ok := msg.Content.(string); ok {
 				systemInstruction += content + "\n"
 			}
+			i++
+			continue
+		}
+
+		// Merge consecutive tool messages → single user content with multiple functionResponse parts
+		if msg.Role == "tool" {
+			var funcResponseParts []map[string]interface{}
+			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
+				m := req.Messages[i]
+				funcName := toolCallIDToName[m.ToolCallID]
+				if funcName == "" {
+					logger.Warn("Tool call ID %s not found in mapping, using ID as fallback", m.ToolCallID)
+					funcName = m.ToolCallID
+				}
+				funcResponseParts = append(funcResponseParts, map[string]interface{}{
+					"functionResponse": map[string]interface{}{
+						"name":     funcName,
+						"response": map[string]interface{}{"result": m.Content},
+					},
+				})
+				i++
+			}
+			contents = append(contents, map[string]interface{}{"role": "user", "parts": funcResponseParts})
 			continue
 		}
 
@@ -64,26 +90,8 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 			})
 		}
 
-		// Handle tool message
-		if msg.Role == "tool" {
-			funcName := toolCallIDToName[msg.ToolCallID]
-			if funcName == "" {
-				// Fallback: use tool_call_id as function name if mapping not found
-				logger.Warn("Tool call ID %s not found in mapping, using ID as fallback", msg.ToolCallID)
-				funcName = msg.ToolCallID
-			}
-			parts = []map[string]interface{}{
-				{
-					"functionResponse": map[string]interface{}{
-						"name":     funcName,
-						"response": map[string]interface{}{"result": msg.Content},
-					},
-				},
-			}
-			role = "user"
-		}
-
 		contents = append(contents, map[string]interface{}{"role": role, "parts": parts})
+		i++
 	}
 
 	geminiReq["contents"] = contents

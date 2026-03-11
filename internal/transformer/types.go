@@ -202,6 +202,7 @@ type StreamContext struct {
 	InThinkingTag       bool   // Track if we are inside a <think> tag
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
 	PendingThinkingText string // Buffered thinking text until closing tag arrives
+	ContentText         string // Accumulated text content for output_text.done event
 }
 
 // NewStreamContext creates a new stream context with default values
@@ -229,6 +230,7 @@ func NewStreamContext() *StreamContext {
 		InThinkingTag:        false,
 		ThinkingBuffer:       "",
 		PendingThinkingText:  "",
+		ContentText:          "",
 	}
 }
 

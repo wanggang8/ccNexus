@@ -154,8 +154,10 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				result.WriteString(fmt.Sprintf("data: %s\n\n", d))
 			}
 			if ctx.ContentBlockStarted {
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+				accText := ctx.ContentText
+				ctx.ContentText = ""
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
 			writeEvent(map[string]interface{}{
@@ -202,7 +204,7 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		ctx.MessageStartSent = true
 		ctx.MessageID = "gemini-resp"
 		writeEvent(map[string]interface{}{
-			"type": "response.created",
+			"type":     "response.created",
 			"response": map[string]interface{}{"id": ctx.MessageID, "object": "response", "status": "in_progress"},
 		})
 	}
@@ -221,19 +223,22 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
+			ctx.ContentText += part.Text
 			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": part.Text})
 		}
 		if part.FunctionCall != nil {
 			args, _ := json.Marshal(part.FunctionCall.Args)
 			callID := fmt.Sprintf("call_%d", ctx.ToolCallCounter)
 			ctx.ToolCallCounter++
+			outputIndex := ctx.ToolCallCounter
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.added", "output_index": ctx.ToolCallCounter,
+				"type": "response.output_item.added", "output_index": outputIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": "", "status": "in_progress"},
 			})
-			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": ctx.ToolCallCounter, "arguments": string(args)})
+			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.delta", "output_index": outputIndex, "delta": string(args)})
+			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": outputIndex, "arguments": string(args)})
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.done", "output_index": ctx.ToolCallCounter,
+				"type": "response.output_item.done", "output_index": outputIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": string(args), "status": "completed"},
 			})
 		}
@@ -242,8 +247,10 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	// Check for finish
 	if candidate.FinishReason != "" {
 		if ctx.ContentBlockStarted {
-			writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-			writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+			accText := ctx.ContentText
+			ctx.ContentText = ""
+			writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
+			writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
 			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			ctx.ContentBlockStarted = false
 		}
@@ -429,4 +436,3 @@ func convertOpenAI2ContentToGeminiParts(content interface{}) []map[string]interf
 
 	return parts
 }
-

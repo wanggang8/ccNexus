@@ -215,6 +215,62 @@ func TestOpenAIReqToClaudeCLI_WithToolCall(t *testing.T) {
 	}
 }
 
+func TestOpenAIReqToClaudeCLI_WithParallelToolCalls(t *testing.T) {
+	// 并行工具调用：两个 tool 消息必须合并为同一个 user 消息
+	openaiReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"messages": [
+			{"role": "user", "content": "Read two files"},
+			{"role": "assistant", "content": "", "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"/a.txt\"}"}},
+				{"id": "call_2", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"/b.txt\"}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "content of a"},
+			{"role": "tool", "tool_call_id": "call_2", "content": "content of b"}
+		],
+		"stream": true
+	}`
+
+	body, _, err := OpenAIReqToClaudeCLI([]byte(openaiReq), "claude-sonnet-4-20250514", "test-api-key")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaudeCLI failed: %v", err)
+	}
+
+	var cliReq map[string]interface{}
+	if err := json.Unmarshal(body, &cliReq); err != nil {
+		t.Fatalf("Failed to unmarshal CLI request: %v", err)
+	}
+
+	messages, _ := cliReq["messages"].([]interface{})
+	// 期望：user(1) + assistant(1) + merged_user(1) = 3 条消息，而非 4 条
+	if len(messages) != 3 {
+		t.Fatalf("Expected 3 messages after merging parallel tool results, got %d", len(messages))
+	}
+
+	// 验证第三条消息是合并后的 user 消息，包含两个 tool_result
+	mergedMsg := messages[2].(map[string]interface{})
+	if mergedMsg["role"] != "user" {
+		t.Errorf("Expected merged message role to be 'user', got %v", mergedMsg["role"])
+	}
+	toolContent, _ := mergedMsg["content"].([]interface{})
+	if len(toolContent) != 2 {
+		t.Fatalf("Expected 2 tool_result blocks in merged user message, got %d", len(toolContent))
+	}
+	for i, block := range toolContent {
+		b := block.(map[string]interface{})
+		if b["type"] != "tool_result" {
+			t.Errorf("Block %d: expected type 'tool_result', got %v", i, b["type"])
+		}
+	}
+	// 验证 tool_use_id 正确
+	if toolContent[0].(map[string]interface{})["tool_use_id"] != "call_1" {
+		t.Errorf("Expected first tool_use_id 'call_1', got %v", toolContent[0].(map[string]interface{})["tool_use_id"])
+	}
+	if toolContent[1].(map[string]interface{})["tool_use_id"] != "call_2" {
+		t.Errorf("Expected second tool_use_id 'call_2', got %v", toolContent[1].(map[string]interface{})["tool_use_id"])
+	}
+}
+
 func TestOpenAIReqToClaudeCLI_WithThinking(t *testing.T) {
 	openaiReq := `{
 		"model": "claude-sonnet-4-20250514",

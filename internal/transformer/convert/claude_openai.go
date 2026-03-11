@@ -38,6 +38,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		case []interface{}:
 			// Check for tool_result blocks
 			var textParts []string
+			var imageParts []map[string]interface{}
 			var toolCalls []transformer.OpenAIToolCall
 			var toolResults []transformer.OpenAIMessage
 			hasThinking := false
@@ -57,6 +58,29 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 					// and should not be forwarded to other APIs
 					hasThinking = true
 					continue
+				case "image":
+					// Convert Claude image format to OpenAI image_url format
+					if source, ok := m["source"].(map[string]interface{}); ok {
+						srcType, _ := source["type"].(string)
+						switch srcType {
+						case "base64":
+							mediaType, _ := source["media_type"].(string)
+							data, _ := source["data"].(string)
+							if mediaType != "" && data != "" {
+								imageParts = append(imageParts, map[string]interface{}{
+									"type":      "image_url",
+									"image_url": map[string]interface{}{"url": fmt.Sprintf("data:%s;base64,%s", mediaType, data)},
+								})
+							}
+						case "url":
+							if url, ok := source["url"].(string); ok && url != "" {
+								imageParts = append(imageParts, map[string]interface{}{
+									"type":      "image_url",
+									"image_url": map[string]interface{}{"url": url},
+								})
+							}
+						}
+					}
 				case "tool_use":
 					args, _ := json.Marshal(m["input"])
 					id, ok := m["id"].(string)
@@ -88,10 +112,18 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 				}
 			}
 
-			// Add main message if has text or tool_calls
-			if len(textParts) > 0 || len(toolCalls) > 0 {
+			// Add main message if has text, images, or tool_calls
+			if len(textParts) > 0 || len(imageParts) > 0 || len(toolCalls) > 0 {
 				openaiMsg := transformer.OpenAIMessage{Role: msg.Role}
-				if len(textParts) > 0 {
+				if len(imageParts) > 0 {
+					// Use array content format when images are present
+					var parts []map[string]interface{}
+					if len(textParts) > 0 {
+						parts = append(parts, map[string]interface{}{"type": "text", "text": strings.Join(textParts, "")})
+					}
+					parts = append(parts, imageParts...)
+					openaiMsg.Content = parts
+				} else if len(textParts) > 0 {
 					openaiMsg.Content = strings.Join(textParts, "")
 				}
 				if len(toolCalls) > 0 {
@@ -199,9 +231,12 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	var messages []map[string]interface{}
 
 	if reqMessages, ok := reqMap["messages"].([]interface{}); ok {
-		for _, msgInterface := range reqMessages {
+		idx := 0
+		for idx < len(reqMessages) {
+			msgInterface := reqMessages[idx]
 			msg, ok := msgInterface.(map[string]interface{})
 			if !ok {
+				idx++
 				continue
 			}
 
@@ -210,6 +245,33 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 				if content, ok := msg["content"].(string); ok {
 					systemPrompt += content + "\n"
 				}
+				idx++
+				continue
+			}
+
+			// 合并连续的 tool 消息（并行工具调用的结果）到同一 user 消息中
+			// Claude API 要求：多个并行工具调用的结果必须在同一条 user 消息内
+			if role == "tool" {
+				var toolResults []map[string]interface{}
+				for idx < len(reqMessages) {
+					tm, ok := reqMessages[idx].(map[string]interface{})
+					if !ok {
+						break
+					}
+					if r, _ := tm["role"].(string); r != "tool" {
+						break
+					}
+					toolCallID, _ := tm["tool_call_id"].(string)
+					content, _ := tm["content"].(string)
+					toolResults = append(toolResults, map[string]interface{}{
+						"type": "tool_result", "tool_use_id": toolCallID, "content": content,
+					})
+					idx++
+				}
+				messages = append(messages, map[string]interface{}{
+					"role":    "user",
+					"content": toolResults,
+				})
 				continue
 			}
 
@@ -253,17 +315,8 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 				claudeMsg["content"] = blocks
 			}
 
-			// Handle tool message
-			if role == "tool" {
-				claudeMsg["role"] = "user"
-				toolCallID, _ := msg["tool_call_id"].(string)
-				content, _ := msg["content"].(string)
-				claudeMsg["content"] = []map[string]interface{}{
-					{"type": "tool_result", "tool_use_id": toolCallID, "content": content},
-				}
-			}
-
 			messages = append(messages, claudeMsg)
+			idx++
 		}
 	}
 
@@ -461,7 +514,8 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	case "content_block_start":
 		if block, ok := data["content_block"].(map[string]interface{}); ok {
-			if block["type"] == "tool_use" {
+			switch block["type"] {
+			case "tool_use":
 				ctx.ToolBlockStarted = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
@@ -470,6 +524,8 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
 						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
 				}, "")
+			case "thinking":
+				ctx.ThinkingBlockStarted = true
 			}
 		}
 		return nil, nil
@@ -483,6 +539,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		case "text_delta":
 			text, _ := delta["text"].(string)
 			return buildOpenAIChunk(ctx.MessageID, model, text, nil, "")
+		case "thinking_delta":
+			thinking, _ := delta["thinking"].(string)
+			if thinking != "" {
+				return buildOpenAIChunkWithReasoning(ctx.MessageID, model, thinking)
+			}
 		case "input_json_delta":
 			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
@@ -494,6 +555,9 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		return nil, nil
 
 	case "content_block_stop":
+		if ctx.ThinkingBlockStarted {
+			ctx.ThinkingBlockStarted = false
+		}
 		if ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
@@ -774,13 +838,20 @@ func convertOpenAIContentToClaude(content []interface{}) []map[string]interface{
 			result = append(result, map[string]interface{}{"type": "text", "text": m["text"]})
 		case "image_url":
 			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := urlObj["url"].(string); ok && strings.HasPrefix(url, "data:") {
-					parts := strings.SplitN(url, ",", 2)
-					if len(parts) == 2 {
-						mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						parts := strings.SplitN(url, ",", 2)
+						if len(parts) == 2 {
+							mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+							result = append(result, map[string]interface{}{
+								"type":   "image",
+								"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							})
+						}
+					} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
 						result = append(result, map[string]interface{}{
 							"type":   "image",
-							"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							"source": map[string]interface{}{"type": "url", "url": url},
 						})
 					}
 				}

@@ -54,17 +54,21 @@ func getCliSessionID() string {
 
 func getCliUserID() string {
 	cliUserOnce.Do(func() {
-		bytes := make([]byte, 32)
-		rand.Read(bytes)
-		cliUserID = hex.EncodeToString(bytes)
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			logger.Warn("[CLI] Failed to generate random user ID: %v", err)
+		}
+		cliUserID = hex.EncodeToString(b)
 	})
 	return cliUserID
 }
 
 func generateCliUUID() string {
-	bytes := make([]byte, 16)
-	rand.Read(bytes)
-	h := hex.EncodeToString(bytes)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		logger.Warn("[CLI] Failed to generate random UUID: %v", err)
+	}
+	h := hex.EncodeToString(b)
 	return fmt.Sprintf("%s-%s-%s-%s-%s",
 		h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
 }
@@ -201,13 +205,40 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 		}
 	}
 
-	// 2. 转换 Messages（排除 system）
+	// 2. 转换 Messages（排除 system），并合并连续 tool 消息（并行工具调用）
 	var messages []map[string]interface{}
-	for _, msg := range req.Messages {
+	i := 0
+	for i < len(req.Messages) {
+		msg := req.Messages[i]
 		if msg.Role == "system" {
+			i++
 			continue
 		}
-		messages = append(messages, convertOpenAIMessageToClaudeCLI(msg))
+		if msg.Role == "tool" {
+			// 收集所有连续的 tool 消息，合并到同一个 user 消息中
+			// Claude API 要求：多个并行工具调用的结果必须在同一条 user 消息内
+			var toolResults []map[string]interface{}
+			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
+				toolResults = append(toolResults, map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": req.Messages[i].ToolCallID,
+					"content":     req.Messages[i].Content,
+				})
+				i++
+			}
+			messages = append(messages, map[string]interface{}{
+				"role":    "user",
+				"content": toolResults,
+			})
+		} else {
+			messages = append(messages, convertOpenAIMessageToClaudeCLI(msg))
+			i++
+		}
+	}
+
+	// 过滤后消息为空（如请求仅含 system 角色）则拒绝
+	if len(messages) == 0 {
+		return nil, nil, fmt.Errorf("CLI: no non-system messages to send")
 	}
 
 	// 3. 转换 Tools - handle both OpenAI format and Cursor's Claude format
@@ -270,11 +301,46 @@ func OpenAIReqToClaudeCLI(openaiReq []byte, model, apiKey string) ([]byte, map[s
 		"stream":     req.Stream,
 	}
 
+	// 转发 temperature（与 OpenAIReqToClaude 保持一致）
+	if req.Temperature != nil {
+		cliReq["temperature"] = *req.Temperature
+	}
+
+	// 转发 tool_choice（OpenAI → Claude 格式转换）
+	if req.ToolChoice != nil && len(tools) > 0 {
+		switch tc := req.ToolChoice.(type) {
+		case string:
+			switch tc {
+			case "required":
+				cliReq["tool_choice"] = map[string]interface{}{"type": "any"}
+			case "auto":
+				cliReq["tool_choice"] = map[string]interface{}{"type": "auto"}
+			case "none":
+				// Claude 无 none 选项，不设置（工具已在 tools 中，不传 tool_choice 默认 auto）
+			}
+		case map[string]interface{}:
+			if tc["type"] == "function" {
+				if fn, ok := tc["function"].(map[string]interface{}); ok {
+					if name, ok := fn["name"].(string); ok && name != "" {
+						cliReq["tool_choice"] = map[string]interface{}{"type": "tool", "name": name}
+					}
+				}
+			}
+		}
+	}
+
 	// 7. thinking 参数支持（配合 interleaved-thinking beta）
+	// Claude API 要求 budget_tokens < max_tokens
 	if req.EnableThinking {
-		cliReq["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 10000,
+		budgetTokens := 10000
+		if budgetTokens >= maxTokens {
+			budgetTokens = maxTokens - 1
+		}
+		if budgetTokens > 0 {
+			cliReq["thinking"] = map[string]interface{}{
+				"type":          "enabled",
+				"budget_tokens": budgetTokens,
+			}
 		}
 	}
 
@@ -337,7 +403,76 @@ func convertOpenAIMessageToClaudeCLI(msg transformer.OpenAIMessage) map[string]i
 		return result
 	}
 
-	// 普通消息
-	result["content"] = msg.Content
+	// 普通消息：对多部分内容进行格式转换（兼容 OpenAI image_url 和 Claude image 两种格式）
+	if arr, ok := msg.Content.([]interface{}); ok {
+		result["content"] = convertMixedContentForCLI(arr)
+	} else if msg.Content != nil {
+		result["content"] = msg.Content
+	} else {
+		// nil content → 空字符串，避免 JSON 序列化为 null 被 Claude API 拒绝
+		result["content"] = ""
+	}
+	return result
+}
+
+// convertMixedContentForCLI 转换多部分内容，兼容 OpenAI 和 Claude 两种格式
+// - OpenAI image_url 格式 → Claude image 格式
+// - Claude image 格式 → 直接透传
+// - text、tool_result 等 → 直接透传
+func convertMixedContentForCLI(arr []interface{}) []map[string]interface{} {
+	var result []map[string]interface{}
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			result = append(result, map[string]interface{}{"type": "text", "text": m["text"]})
+		case "image_url":
+			// OpenAI 格式 → Claude 格式
+			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						// base64 data URL → Claude base64 source
+						parts := strings.SplitN(url, ",", 2)
+						if len(parts) == 2 {
+							mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+							result = append(result, map[string]interface{}{
+								"type": "image",
+								"source": map[string]interface{}{
+									"type":       "base64",
+									"media_type": mediaType,
+									"data":       parts[1],
+								},
+							})
+						}
+					} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+						// External URL → Claude url source
+						result = append(result, map[string]interface{}{
+							"type": "image",
+							"source": map[string]interface{}{
+								"type": "url",
+								"url":  url,
+							},
+						})
+					}
+				}
+			}
+		case "image":
+			// 已是 Claude 格式，直接透传
+			result = append(result, m)
+		case "tool_result":
+			// Claude 格式 tool_result，直接透传
+			result = append(result, map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": m["tool_use_id"],
+				"content":     m["content"],
+			})
+		default:
+			// 其他类型直接透传
+			result = append(result, m)
+		}
+	}
 	return result
 }

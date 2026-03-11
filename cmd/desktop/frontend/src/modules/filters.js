@@ -30,8 +30,10 @@ export function clearAllFilters() {
         enabledStates: []
     };
 
+    syncTempStateFromFilterState();
+
     // 清空所有复选框
-    document.querySelectorAll('.filter-dropdown-panel input[type="checkbox"]').forEach(cb => {
+    document.querySelectorAll('.filter-dropdown-panel input[type="checkbox"], #unifiedFilterPanel input[type="checkbox"]').forEach(cb => {
         cb.checked = false;
     });
 
@@ -42,6 +44,77 @@ export function clearAllFilters() {
 
 // 持久化筛选状态
 const FILTER_STATE_KEY = 'ccnexus_filter_state_v3';
+
+function renderUnifiedFilterOptions() {
+    const groups = [
+        {
+            containerId: 'filterTypeOptions',
+            filterType: 'types',
+            options: [
+                { value: 'claude', label: 'Claude' },
+                { value: 'openai', label: 'OpenAI' },
+                { value: 'openai2', label: 'OpenAI Responses' },
+                { value: 'gemini', label: 'Gemini' },
+                { value: 'cli', label: 'CLI' }
+            ]
+        },
+        {
+            containerId: 'filterAvailabilityOptions',
+            filterType: 'availabilities',
+            options: [
+                { value: 'available', label: t('endpoints.filterAvailable') },
+                { value: 'unknown', label: t('endpoints.filterUnknown') },
+                { value: 'unavailable', label: t('endpoints.filterUnavailable') }
+            ]
+        },
+        {
+            containerId: 'filterEnabledOptions',
+            filterType: 'enabledStates',
+            options: [
+                { value: 'enabled', label: t('endpoints.filterEnabled') },
+                { value: 'disabled', label: t('endpoints.filterDisabled') }
+            ]
+        }
+    ];
+
+    groups.forEach(({ containerId, filterType, options }) => {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        container.dataset.filterType = filterType;
+        container.innerHTML = options.map(({ value, label }) => `
+            <label>
+                <input type="checkbox" value="${value}">
+                <span>${label}</span>
+            </label>
+        `).join('');
+    });
+}
+
+function syncTempStateFromFilterState() {
+    tempState = {
+        types: [...filterState.types],
+        availabilities: [...filterState.availabilities],
+        enabledStates: [...filterState.enabledStates]
+    };
+}
+
+function syncUnifiedCheckboxesFromState() {
+    const filterPanel = document.getElementById('unifiedFilterPanel');
+    if (!filterPanel) return;
+
+    const stateMap = {
+        types: filterState.types,
+        availabilities: filterState.availabilities,
+        enabledStates: filterState.enabledStates
+    };
+
+    Object.entries(stateMap).forEach(([filterType, values]) => {
+        filterPanel.querySelectorAll(`[data-filter-type="${filterType}"] input[type="checkbox"]`).forEach(cb => {
+            cb.checked = values.includes(cb.value);
+        });
+    });
+}
 
 function saveFilterState() {
     try {
@@ -65,6 +138,8 @@ function loadFilterState() {
 // 初始化筛选下拉框
 export function initFilterDropdowns() {
     loadFilterState();
+    syncTempStateFromFilterState();
+    renderUnifiedFilterOptions();
 
     // 初始化统一筛选面板
     initUnifiedFilterPanel();
@@ -143,6 +218,11 @@ function initUnifiedFilterPanel() {
     // 初始化所有复选框状态
     initUnifiedFilterCheckboxes();
 
+    const closeBtn = filterPanel.querySelector('.btn-close');
+    closeBtn?.addEventListener('click', () => {
+        closeUnifiedFilterPanel();
+    });
+
     // "清空全部"按钮
     const clearAllBtn = filterPanel.querySelector('.btn-clear-all');
     clearAllBtn?.addEventListener('click', () => {
@@ -155,8 +235,7 @@ function initUnifiedFilterPanel() {
     // "确定"按钮
     const applyBtn = filterPanel.querySelector('.btn-apply-unified');
     applyBtn?.addEventListener('click', () => {
-        applyUnifiedFilters();
-        closeUnifiedFilterPanel();
+        applyUnifiedFilter();
     });
 }
 
@@ -165,23 +244,13 @@ function initUnifiedFilterCheckboxes() {
     const filterPanel = document.getElementById('unifiedFilterPanel');
     if (!filterPanel) return;
 
-    // 类型筛选
-    filterPanel.querySelectorAll('[data-filter-type="types"] input[type="checkbox"]').forEach(cb => {
-        cb.checked = filterState.types.includes(cb.value);
+    syncUnifiedCheckboxesFromState();
+
+    filterPanel.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', updateUnifiedTempState);
     });
 
-    // 可用性筛选
-    filterPanel.querySelectorAll('[data-filter-type="availabilities"] input[type="checkbox"]').forEach(cb => {
-        cb.checked = filterState.availabilities.includes(cb.value);
-        cb.addEventListener('change', updateUnifiedTempState);
-    });
-
-    // 启用状态筛选
-    filterPanel.querySelectorAll('[data-filter-type="enabledStates"] input[type="checkbox"]').forEach(cb => {
-        cb.checked = filterState.enabledStates.includes(cb.value);
-        cb.addEventListener('change', updateUnifiedTempState);
-    });
+    updateUnifiedTempState();
 }
 
 // 更新统一筛选的临时状态
@@ -204,7 +273,7 @@ export function applyUnifiedFilter() {
     filterState.enabledStates = tempState.enabledStates || [];
 
     saveFilterState();
-    updateUnifiedFilterBadge();
+    updateAllBadges();
     applyFilters();
     closeUnifiedFilterPanel();
 }
@@ -222,6 +291,8 @@ export function toggleUnifiedFilterPanel() {
         closeUnifiedFilterPanel();
     } else {
         closeAllPanels(); // 关闭其他面板
+        syncTempStateFromFilterState();
+        syncUnifiedCheckboxesFromState();
         filterPanel.classList.remove('hidden');
         filterBtn.classList.add('active');
     }

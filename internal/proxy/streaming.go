@@ -59,6 +59,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		// cc_claude needs context for input_tokens fallback
 		streamCtx = transformer.NewStreamContext()
 		streamCtx.ModelName = modelName
+		streamCtx.EnableThinking = thinkingEnabled
 		// Pre-estimate input tokens for fallback
 		if bodyBytes != nil {
 			streamCtx.InputTokens = p.estimateInputTokens(bodyBytes)
@@ -207,6 +208,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		} else {
 			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
 		}
+
+		// Send termination event to prevent client from hanging indefinitely
+		if !streamDone {
+			if _, writeErr := w.Write([]byte("data: [DONE]\n\n")); writeErr == nil {
+				flusher.Flush()
+			}
+		}
 	}
 
 	resp.Body.Close()
@@ -307,18 +315,7 @@ func (p *Proxy) extractTextFromEvent(eventData []byte, outputText *strings.Build
 			continue
 		}
 
-		eventType, _ := event["type"].(string)
-
-		// Handle content_block_delta format (from some third-party APIs)
-		if eventType == "content_block_delta" {
-			if delta, ok := event["delta"].(map[string]interface{}); ok {
-				if text, ok := delta["text"].(string); ok {
-					outputText.WriteString(text)
-				}
-			}
-		}
-
-		// Handle standard delta.text format
+		// Handle delta.text format (Claude content_block_delta, third-party APIs, etc.)
 		if delta, ok := event["delta"].(map[string]interface{}); ok {
 			// Check for text_delta type (Claude original format)
 			if deltaType, ok := delta["type"].(string); ok && deltaType == "text_delta" {

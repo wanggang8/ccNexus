@@ -36,17 +36,17 @@ type APIResponse struct {
 type Proxy struct {
 	config            *config.Config
 	stats             *Stats
-	trafficRecorder   *TrafficRecorder              // traffic log recorder
+	trafficRecorder   *TrafficRecorder // traffic log recorder
 	currentIndex      int
 	mu                sync.RWMutex
 	server            *http.Server
-	httpClient        *http.Client                 // Reusable HTTP client with connection pool
-	activeRequests    map[string]int               // tracks active request count by endpoint name
-	activeRequestsMu  sync.RWMutex                 // protects activeRequests map
-	endpointCtx       map[string]context.Context   // context per endpoint for cancellation
+	httpClient        *http.Client                  // Reusable HTTP client with connection pool
+	activeRequests    map[string]int                // tracks active request count by endpoint name
+	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
+	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
 	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
-	ctxMu             sync.RWMutex                 // protects context maps
-	onEndpointSuccess func(endpointName string)    // callback when endpoint request succeeds
+	ctxMu             sync.RWMutex                  // protects context maps
+	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
 }
 
 // New creates a new Proxy instance
@@ -75,11 +75,11 @@ func New(cfg *config.Config, statsStorage StatsStorage, deviceID string) *Proxy 
 		config:          cfg,
 		stats:           stats,
 		trafficRecorder: NewTrafficRecorder(),
-		currentIndex:   0,
-		httpClient:     httpClient,
-		activeRequests: make(map[string]int),
-		endpointCtx:    make(map[string]context.Context),
-		endpointCancel: make(map[string]context.CancelFunc),
+		currentIndex:    0,
+		httpClient:      httpClient,
+		activeRequests:  make(map[string]int),
+		endpointCtx:     make(map[string]context.Context),
+		endpointCancel:  make(map[string]context.CancelFunc),
 	}
 }
 
@@ -455,11 +455,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		transformedBody = cleanedBody
 
 		var thinkingEnabled bool
-		if strings.Contains(transformerName, "openai") {
-			var openaiReq map[string]interface{}
-			if err := json.Unmarshal(transformedBody, &openaiReq); err == nil {
-				if enable, ok := openaiReq["enable_thinking"].(bool); ok {
-					thinkingEnabled = enable
+		{
+			var transformedReq map[string]interface{}
+			if err := json.Unmarshal(transformedBody, &transformedReq); err == nil {
+				// CLI/Claude 格式：检测 thinking.type == "enabled"
+				if thinking, ok := transformedReq["thinking"].(map[string]interface{}); ok {
+					if thinkingType, ok := thinking["type"].(string); ok {
+						thinkingEnabled = thinkingType == "enabled"
+					}
+				}
+				// OpenAI 格式：检测 enable_thinking 字段
+				if !thinkingEnabled {
+					if enable, ok := transformedReq["enable_thinking"].(bool); ok {
+						thinkingEnabled = enable
+					}
 				}
 			}
 		}

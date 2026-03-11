@@ -110,7 +110,7 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 
 	// Convert contents to messages
 	var messages []map[string]interface{}
-	toolNameToID := make(map[string]string)    // Map function_name to generated ID for tool_result matching
+	toolNameToID := make(map[string]string) // Map function_name to generated ID for tool_result matching
 	for _, content := range req.Contents {
 		role := content.Role
 		if role == "model" {
@@ -335,17 +335,63 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 	}
 
 	switch eventType {
+	case "content_block_start":
+		if block, ok := data["content_block"].(map[string]interface{}); ok {
+			if block["type"] == "tool_use" {
+				ctx.ToolBlockStarted = true
+				ctx.CurrentToolName, _ = block["name"].(string)
+				ctx.ToolArguments = ""
+			}
+		}
+
 	case "content_block_delta":
 		delta, ok := data["delta"].(map[string]interface{})
 		if !ok {
 			return nil, nil
 		}
-		if delta["type"] == "text_delta" {
+		switch delta["type"] {
+		case "text_delta":
 			text, _ := delta["text"].(string)
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{{"text": text}}}},
 				},
+			}
+			d, _ := json.Marshal(chunk)
+			return []byte(fmt.Sprintf("data: %s\n\n", d)), nil
+		case "input_json_delta":
+			partial, _ := delta["partial_json"].(string)
+			ctx.ToolArguments += partial
+		}
+
+	case "content_block_stop":
+		if ctx.ToolBlockStarted {
+			ctx.ToolBlockStarted = false
+			var args interface{}
+			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
+				args = map[string]interface{}{}
+			}
+			chunk := map[string]interface{}{
+				"candidates": []map[string]interface{}{
+					{"content": map[string]interface{}{
+						"role": "model",
+						"parts": []map[string]interface{}{
+							{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
+						},
+					}, "finishReason": "TOOL_CODE"},
+				},
+			}
+			d, _ := json.Marshal(chunk)
+			return []byte(fmt.Sprintf("data: %s\n\n", d)), nil
+		}
+
+	case "message_delta":
+		// Emit final STOP chunk with usage if available
+		if usageData, ok := data["usage"].(map[string]interface{}); ok {
+			outTokens, _ := usageData["output_tokens"].(float64)
+			chunk := map[string]interface{}{
+				"candidates":    []map[string]interface{}{{"finishReason": "STOP"}},
+				"usageMetadata": map[string]interface{}{"candidatesTokenCount": int(outTokens)},
 			}
 			d, _ := json.Marshal(chunk)
 			return []byte(fmt.Sprintf("data: %s\n\n", d)), nil
@@ -432,6 +478,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 				"index": ctx.ContentIndex,
 				"content_block": map[string]interface{}{
 					"type": "tool_use", "id": GenerateToolCallID(part.FunctionCall.Name), "name": part.FunctionCall.Name,
+					"input": map[string]interface{}{},
 				},
 			})...)
 			args, _ := json.Marshal(part.FunctionCall.Args)

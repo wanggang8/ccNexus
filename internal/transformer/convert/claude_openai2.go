@@ -27,18 +27,105 @@ func ClaudeReqToOpenAI2(claudeReq []byte, model string) ([]byte, error) {
 	}
 
 	// Convert messages to input
+	// tool_use blocks → top-level function_call items
+	// tool_result blocks → top-level function_call_output items
 	var input []map[string]interface{}
 	for _, msg := range req.Messages {
+		contentArr, isArr := msg.Content.([]interface{})
+
+		// Check if this message contains tool_result blocks (user message with tool results)
+		if isArr && msg.Role == "user" {
+			hasTR := false
+			for _, b := range contentArr {
+				if bm, ok := b.(map[string]interface{}); ok && bm["type"] == "tool_result" {
+					hasTR = true
+					break
+				}
+			}
+			if hasTR {
+				for _, b := range contentArr {
+					bm, ok := b.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if bm["type"] == "tool_result" {
+						callID, _ := bm["tool_use_id"].(string)
+						output := fmt.Sprintf("%v", bm["content"])
+						input = append(input, map[string]interface{}{
+							"type":    "function_call_output",
+							"call_id": callID,
+							"output":  output,
+						})
+					}
+				}
+				continue
+			}
+		}
+
+		// Check if assistant message contains tool_use blocks
+		if isArr && msg.Role == "assistant" {
+			hasTU := false
+			for _, b := range contentArr {
+				if bm, ok := b.(map[string]interface{}); ok && bm["type"] == "tool_use" {
+					hasTU = true
+					break
+				}
+			}
+			if hasTU {
+				// Emit text content as message item first (if any)
+				var textParts []map[string]interface{}
+				for _, b := range contentArr {
+					bm, ok := b.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if bm["type"] == "text" {
+						textParts = append(textParts, map[string]interface{}{
+							"type": "output_text",
+							"text": bm["text"],
+						})
+					}
+				}
+				if len(textParts) > 0 {
+					input = append(input, map[string]interface{}{
+						"type": "message", "role": "assistant", "content": textParts,
+					})
+				}
+				// Emit function_call items for each tool_use
+				for _, b := range contentArr {
+					bm, ok := b.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if bm["type"] == "tool_use" {
+						args, _ := json.Marshal(bm["input"])
+						input = append(input, map[string]interface{}{
+							"type":      "function_call",
+							"id":        bm["id"],
+							"call_id":   bm["id"],
+							"name":      bm["name"],
+							"arguments": string(args),
+						})
+					}
+				}
+				continue
+			}
+		}
+
+		// Regular message (string content or non-tool array content)
 		item := map[string]interface{}{
 			"type": "message",
 			"role": msg.Role,
 		}
-
 		var contentParts []map[string]interface{}
 		switch content := msg.Content.(type) {
 		case string:
+			contentType := "input_text"
+			if msg.Role == "assistant" {
+				contentType = "output_text"
+			}
 			contentParts = append(contentParts, map[string]interface{}{
-				"type": "input_text",
+				"type": contentType,
 				"text": content,
 			})
 		case []interface{}:
@@ -338,12 +425,14 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		}
 		switch delta["type"] {
 		case "text_delta":
+			text, _ := delta["text"].(string)
+			ctx.ContentText += text
 			writeEvent(map[string]interface{}{
 				"type": "response.output_text.delta", "output_index": ctx.ContentIndex,
-				"content_index": 0, "delta": delta["text"],
+				"content_index": 0, "delta": text,
 			})
 		case "input_json_delta":
-			partial := delta["partial_json"].(string)
+			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
 			writeEvent(map[string]interface{}{
 				"type":         "response.function_call_arguments.delta",
@@ -373,14 +462,16 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
 		} else if ctx.ContentBlockStarted && blockIdx == ctx.ContentIndex {
-			// output_text.done - need accumulated text, use empty for now
+			accumulatedText := ctx.ContentText
+			ctx.ContentText = ""
 			writeEvent(map[string]interface{}{
 				"type": "response.output_text.done", "output_index": blockIdx, "content_index": 0,
+				"text": accumulatedText,
 			})
 			// content_part.done
 			writeEvent(map[string]interface{}{
 				"type": "response.content_part.done", "output_index": blockIdx, "content_index": 0,
-				"part": map[string]interface{}{"type": "output_text"},
+				"part": map[string]interface{}{"type": "output_text", "text": accumulatedText},
 			})
 			// output_item.done
 			writeEvent(map[string]interface{}{

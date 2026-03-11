@@ -80,6 +80,19 @@ func buildOpenAIChunk(id, model, content string, toolCalls []map[string]interfac
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
 }
 
+// buildOpenAIChunkWithReasoning builds an OpenAI streaming chunk with reasoning_content field
+func buildOpenAIChunkWithReasoning(id, model, reasoningContent string) ([]byte, error) {
+	delta := map[string]interface{}{
+		"reasoning_content": reasoningContent,
+	}
+	chunk := map[string]interface{}{
+		"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+		"choices": []map[string]interface{}{{"index": 0, "delta": delta, "finish_reason": nil}},
+	}
+	data, _ := json.Marshal(chunk)
+	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
+}
+
 // extractSystemText extracts text from Claude system prompt
 func extractSystemText(system interface{}) string {
 	switch s := system.(type) {
