@@ -16,6 +16,20 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
+func parseOpenAIIncludeUsage(bodyBytes []byte) bool {
+	var req struct {
+		StreamOptions *struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return false
+	}
+
+	return req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+}
+
 // handleStreamingResponse processes streaming SSE responses
 // Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte) (int, int, string, []byte, []byte) {
@@ -60,6 +74,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		streamCtx = transformer.NewStreamContext()
 		streamCtx.ModelName = modelName
 		streamCtx.EnableThinking = thinkingEnabled
+		if transformerName == "cx_chat_claude" {
+			streamCtx.IncludeUsage = parseOpenAIIncludeUsage(bodyBytes)
+		}
 		// Pre-estimate input tokens for fallback
 		if bodyBytes != nil {
 			streamCtx.InputTokens = p.estimateInputTokens(bodyBytes)
@@ -102,10 +119,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
-					flusher.Flush()
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
+				if shouldInjectUsageFallback {
+					// Inject message_delta event with usage
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+						flusher.Flush()
+					}
 				}
 			}
 
@@ -152,10 +172,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage before message_stop
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
-					flusher.Flush()
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
+				if shouldInjectUsageFallback {
+					// Inject message_delta event with usage before message_stop
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+						flusher.Flush()
+					}
 				}
 			}
 

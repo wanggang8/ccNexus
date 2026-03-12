@@ -507,6 +507,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	case "message_start":
 		if msg, ok := data["message"].(map[string]interface{}); ok {
 			ctx.MessageID, _ = msg["id"].(string)
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
+					ctx.InputTokens = int(input)
+				}
+			}
 		}
 		// Send initial role chunk per OpenAI streaming spec
 		chunk := map[string]interface{}{
@@ -570,13 +575,44 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		return nil, nil
 
 	case "message_delta":
+		var result []byte
+
 		if delta, ok := data["delta"].(map[string]interface{}); ok {
-			stopReason, _ := delta["stop_reason"].(string)
-			finish := "stop"
-			if stopReason == "tool_use" {
-				finish = "tool_calls"
+			if stopReason, ok := delta["stop_reason"].(string); ok && stopReason != "" {
+				finish := "stop"
+				if stopReason == "tool_use" {
+					finish = "tool_calls"
+				}
+				finishChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, finishChunk...)
 			}
-			return buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
+		}
+
+		if ctx != nil && ctx.IncludeUsage {
+			if usage, ok := data["usage"].(map[string]interface{}); ok {
+				promptTokens := ctx.InputTokens
+				completionTokens := ctx.OutputTokens
+				if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
+					promptTokens = int(input)
+					ctx.InputTokens = int(input)
+				}
+				if output, ok := usage["output_tokens"].(float64); ok && int(output) >= 0 {
+					completionTokens = int(output)
+					ctx.OutputTokens = int(output)
+				}
+				usageChunk, err := buildOpenAIUsageChunk(ctx.MessageID, model, promptTokens, completionTokens)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, usageChunk...)
+			}
+		}
+
+		if len(result) > 0 {
+			return result, nil
 		}
 		return nil, nil
 

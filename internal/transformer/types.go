@@ -198,6 +198,7 @@ type StreamContext struct {
 	CurrentToolID   string // Current tool call ID being processed
 	CurrentToolName string // Current tool call name being processed
 	ToolArguments   string // Accumulated tool arguments
+	IncludeUsage    bool   // Whether OpenAI-compatible streaming should emit usage chunk
 	// <think> tag handling for streaming text
 	InThinkingTag       bool   // Track if we are inside a <think> tag
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
@@ -227,6 +228,7 @@ func NewStreamContext() *StreamContext {
 		ToolCallBuffer:       "",
 		ToolCallIDMap:        make(map[string]string),
 		ToolCallCounter:      0,
+		IncludeUsage:         false,
 		InThinkingTag:        false,
 		ThinkingBuffer:       "",
 		PendingThinkingText:  "",

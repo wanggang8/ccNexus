@@ -360,6 +360,60 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	}
 }
 
+func TestClaudeTransformer_TransformResponseWithContext_IncludeUsage(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+	ctx.IncludeUsage = true
+	ctx.InputTokens = 10
+
+	claudeEvent := `event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":5}}
+
+`
+
+	result, err := trans.TransformResponseWithContext([]byte(claudeEvent), true, ctx)
+	if err != nil {
+		t.Fatalf("TransformResponseWithContext failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "\"finish_reason\":\"stop\"") {
+		t.Fatalf("Expected finish_reason stop in result, got '%s'", resultStr)
+	}
+	if !strings.Contains(resultStr, "\"usage\":") ||
+		!strings.Contains(resultStr, "\"prompt_tokens\":10") ||
+		!strings.Contains(resultStr, "\"completion_tokens\":5") ||
+		!strings.Contains(resultStr, "\"total_tokens\":15") {
+		t.Fatalf("Expected usage chunk in result, got '%s'", resultStr)
+	}
+}
+
+func TestClaudeTransformer_TransformResponseWithContext_SuppressesUsageWhenDisabled(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+	ctx.InputTokens = 10
+
+	claudeEvent := `event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":5}}
+
+`
+
+	result, err := trans.TransformResponseWithContext([]byte(claudeEvent), true, ctx)
+	if err != nil {
+		t.Fatalf("TransformResponseWithContext failed: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.Contains(resultStr, "\"finish_reason\":\"stop\"") {
+		t.Fatalf("Expected finish_reason stop in result, got '%s'", resultStr)
+	}
+	if strings.Contains(resultStr, "\"usage\":") {
+		t.Fatalf("Expected no usage chunk when IncludeUsage is disabled, got '%s'", resultStr)
+	}
+}
+
 func TestClaudeTransformer_TransformResponseWithContext_NonStreaming(t *testing.T) {
 	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
 	ctx := transformer.NewStreamContext()
