@@ -4,6 +4,7 @@ import { getIcon } from '../icons.js';
 
 class Traffic {
     constructor() {
+        this.maxLogEntries = 10;
         this.container = document.getElementById('view-container');
         this.logs = [];
         this.recording = false;
@@ -163,7 +164,10 @@ class Traffic {
 
     async loadLogs() {
         try {
-            const data = await api.getTrafficLogs(this.filter);
+            const data = await api.getTrafficLogs({
+                ...this.filter,
+                limit: this.maxLogEntries
+            });
             this.logs = data.logs || [];
             this.recording = data.recording !== undefined ? data.recording : false;
             this.updateRecordingButton();
@@ -382,6 +386,8 @@ class Traffic {
             tabs.push({ id: 'transformed-response', label: 'Transformed Response', content: detail.transformedResponse });
         }
 
+        const tabContentMap = new Map(tabs.map(tab => [tab.id, tab.content || '']));
+
         modal.innerHTML = `
             <div class="modal-overlay" id="detail-modal-overlay">
                 <div class="modal modal-lg">
@@ -443,7 +449,6 @@ class Traffic {
                                                 class="tab-panel ${index === 0 ? 'active' : ''}" 
                                                 id="${tab.id}"
                                                 role="tabpanel"
-                                                data-raw="${this.escapeHtml(tab.content || '')}"
                                             >
                                                 <div class="traffic-detail-tab-toolbar">
                                                     <button class="btn btn-sm btn-secondary traffic-copy-tab-btn" data-tab-id="${tab.id}">
@@ -511,10 +516,7 @@ class Traffic {
             btn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const tabId = btn.getAttribute('data-tab-id');
-                const panel = modal.querySelector(`#${tabId}`);
-                if (!panel) return;
-                const raw = panel.dataset.raw || '';
-                this.copyText(raw);
+                this.copyText(tabContentMap.get(tabId) || '');
             });
         });
     }

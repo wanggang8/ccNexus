@@ -82,7 +82,7 @@ class Testing {
                                 <span class="badge badge-success">Success</span>
                                 <span class="text-muted ml-2">Latency: ${result.latency}ms</span>
                             </div>
-                            <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(responseText)}">
+                            <button class="btn btn-sm btn-secondary testing-copy-btn">
                                 Copy response
                             </button>
                         </div>
@@ -94,8 +94,7 @@ class Testing {
                 const copyBtn = document.querySelector('.testing-copy-btn');
                 if (copyBtn) {
                     copyBtn.addEventListener('click', () => {
-                        const text = copyBtn.dataset.copy || '';
-                        this.copyText(text);
+                        this.copyText(responseText);
                     });
                 }
                 notifications.success('Test completed successfully');
@@ -107,7 +106,7 @@ class Testing {
                             <div>
                                 <span class="badge badge-danger">Failed</span>
                             </div>
-                            <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(errorText)}">
+                            <button class="btn btn-sm btn-secondary testing-copy-btn">
                                 Copy error
                             </button>
                         </div>
@@ -119,8 +118,7 @@ class Testing {
                 const copyBtn = document.querySelector('.testing-copy-btn');
                 if (copyBtn) {
                     copyBtn.addEventListener('click', () => {
-                        const text = copyBtn.dataset.copy || '';
-                        this.copyText(text);
+                        this.copyText(errorText);
                     });
                 }
                 notifications.error('Test failed');
@@ -133,7 +131,7 @@ class Testing {
                         <div>
                             <span class="badge badge-danger">Error</span>
                         </div>
-                        <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(errorText)}">
+                        <button class="btn btn-sm btn-secondary testing-copy-btn">
                             Copy error
                         </button>
                     </div>
@@ -145,8 +143,7 @@ class Testing {
             const copyBtn = document.querySelector('.testing-copy-btn');
             if (copyBtn) {
                 copyBtn.addEventListener('click', () => {
-                    const text = copyBtn.dataset.copy || '';
-                    this.copyText(text);
+                    this.copyText(errorText);
                 });
             }
             notifications.error('Test failed: ' + error.message);
