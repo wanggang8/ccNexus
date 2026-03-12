@@ -262,9 +262,8 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 						break
 					}
 					toolCallID, _ := tm["tool_call_id"].(string)
-					content, _ := tm["content"].(string)
 					toolResults = append(toolResults, map[string]interface{}{
-						"type": "tool_result", "tool_use_id": toolCallID, "content": content,
+						"type": "tool_result", "tool_use_id": toolCallID, "content": normalizeToolResultContent(tm["content"]),
 					})
 					idx++
 				}
@@ -290,8 +289,13 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 			// Handle tool_calls
 			if toolCalls, ok := msg["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
 				var blocks []map[string]interface{}
-				if text, ok := claudeMsg["content"].(string); ok && text != "" {
-					blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+				switch existing := claudeMsg["content"].(type) {
+				case string:
+					if existing != "" {
+						blocks = append(blocks, map[string]interface{}{"type": "text", "text": existing})
+					}
+				case []map[string]interface{}:
+					blocks = append(blocks, existing...)
 				}
 				for _, tcInterface := range toolCalls {
 					tc, ok := tcInterface.(map[string]interface{})
@@ -890,4 +894,17 @@ func extractToolResultContent(content interface{}) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+func normalizeToolResultContent(content interface{}) interface{} {
+	if content == nil {
+		return ""
+	}
+	if str, ok := content.(string); ok {
+		return str
+	}
+	if arr, ok := content.([]interface{}); ok {
+		return convertOpenAIContentToClaude(arr)
+	}
+	return extractToolResultContent(content)
 }
