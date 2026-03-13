@@ -204,6 +204,9 @@ type StreamContext struct {
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
 	PendingThinkingText string // Buffered thinking text until closing tag arrives
 	ContentText         string // Accumulated text content for output_text.done event
+	// OpenAI SSE normalization for cx_chat_openai
+	OpenAIStreamDone bool                    // Track whether a DONE event has been observed
+	OpenAIToolCalls  map[int]*OpenAIToolCall // Track in-progress OpenAI tool calls by index
 }
 
 // NewStreamContext creates a new stream context with default values
@@ -233,6 +236,8 @@ func NewStreamContext() *StreamContext {
 		ThinkingBuffer:       "",
 		PendingThinkingText:  "",
 		ContentText:          "",
+		OpenAIStreamDone:     false,
+		OpenAIToolCalls:      make(map[int]*OpenAIToolCall),
 	}
 }
 
