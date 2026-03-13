@@ -67,7 +67,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	// Create stream context for all transformers except pure passthrough
 	var streamCtx *transformer.StreamContext
 	switch transformerName {
-	case "cx_chat_openai", "cx_resp_openai2":
+	case "cx_resp_openai2":
 		// Pure passthrough - no context needed
 	default:
 		// cc_claude needs context for input_tokens fallback
