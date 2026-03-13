@@ -220,10 +220,6 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 			continue
 		}
 
-		if sanitizeNullDeltaFields(delta) {
-			changed = true
-		}
-
 		toolCalls, ok := delta["tool_calls"].([]interface{})
 		if !ok || len(toolCalls) == 0 {
 			continue
@@ -263,17 +259,6 @@ func parseOpenAISSE(resp []byte) (eventType, payload string) {
 		}
 	}
 	return eventType, payload
-}
-
-func sanitizeNullDeltaFields(delta map[string]interface{}) bool {
-	changed := false
-	for _, key := range []string{"role", "content", "reasoning", "reasoning_content"} {
-		if value, exists := delta[key]; exists && value == nil {
-			delete(delta, key)
-			changed = true
-		}
-	}
-	return changed
 }
 
 func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamContext) ([]interface{}, bool) {

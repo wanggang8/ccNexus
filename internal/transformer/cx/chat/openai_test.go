@@ -502,11 +502,11 @@ func TestOpenAITransformer_TransformResponseWithContext_NormalizeMalformedToolCa
 	choice := choices[0].(map[string]interface{})
 	delta := choice["delta"].(map[string]interface{})
 
-	if _, exists := delta["role"]; exists {
-		t.Fatalf("expected null role to be removed")
+	if _, exists := delta["role"]; !exists {
+		t.Fatalf("expected non-tool fields to remain untouched")
 	}
-	if _, exists := delta["content"]; exists {
-		t.Fatalf("expected null content to be removed")
+	if _, exists := delta["reasoning_content"]; !exists {
+		t.Fatalf("expected reasoning fields to remain untouched")
 	}
 
 	toolCalls := delta["tool_calls"].([]interface{})
@@ -520,6 +520,21 @@ func TestOpenAITransformer_TransformResponseWithContext_NormalizeMalformedToolCa
 	}
 	if function["arguments"] != "{\"path\":\"/tmp/a\"}" {
 		t.Fatalf("expected argument fragment to be preserved, got %v", function["arguments"])
+	}
+}
+
+func TestOpenAITransformer_TransformResponseWithContext_PreserveReasoningChunks(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+	ctx := transformer.NewStreamContext()
+
+	reasoningChunk := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null},"finish_reason":null}]}`
+
+	result, err := trans.TransformResponseWithContext([]byte(reasoningChunk), true, ctx)
+	if err != nil {
+		t.Fatalf("TransformResponseWithContext failed: %v", err)
+	}
+	if string(result) != reasoningChunk {
+		t.Fatalf("expected reasoning chunk passthrough, got %s", string(result))
 	}
 }
 
