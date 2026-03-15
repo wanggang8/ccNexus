@@ -194,10 +194,12 @@ export async function renderEndpoints(endpoints) {
 
     const endpointStats = getEndpointStats();
     // Display endpoints in config file order (no sorting by enabled status)
-    const sortedEndpoints = filteredEndpoints.map((ep, index) => {
+    // Map filtered endpoints to their original indices in the full endpoints array
+    const sortedEndpoints = filteredEndpoints.map((ep) => {
         const stats = endpointStats[ep.name] || { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0 };
         const enabled = ep.enabled !== undefined ? ep.enabled : true;
-        return { endpoint: ep, originalIndex: index, stats, enabled };
+        const originalIndex = endpoints.findIndex(e => e.name === ep.name);
+        return { endpoint: ep, originalIndex, stats, enabled };
     });
 
     // 检查视图模式

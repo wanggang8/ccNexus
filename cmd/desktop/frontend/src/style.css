@@ -1586,6 +1586,25 @@ body {
     min-width: 55px;
 }
 
+.btn-card.btn-secondary {
+    background: var(--text-secondary);
+    color: white;
+}
+
+.btn-card.btn-secondary:hover {
+    background: var(--text-tertiary);
+}
+
+.btn-card.btn-danger {
+    background: var(--danger-color);
+    color: white;
+}
+
+.btn-card.btn-danger:hover {
+    background: #c82333;
+    opacity: 0.9;
+}
+
 .log-panel {
     background: var(--bg-secondary);
     border-radius: 8px;
