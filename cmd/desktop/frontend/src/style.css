@@ -57,9 +57,9 @@
     --primary-border: rgba(102, 126, 234, 0.3);
 
     /* Semantic */
-    --success-color: var(--success-color);
+    --success-color: #28a745;
     --success-light: rgba(40, 167, 69, 0.1);
-    --danger-color: var(--danger-color);
+    --danger-color: #dc3545;
     --danger-light: rgba(220, 53, 69, 0.1);
     --warning-color: #ffc107;
     --warning-light: rgba(255, 193, 7, 0.1);
@@ -744,6 +744,7 @@ body {
     font-size: 14px;
     cursor: pointer;
     transition: all 0.2s;
+    font-weight: 500;
 }
 
 .btn-primary {
@@ -753,33 +754,30 @@ body {
 
 .btn-primary:hover {
     background: var(--primary-hover);
-}
-
-.btn-danger {
-    background: var(--danger-color);
-    color: white;
-}
-
-.btn-danger:hover {
-    background: var(--danger-color);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
 }
 
 .btn-secondary {
-    background: var(--text-secondary);
+    background: #6c757d;
     color: white;
 }
 
 .btn-secondary:hover {
-    background: var(--text-tertiary);
+    background: #5a6268;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(108, 117, 125, 0.4);
 }
 
 .btn-danger {
-    background: var(--danger-color);
+    background: #dc3545;
     color: white;
 }
 
 .btn-danger:hover {
-    background: var(--danger-color);
+    background: #c82333;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(220, 53, 69, 0.4);
 }
 
 .form-group {
@@ -1584,25 +1582,32 @@ body {
     cursor: pointer;
     transition: all 0.2s;
     min-width: 55px;
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn-card:hover {
+    background: var(--primary-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(102, 126, 234, 0.3);
 }
 
 .btn-card.btn-secondary {
-    background: var(--text-secondary);
+    background: #6c757d;
     color: white;
 }
 
 .btn-card.btn-secondary:hover {
-    background: var(--text-tertiary);
+    background: #5a6268;
 }
 
 .btn-card.btn-danger {
-    background: var(--danger-color);
+    background: #dc3545;
     color: white;
 }
 
 .btn-card.btn-danger:hover {
     background: #c82333;
-    opacity: 0.9;
 }
 
 .log-panel {
@@ -4564,9 +4569,9 @@ body {
     align-items: center;
     gap: 8px;
     padding: 8px 16px;
-    border: none;
+    border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-tertiary, #e9ecef);
+    background: var(--card-bg);
     color: var(--text-primary);
     font-size: 13px;
     font-weight: 500;
@@ -4575,23 +4580,27 @@ body {
 }
 
 .traffic-record-btn:hover {
-    background: var(--hover-bg, #dee2e6);
+    background: var(--hover-bg);
+    border-color: var(--primary-color);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .traffic-record-btn.recording {
-    background: var(--danger-color);
+    background: #dc3545;
     color: white;
+    border-color: #dc3545;
 }
 
 .record-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--text-secondary);
+    background: #6c757d;
 }
 
 .record-dot.recording {
-    background: var(--card-bg);
+    background: white;
     animation: pulse 1.5s infinite;
 }
 
