@@ -48,7 +48,7 @@ func TestExtractTokenUsageSupportsClaudeAndOpenAIFormats(t *testing.T) {
 }
 
 func TestExtractTokensFromEventSupportsResponsesAndOpenAIChunk(t *testing.T) {
-	p := &Proxy{}
+	p := &Proxy{trafficRecorder: NewTrafficRecorder()}
 	in, out := 0, 0
 
 	responsesCompleted := []byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":101,\"output_tokens\":202,\"total_tokens\":303}}}\n\n")
@@ -65,7 +65,7 @@ func TestExtractTokensFromEventSupportsResponsesAndOpenAIChunk(t *testing.T) {
 }
 
 func TestExtractTextFromEventSupportsResponsesAndOpenAIFormats(t *testing.T) {
-	p := &Proxy{}
+	p := &Proxy{trafficRecorder: NewTrafficRecorder()}
 	var output strings.Builder
 
 	responsesDelta := []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
@@ -115,9 +115,9 @@ func TestHandleNonStreamingResponseExtractsUsageFromSSEPayloadFallback(t *testin
 		Body:       io.NopCloser(strings.NewReader(rawSSE)),
 	}
 	rec := httptest.NewRecorder()
-	p := &Proxy{}
+	p := &Proxy{trafficRecorder: NewTrafficRecorder()}
 
-	in, out, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{})
+	in, out, _, _, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{})
 	if err != nil {
 		t.Fatalf("handleNonStreamingResponse failed: %v", err)
 	}

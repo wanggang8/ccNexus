@@ -47,7 +47,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		},
 	})
 
-	p := &Proxy{config: cfg}
+	p := &Proxy{config: cfg, trafficRecorder: NewTrafficRecorder()}
 	endpoint := cfg.GetEndpoints()[0]
 	originalSSE := strings.Join([]string{
 		`data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}}`,
@@ -63,7 +63,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	in, out, _ := p.handleStreamingResponse(
+	in, out, _, _, _ := p.handleStreamingResponse(
 		rec,
 		resp,
 		endpoint,
