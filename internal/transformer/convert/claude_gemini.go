@@ -417,7 +417,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			if !ctx.FinishReasonSent {
 				result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 					"delta": map[string]interface{}{"stop_reason": "end_turn", "stop_sequence": nil},
-					"usage": map[string]interface{}{"output_tokens": 0},
+					"usage": currentClaudeUsage(ctx),
 				})...)
 			}
 			result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
@@ -431,6 +431,9 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 		logger.Debug("GeminiStreamToClaude: failed to parse chunk: %v", err)
 		return nil, nil
 	}
+
+	// Sync Gemini usage metadata to context
+	syncGeminiUsageMetadata(&resp, ctx)
 
 	var result []byte
 
@@ -502,7 +505,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 		}
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
-			"usage": map[string]interface{}{"output_tokens": 0},
+			"usage": currentClaudeUsage(ctx),
 		})...)
 		result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
 		ctx.FinishReasonSent = true

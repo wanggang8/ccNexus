@@ -22,6 +22,11 @@ export async function loadConfig() {
 
         const activeCount = config.endpoints.filter(ep => ep.enabled !== false).length;
         document.getElementById('activeEndpoints').textContent = activeCount;
+        // Keep the visible stats bar endpoint count in sync with current config.
+        const activeDisplayEl = document.getElementById('activeEndpointsDisplay');
+        const totalDisplayEl = document.getElementById('totalEndpointsDisplay');
+        if (activeDisplayEl) activeDisplayEl.textContent = activeCount;
+        if (totalDisplayEl) totalDisplayEl.textContent = config.endpoints.length;
 
         return config;
     } catch (error) {
@@ -34,12 +39,12 @@ export async function updatePort(port) {
     await window.go.main.App.UpdatePort(port);
 }
 
-export async function addEndpoint(name, url, key, transformer, model, remark) {
-    await window.go.main.App.AddEndpoint(name, url, key, transformer, model, remark || '');
+export async function addEndpoint(name, url, key, authMode, transformer, model, remark) {
+    await window.go.main.App.AddEndpoint(name, url, key, authMode, transformer, model, remark || '');
 }
 
-export async function updateEndpoint(index, name, url, key, transformer, model, remark) {
-    await window.go.main.App.UpdateEndpoint(index, name, url, key, transformer, model, remark || '');
+export async function updateEndpoint(index, name, url, key, authMode, transformer, model, remark) {
+    await window.go.main.App.UpdateEndpoint(index, name, url, key, authMode, transformer, model, remark || '');
 }
 
 export async function removeEndpoint(index) {

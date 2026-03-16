@@ -874,6 +874,18 @@ body {
     border-color: var(--primary-color);
 }
 
+.form-group input:disabled,
+.form-group select:disabled,
+.form-input:disabled,
+.field-locked {
+    background-color: var(--bg-tertiary, #f3f4f6) !important;
+    color: var(--text-secondary, #6b7280) !important;
+    border-color: var(--border-color, #d1d5db) !important;
+    cursor: not-allowed !important;
+    box-shadow: none !important;
+    opacity: 0.85;
+}
+
 .password-input-wrapper {
     position: relative;
     display: flex;
@@ -1270,6 +1282,10 @@ body {
 .modal-header {
     padding: 30px 30px 20px 30px;
     flex-shrink: 0;
+}
+
+#tokenPoolModal .modal-header {
+    padding: 20px 30px 12px 30px;
 }
 
 .modal-body {
@@ -1803,6 +1819,258 @@ body {
     background: var(--border-color);
     cursor: not-allowed;
     transform: none;
+}
+
+/* Token Pool Modal */
+.token-pool-proxy-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.token-pool-proxy-bar input {
+    flex: 1;
+    min-width: 280px;
+}
+
+.token-pool-proxy-help {
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    margin-bottom: 12px;
+}
+
+.token-pool-status-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: center;
+    text-align: center;
+}
+
+.token-pool-enabled-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+}
+
+.token-pool-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+}
+
+.token-pool-more-wrap {
+    position: relative;
+}
+
+.token-pool-more-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 140px;
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color, #d1d5db);
+    background: var(--modal-bg, #fff);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    z-index: 30;
+}
+
+.token-pool-more-menu.show {
+    display: block;
+}
+
+.token-pool-more-menu button {
+    width: 100%;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary, #333);
+    font-size: 12px;
+    text-align: left;
+    padding: 8px 10px;
+    cursor: pointer;
+}
+
+.token-pool-more-menu button:hover {
+    background: var(--hover-bg, #f3f4f6);
+}
+
+.token-pool-more-menu .token-pool-delete {
+    color: #ef4444;
+}
+
+.token-pool-import-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.token-pool-import-header > label {
+    margin: 0;
+    white-space: nowrap;
+}
+
+.token-pool-overwrite {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.token-pool-overwrite-label {
+    margin: 0;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.token-pool-stats-line {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(148, 163, 184, 0.15);
+    font-size: 12px;
+    color: var(--text-primary, #111827);
+    white-space: nowrap;
+    overflow-x: auto;
+}
+
+.token-pool-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    font-weight: 600;
+}
+
+.token-pool-stat strong {
+    font-weight: 700;
+    display: inline;
+}
+
+.token-pool-stat-sep {
+    margin: 0 6px;
+    color: var(--text-secondary, #6b7280);
+}
+
+.token-pool-stat-alert {
+    color: #f59e0b;
+}
+
+.token-pool-rate-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 210px;
+}
+
+.token-pool-rate-main {
+    font-weight: 600;
+    color: var(--text-primary, #111827);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.token-pool-rate-meta {
+    font-size: 11px;
+    color: var(--text-secondary, #6b7280);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.token-pool-rate-error-text {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.token-pool-row-active {
+    background: rgba(16, 185, 129, 0.08);
+}
+
+.token-pool-rate-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    background: #6b7280;
+}
+
+.token-pool-rate-status-unauthorized,
+.token-pool-rate-status-blocked,
+.token-pool-rate-status-error {
+    background: #ef4444;
+}
+
+.token-pool-rate-status-network,
+.token-pool-rate-status-upstream {
+    background: #f59e0b;
+}
+
+.token-pool-rate-status-parse_error,
+.token-pool-rate-status-empty {
+    background: #6366f1;
+}
+
+.token-pool-error-modal-content {
+    max-width: min(760px, 92vw) !important;
+    width: min(760px, 92vw) !important;
+}
+
+.token-pool-error-pre {
+    margin: 0;
+    max-height: min(56vh, 520px);
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--bg-tertiary, #f3f4f6);
+    border: 1px solid var(--border-color, #d1d5db);
+    border-radius: 8px;
+    color: var(--text-primary, #333);
+    padding: 12px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.token-pool-usage-modal-content {
+    max-width: min(520px, 92vw) !important;
+    width: min(520px, 92vw) !important;
+}
+
+.token-pool-usage-body {
+    padding: 6px 2px;
+}
+
+.token-pool-usage-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 16px;
+    font-size: 13px;
+    color: var(--text-primary, #111827);
+}
+
+.token-pool-usage-grid > div:nth-child(odd) {
+    color: var(--text-secondary, #6b7280);
+    font-weight: 600;
+}
+
+.token-pool-usage-empty {
+    color: var(--text-secondary, #6b7280);
+    font-size: 13px;
 }
 
 /* Modern Confirm Dialog - Windows Style */
@@ -5875,4 +6143,3 @@ a:focus-visible {
 .preload * {
     transition: none !important;
 }
-

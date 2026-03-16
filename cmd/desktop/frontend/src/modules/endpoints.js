@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js';
-import { formatTokens, maskApiKey } from '../utils/format.js';
+import { escapeHtml, formatTokens, maskApiKey } from '../utils/format.js';
 import { getIcon } from '../icons.js';
 import { getEndpointStats } from './stats.js';
 import { toggleEndpoint, testAllEndpointsZeroCost } from './config.js';
@@ -110,6 +110,10 @@ export function initEndpointViewMode() {
 let currentTestButton = null;
 let currentTestButtonOriginalText = '';
 let currentTestIndex = -1;
+let endpointPanelExpanded = true;
+let tokenPoolCurrentIndex = -1;
+let tokenPoolErrorCache = new Map();
+let tokenPoolUsageCache = new Map();
 
 function copyToClipboard(text, button) {
     navigator.clipboard.writeText(text).then(() => {
@@ -194,11 +198,14 @@ export async function renderEndpoints(endpoints) {
 
     const endpointStats = getEndpointStats();
     // Display endpoints in config file order (no sorting by enabled status)
-    // Map filtered endpoints to their original indices in the full endpoints array
+    // Keep original index from full endpoints array to avoid index mismatch after filtering
+    const endpointIndexMap = new Map(endpoints.map((ep, idx) => [ep, idx]));
     const sortedEndpoints = filteredEndpoints.map((ep) => {
+        const originalIndex = endpointIndexMap.has(ep)
+            ? endpointIndexMap.get(ep)
+            : endpoints.findIndex(item => item.name === ep.name);
         const stats = endpointStats[ep.name] || { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0 };
         const enabled = ep.enabled !== undefined ? ep.enabled : true;
-        const originalIndex = endpoints.findIndex(e => e.name === ep.name);
         return { endpoint: ep, originalIndex, stats, enabled };
     });
 
@@ -217,6 +224,7 @@ export async function renderEndpoints(endpoints) {
         const enabled = ep.enabled !== undefined ? ep.enabled : true;
         const transformer = ep.transformer || 'claude';
         const model = ep.model || '';
+        const authMode = ep.authMode || 'api_key';
         const isCurrentEndpoint = ep.name === currentEndpointName;
 
         const item = document.createElement('div');
@@ -256,7 +264,9 @@ export async function renderEndpoints(endpoints) {
                     ${enabled && !isCurrentEndpoint ? '<button class="btn btn-switch" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : ''}
                 </h3>
                 <p class="endpoint-url-line" style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('globe')}</span> ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></p>
-                <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('key')}</span> ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></p>
+                ${authMode === 'api_key'
+                    ? `<p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('key')}</span> ${maskApiKey(ep.apiKey)}</span> <button class="copy-btn" data-copy="${ep.apiKey}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><span class="icon">${getIcon('copy')}</span></button></p>`
+                    : `<p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('key')}</span> Using credential pool</p>`}
                 <p style="color: #666; font-size: 14px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span class="icon">${getIcon('refresh')}</span> ${t('endpoints.transformer')}: ${transformer}${model ? ` (${model})` : ''}</p>
                 <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('chart')}</span> ${t('endpoints.requests')}: ${stats.requests} | ${t('endpoints.errors')}: ${stats.errors}</p>
                 <p style="color: #666; font-size: 14px; margin-top: 3px;"><span class="icon">${getIcon('target')}</span> ${t('endpoints.tokens')}: ${formatTokens(totalTokens)} (${t('statistics.in')}: ${formatTokens(stats.inputTokens)}, ${t('statistics.out')}: ${formatTokens(stats.outputTokens)})</p>
@@ -339,6 +349,995 @@ export async function renderEndpoints(endpoints) {
 
         container.appendChild(item);
     });
+}
+
+function ensureTokenPoolModal() {
+    let modal = document.getElementById('tokenPoolModal');
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'tokenPoolModal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: min(1100px, 96vw); width: 96vw; height: min(82vh, 760px);">
+            <div class="modal-header">
+                <h2 id="tokenPoolTitle">🪪 Token Pool</h2>
+            </div>
+            <div class="modal-body" style="padding: 6px 20px 16px 20px;">
+                <div id="tokenPoolHint" style="font-size: 12px; color: #6b7280; margin-bottom: 8px; display: none;"></div>
+                <div id="tokenPoolStats" style="display: block; margin-bottom: 12px;"></div>
+                <div class="token-pool-proxy-bar">
+                    <label for="tokenPoolProxyUrl" class="token-pool-proxy-label" style="font-size: 13px; font-weight: 600;" title="Only applies to Codex requests and credential refresh.">Codex Proxy</label>
+                    <input id="tokenPoolProxyUrl" class="form-input" type="text" placeholder="${t('settings.proxyUrlPlaceholder')}">
+                    <button class="btn btn-secondary" id="tokenPoolProxySaveBtn">Save</button>
+                    <button class="btn btn-secondary" id="tokenPoolProxyClearBtn">Clear</button>
+                </div>
+
+                <div class="form-group">
+                    <div class="token-pool-import-header">
+                        <label>Batch Import JSON</label>
+                        <div class="token-pool-overwrite">
+                            <label class="toggle-switch" style="margin: 0;">
+                                <input type="checkbox" id="tokenPoolOverwrite">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <label for="tokenPoolOverwrite" class="token-pool-overwrite-label">Overwrite existing account/email</label>
+                        </div>
+                    </div>
+                    <textarea id="tokenPoolImportInput" style="width: 100%; min-height: 140px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px;" placeholder='Paste one object / array / {"items":[...]}'></textarea>
+                    <div style="margin-top: 8px;">
+                        <button class="btn btn-primary" id="tokenPoolImportBtn">Import</button>
+                        <button class="btn btn-secondary" id="tokenPoolImportFilesBtn">Import Files</button>
+                        <button class="btn btn-secondary" id="tokenPoolRefreshBtn">Refresh</button>
+                        <button class="btn btn-secondary" id="tokenPoolRateRefreshBtn">Refresh Limits</button>
+                    </div>
+                </div>
+
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead>
+                            <tr style="background: rgba(148, 163, 184, 0.15);">
+                                <th style="padding: 8px; text-align: center;">Account</th>
+                                <th style="padding: 8px; text-align: center;">Email</th>
+                                <th style="padding: 8px; text-align: center;">Status</th>
+                                <th style="padding: 8px; text-align: center;">Expires At</th>
+                                <th style="padding: 8px; text-align: center; width: 220px; max-width: 220px;">Rate Limits</th>
+                                <th style="padding: 8px; text-align: center;">Last Error</th>
+                                <th style="padding: 8px; text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tokenPoolTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="tokenPoolCloseBtn">Close</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const closeModal = () => {
+        modal.classList.remove('active');
+    };
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeModal();
+        }
+    });
+    modal.querySelector('.modal-body')?.addEventListener('click', () => {
+        closeAllTokenPoolActionMenus(modal);
+    });
+    modal.querySelector('#tokenPoolCloseBtn').addEventListener('click', closeModal);
+    modal.querySelector('#tokenPoolImportBtn').addEventListener('click', handleTokenPoolImport);
+    modal.querySelector('#tokenPoolImportFilesBtn').addEventListener('click', handleTokenPoolFileImport);
+    modal.querySelector('#tokenPoolRefreshBtn').addEventListener('click', async () => {
+        await loadTokenPoolData(tokenPoolCurrentIndex);
+    });
+    modal.querySelector('#tokenPoolRateRefreshBtn').addEventListener('click', async () => {
+        await refreshTokenPoolRateLimits(tokenPoolCurrentIndex);
+    });
+    modal.querySelector('#tokenPoolProxySaveBtn').addEventListener('click', async () => {
+        await saveTokenPoolProxySetting();
+    });
+    modal.querySelector('#tokenPoolProxyClearBtn').addEventListener('click', async () => {
+        await saveTokenPoolProxySetting(true);
+    });
+
+    return modal;
+}
+
+async function loadTokenPoolProxySetting() {
+    const modal = ensureTokenPoolModal();
+    const input = modal.querySelector('#tokenPoolProxyUrl');
+    if (!input) {
+        return;
+    }
+
+    try {
+        const proxyUrl = await window.go.main.App.GetCodexProxyURL();
+        input.value = proxyUrl || '';
+    } catch (error) {
+        const message = error?.message || String(error);
+        showNotification(`Failed to load Codex proxy: ${message}`, 'error');
+    }
+}
+
+async function saveTokenPoolProxySetting(clear = false) {
+    const modal = ensureTokenPoolModal();
+    const input = modal.querySelector('#tokenPoolProxyUrl');
+    if (!input) {
+        return;
+    }
+
+    const proxyUrl = clear ? '' : input.value.trim();
+    try {
+        await window.go.main.App.SetCodexProxyURL(proxyUrl);
+        input.value = proxyUrl;
+        showNotification(proxyUrl ? 'Codex proxy updated' : 'Codex proxy cleared', 'success');
+    } catch (error) {
+        const message = error?.message || String(error);
+        showNotification(`Failed to save Codex proxy: ${message}`, 'error');
+    }
+}
+
+function parseAppJSON(value) {
+    if (typeof value === 'string') {
+        return JSON.parse(value);
+    }
+    return value;
+}
+
+function maskTokenPoolAccountID(accountId) {
+    const raw = (accountId || '').trim();
+    if (!raw) {
+        return '-';
+    }
+    return `${raw.slice(0, 8)}*`;
+}
+
+function maskTokenPoolEmail(email) {
+    const raw = (email || '').trim();
+    if (!raw || !raw.includes('@')) {
+        return raw || '-';
+    }
+    const [local, domain] = raw.split('@');
+    if (!local || !domain) {
+        return raw;
+    }
+    const localMasked = local.length <= 2
+        ? `${local[0] || ''}*`
+        : `${local[0]}*${local.slice(-2)}`;
+    const domainParts = domain.split('.');
+    const tld = domainParts.length > 1 ? domainParts[domainParts.length - 1] : '';
+    const firstLabel = domainParts[0] || '';
+    const domainMasked = firstLabel
+        ? `${firstLabel[0]}*${tld ? tld : ''}`
+        : `*${tld ? tld : ''}`;
+    return `${localMasked}@${domainMasked}`;
+}
+
+function ensureTokenPoolErrorModal() {
+    let modal = document.getElementById('tokenPoolErrorModal');
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'tokenPoolErrorModal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content token-pool-error-modal-content">
+            <div class="modal-header">
+                <h2>🧾 Last Error</h2>
+            </div>
+            <div class="modal-body">
+                <pre id="tokenPoolErrorText" class="token-pool-error-pre"></pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="tokenPoolErrorCloseBtn">Close</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    const closeModal = () => modal.classList.remove('active');
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) {
+            closeModal();
+        }
+    });
+    modal.querySelector('#tokenPoolErrorCloseBtn')?.addEventListener('click', closeModal);
+    return modal;
+}
+
+function showTokenPoolErrorDialog(errorText) {
+    const modal = ensureTokenPoolErrorModal();
+    const textEl = modal.querySelector('#tokenPoolErrorText');
+    if (textEl) {
+        textEl.textContent = (errorText || '').trim() || '-';
+    }
+    modal.classList.add('active');
+}
+
+function ensureTokenPoolUsageModal() {
+    let modal = document.getElementById('tokenPoolUsageModal');
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'tokenPoolUsageModal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content token-pool-usage-modal-content">
+            <div class="modal-header">
+                <h2 id="tokenPoolUsageTitle">📊 Usage</h2>
+            </div>
+            <div class="modal-body">
+                <div id="tokenPoolUsageBody" class="token-pool-usage-body"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="tokenPoolUsageCloseBtn">Close</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    const closeModal = () => modal.classList.remove('active');
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) {
+            closeModal();
+        }
+    });
+    modal.querySelector('#tokenPoolUsageCloseBtn')?.addEventListener('click', closeModal);
+    return modal;
+}
+
+function showTokenPoolUsageDialog(label, usage) {
+    const modal = ensureTokenPoolUsageModal();
+    const title = modal.querySelector('#tokenPoolUsageTitle');
+    const body = modal.querySelector('#tokenPoolUsageBody');
+    if (title) {
+        title.textContent = `📊 Usage${label ? `: ${label}` : ''}`;
+    }
+
+    if (!usage) {
+        body.innerHTML = `<div class="token-pool-usage-empty">No usage yet</div>`;
+    } else {
+        const totalTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
+        const updatedAt = usage.updatedAt ? formatTokenPoolTime(usage.updatedAt) : '-';
+        body.innerHTML = `
+            <div class="token-pool-usage-grid">
+                <div>Requests</div><div>${usage.requests || 0}</div>
+                <div>Errors</div><div>${usage.errors || 0}</div>
+                <div>Total Tokens</div><div>${formatTokens(totalTokens)}</div>
+                <div>Input Tokens</div><div>${formatTokens(usage.inputTokens || 0)}</div>
+                <div>Output Tokens</div><div>${formatTokens(usage.outputTokens || 0)}</div>
+                <div>Updated</div><div>${escapeHtml(updatedAt)}</div>
+            </div>
+        `;
+    }
+
+    modal.classList.add('active');
+}
+
+function showTokenPoolUpdateTokenDialog() {
+    return new Promise((resolve) => {
+        const modal = document.createElement('div');
+        modal.id = 'tokenPoolUpdateTokenModal';
+        modal.className = 'modal active';
+        modal.style.zIndex = '1002';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>🔑 Update Token</h2>
+                </div>
+                <div class="modal-body">
+                    <div class="prompt-dialog">
+                        <p><span class="required">*</span>Access token</p>
+                        <div class="prompt-body">
+                            <textarea id="tokenPoolUpdateAccess" class="form-input" rows="4" placeholder="Paste access_token here"></textarea>
+                        </div>
+                        <p style="margin-top: 12px;">expiresAt (RFC3339, optional)</p>
+                        <div class="prompt-body">
+                            <input type="text" id="tokenPoolUpdateExpires" class="form-input" placeholder="2026-03-18T09:22:23Z" />
+                        </div>
+                        <div class="prompt-actions">
+                            <button class="btn btn-primary" id="tokenPoolUpdateOk">OK</button>
+                            <button class="btn btn-secondary" id="tokenPoolUpdateCancel">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+
+        const accessEl = modal.querySelector('#tokenPoolUpdateAccess');
+        const expiresEl = modal.querySelector('#tokenPoolUpdateExpires');
+        setTimeout(() => accessEl?.focus(), 50);
+
+        const closeModal = (value) => {
+            modal.classList.remove('active');
+            setTimeout(() => modal.remove(), 200);
+            resolve(value);
+        };
+
+        const handleSubmit = () => {
+            const token = (accessEl?.value || '').trim();
+            if (!token) {
+                showNotification('Access token is required', 'warning');
+                accessEl?.focus();
+                return;
+            }
+            const expiresAt = (expiresEl?.value || '').trim();
+            closeModal({ token, expiresAt });
+        };
+
+        modal.querySelector('#tokenPoolUpdateOk')?.addEventListener('click', handleSubmit);
+        modal.querySelector('#tokenPoolUpdateCancel')?.addEventListener('click', () => closeModal(null));
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) {
+                closeModal(null);
+            }
+        });
+
+        modal.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                closeModal(null);
+            }
+        });
+    });
+}
+
+function formatTokenPoolTime(value) {
+    if (!value) {
+        return '-';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+    const pad = (num) => String(num).padStart(2, '0');
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function renderTokenPoolStatus(status, enabled = true, rateLimits = null) {
+    if (!enabled) {
+        return `<span style="display: inline-block; padding: 2px 8px; border-radius: 999px; background: #6b7280; color: #fff; font-size: 12px;">disabled</span>`;
+    }
+    const rateStatus = (rateLimits?.status || '').trim();
+    const normalized = rateStatus && rateStatus !== 'ok' ? rateStatus : (status || 'active');
+    const colors = {
+        active: '#10b981',
+        expiring: '#f59e0b',
+        need_refresh: '#f97316',
+        expired: '#ef4444',
+        invalid: '#ef4444',
+        unauthorized: '#ef4444',
+        blocked: '#ef4444',
+        error: '#ef4444',
+        network: '#f59e0b',
+        upstream: '#f59e0b',
+        parse_error: '#6366f1',
+        empty: '#6366f1',
+        missing_token: '#6b7280',
+        cooldown: '#6366f1'
+    };
+    const color = colors[normalized] || '#6b7280';
+    return `<span style="display: inline-block; padding: 2px 8px; border-radius: 999px; background: ${color}; color: #fff; font-size: 12px;">${escapeHtml(normalized)}</span>`;
+}
+
+function renderTokenPoolStats(stats = {}) {
+    const items = [
+        ['Total', stats.total || 0],
+        ['Active', stats.active || 0],
+        ['Expiring', stats.expiring || 0],
+        ['Need Refresh', stats.needRefresh || 0],
+        ['Expired', stats.expired || 0],
+        ['Invalid', stats.invalid || 0],
+        ['Cooldown', stats.cooldown || 0],
+        ['Disabled', stats.disabled || 0]
+    ];
+
+    const parts = items.map(([label, value]) => {
+        const highlight = value > 0 && label !== 'Total' && label !== 'Active' ? ' token-pool-stat-alert' : '';
+        return `<span class="token-pool-stat${highlight}"><strong>${label}</strong> ${value}</span>`;
+    });
+
+    return `<div class="token-pool-stats-line">${parts.join('<span class="token-pool-stat-sep">·</span>')}</div>`;
+}
+
+function renderTokenPoolRows(credentials = []) {
+    if (!credentials.length) {
+        return `<tr><td colspan="7" style="padding: 16px; text-align: center; color: #6b7280;">No credentials</td></tr>`;
+    }
+
+    const latestUsed = credentials.reduce((max, cred) => {
+        if (!cred.lastUsedAt) {
+            return max;
+        }
+        const t = Date.parse(cred.lastUsedAt);
+        if (Number.isNaN(t)) {
+            return max;
+        }
+        return t > max ? t : max;
+    }, 0);
+
+    return credentials.map((cred) => `
+        <tr class="${latestUsed && cred.lastUsedAt && Date.parse(cred.lastUsedAt) === latestUsed ? 'token-pool-row-active' : ''}" style="border-top: 1px solid rgba(148, 163, 184, 0.2);">
+            <td style="padding: 8px;"><code title="${escapeHtml(cred.accountId || '')}">${escapeHtml(maskTokenPoolAccountID(cred.accountId))}</code></td>
+            <td style="padding: 8px;"><span title="${escapeHtml(cred.email || '')}">${escapeHtml(maskTokenPoolEmail(cred.email))}</span></td>
+            <td style="padding: 8px;">
+                <div class="token-pool-status-cell">
+                    ${renderTokenPoolStatus(cred.status, cred.enabled, cred.rateLimits)}
+                </div>
+            </td>
+            <td style="padding: 8px; white-space: nowrap;">${escapeHtml(formatTokenPoolTime(cred.expiresAt))}</td>
+            <td style="padding: 8px; width: 220px; max-width: 220px;">${renderTokenPoolRateLimits(cred.rateLimits)}</td>
+            <td style="padding: 8px;">
+                ${tokenPoolErrorCache.has(String(cred.id))
+                    ? `<button type="button" class="btn btn-secondary token-pool-error-view" data-error-id="${cred.id}" style="padding: 4px 8px; font-size: 12px;">View</button>`
+                    : '-'}
+            </td>
+            <td style="padding: 8px;">
+                <div class="token-pool-actions">
+                    <button type="button" class="btn btn-secondary token-pool-toggle-action" data-id="${cred.id}" data-enabled="${cred.enabled ? '1' : '0'}" style="padding: 4px 8px; font-size: 12px;">${cred.enabled ? 'Disable' : 'Enable'}</button>
+                    <div class="token-pool-more-wrap">
+                        <button type="button" class="btn btn-secondary token-pool-more-toggle" data-id="${cred.id}" style="padding: 4px 8px; font-size: 12px;">More</button>
+                        <div class="token-pool-more-menu">
+                            <button type="button" class="token-pool-activate" data-id="${cred.id}">Activate</button>
+                            <button type="button" class="token-pool-rate-refresh" data-id="${cred.id}">Refresh limits</button>
+                            <button type="button" class="token-pool-refresh-token" data-id="${cred.id}">Refresh token</button>
+                            <button type="button" class="token-pool-usage" data-id="${cred.id}">Usage</button>
+                            <button type="button" class="token-pool-update" data-id="${cred.id}">Update token</button>
+                            <button type="button" class="token-pool-delete" data-id="${cred.id}">Delete</button>
+                        </div>
+                    </div>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function formatTokenPoolWindowLabel(windowMinutes) {
+    if (!windowMinutes || windowMinutes <= 0) {
+        return '';
+    }
+    if (windowMinutes % (60 * 24) === 0) {
+        return `${windowMinutes / (60 * 24)}d`;
+    }
+    if (windowMinutes % 60 === 0) {
+        return `${windowMinutes / 60}h`;
+    }
+    return `${windowMinutes}m`;
+}
+
+function renderTokenPoolRateLimits(rateLimits) {
+    if (!rateLimits) {
+        return '-';
+    }
+    const status = (rateLimits.status || '').trim();
+    const updatedAt = rateLimits.updatedAt ? formatTokenPoolTime(rateLimits.updatedAt) : '-';
+    const data = rateLimits.data || {};
+    const snapshot = data.snapshot || {};
+    const primary = snapshot.primary || {};
+    const secondary = snapshot.secondary || {};
+    const usedPercent = typeof primary.usedPercent === 'number' ? Math.round(primary.usedPercent) : null;
+    const primaryWindowMinutes = primary.windowMinutes;
+    const secondaryUsedPercent = typeof secondary.usedPercent === 'number' ? Math.round(secondary.usedPercent) : null;
+    const secondaryWindowMinutes = secondary.windowMinutes;
+    const primaryLabel = formatTokenPoolWindowLabel(primaryWindowMinutes);
+    const secondaryLabel = formatTokenPoolWindowLabel(secondaryWindowMinutes);
+    const parts = [];
+    if (primaryLabel || usedPercent !== null) {
+        const pct = usedPercent !== null ? `${usedPercent}%` : '';
+        parts.push(`${pct}@${primaryLabel || 'window'}`.replace(/^@/, '').trim());
+    }
+    if (secondaryLabel || secondaryUsedPercent !== null) {
+        const pct = secondaryUsedPercent !== null ? `${secondaryUsedPercent}%` : '';
+        parts.push(`${pct}@${secondaryLabel || 'short'}`.replace(/^@/, '').trim());
+    }
+    const summary = parts.join(' · ');
+    const credits = snapshot.credits || {};
+    const creditText = credits.unlimited
+        ? 'unlimited'
+        : credits.balance
+            ? `balance ${credits.balance}`
+            : credits.hasCredits
+                ? 'has credits'
+                : '';
+    const primaryReset = primary.resetsAt ? formatTokenPoolTime(new Date(primary.resetsAt * 1000).toISOString()) : '';
+    const secondaryReset = secondary.resetsAt ? formatTokenPoolTime(new Date(secondary.resetsAt * 1000).toISOString()) : '';
+    const metaParts = [];
+    if (creditText) {
+        metaParts.push(creditText);
+    }
+    if (!summary && status === 'ok') {
+        metaParts.push('ok');
+    }
+
+    const detailLines = [];
+    if (summary) {
+        detailLines.push(summary);
+    }
+    if (primaryReset) {
+        detailLines.push(`reset ${primaryLabel || 'primary'} ${primaryReset}`.trim());
+    }
+    if (secondaryReset) {
+        detailLines.push(`reset ${secondaryLabel || 'secondary'} ${secondaryReset}`.trim());
+    }
+    if (creditText) {
+        detailLines.push(`credits ${creditText}`);
+    }
+    if (updatedAt) {
+        detailLines.push(`updated ${updatedAt}`);
+    }
+    const detailTitle = detailLines.join(' · ');
+
+    const errorText = (rateLimits.error || '').trim();
+    if (status && status !== 'ok') {
+        return '-';
+    }
+
+    if (!summary && !metaParts.length) {
+        return '-';
+    }
+
+    const mainLine = escapeHtml(summary || metaParts.shift() || '');
+    const metaLine = metaParts.length ? escapeHtml(metaParts.join(' · ')) : '';
+    return `
+        <div class="token-pool-rate-cell" title="${escapeHtml(detailTitle)}">
+            <div class="token-pool-rate-main">${mainLine}</div>
+            ${metaLine ? `<div class="token-pool-rate-meta">${metaLine}</div>` : ''}
+        </div>
+    `;
+}
+
+function closeAllTokenPoolActionMenus(scope = document) {
+    scope.querySelectorAll('.token-pool-more-menu.show').forEach((menu) => {
+        menu.classList.remove('show');
+    });
+}
+
+function setTokenPoolHint(modal, text) {
+    const hintEl = modal.querySelector('#tokenPoolHint');
+    if (!hintEl) {
+        return;
+    }
+    const message = (text || '').trim();
+    hintEl.textContent = message;
+    hintEl.style.display = message ? 'block' : 'none';
+}
+
+async function loadTokenPoolData(index) {
+    if (index < 0) {
+        return;
+    }
+
+    const modal = ensureTokenPoolModal();
+    setTokenPoolHint(modal, 'Loading token pool...');
+    const raw = await window.go.main.App.GetEndpointCredentials(index);
+    const parsed = parseAppJSON(raw);
+    if (!parsed.success) {
+        setTokenPoolHint(modal, `Load failed: ${parsed.error || 'unknown error'}`);
+        throw new Error(parsed.error || 'Failed to load token pool');
+    }
+
+    const payload = parsed.data || {};
+    const credentials = payload.credentials || [];
+    const stats = payload.stats || {};
+
+    tokenPoolErrorCache = new Map();
+    tokenPoolUsageCache = new Map();
+    credentials.forEach((cred) => {
+        const primaryError = (cred.lastError || '').trim();
+        const rateErr = (cred.rateLimits && cred.rateLimits.status && cred.rateLimits.status !== 'ok')
+            ? (cred.rateLimits.error || '').trim()
+            : '';
+        const displayError = primaryError || rateErr;
+        if (displayError) {
+            tokenPoolErrorCache.set(String(cred.id), displayError);
+        }
+        if (cred.usage) {
+            tokenPoolUsageCache.set(String(cred.id), cred.usage);
+        }
+    });
+
+    const statsEl = modal.querySelector('#tokenPoolStats');
+    const bodyEl = modal.querySelector('#tokenPoolTableBody');
+    statsEl.innerHTML = renderTokenPoolStats(stats);
+    bodyEl.innerHTML = renderTokenPoolRows(credentials);
+    setTokenPoolHint(modal, '');
+
+    bodyEl.querySelectorAll('.token-pool-toggle-action').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const credentialID = Number(button.dataset.id);
+            const currentlyEnabled = button.dataset.enabled === '1';
+            const targetEnabled = !currentlyEnabled;
+            try {
+                await window.go.main.App.SetEndpointCredentialEnabled(tokenPoolCurrentIndex, credentialID, targetEnabled);
+                showNotification(`Credential ${targetEnabled ? 'enabled' : 'disabled'}`, 'success');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                if (window.loadConfig) {
+                    window.loadConfig();
+                }
+            } catch (error) {
+                const message = error?.message || String(error);
+                showNotification(`Failed: ${message}`, 'error');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+            }
+            closeAllTokenPoolActionMenus(bodyEl);
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-activate').forEach((button) => {
+        button.addEventListener('click', async () => {
+            try {
+                await window.go.main.App.ActivateEndpointCredential(tokenPoolCurrentIndex, Number(button.dataset.id));
+                showNotification('Credential activated', 'success');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                if (window.loadConfig) {
+                    window.loadConfig();
+                }
+            } catch (error) {
+                const message = error?.message || String(error);
+                showNotification(`Failed: ${message}`, 'error');
+            }
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-more-toggle').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const wrap = button.closest('.token-pool-more-wrap');
+            const menu = wrap?.querySelector('.token-pool-more-menu');
+            if (!menu) {
+                return;
+            }
+
+            const shouldOpen = !menu.classList.contains('show');
+            closeAllTokenPoolActionMenus(bodyEl);
+            if (shouldOpen) {
+                menu.classList.add('show');
+            }
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-more-menu').forEach((menu) => {
+        menu.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-error-view').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const errorId = button.dataset.errorId;
+            const errorText = errorId ? tokenPoolErrorCache.get(String(errorId)) || '' : '';
+            showTokenPoolErrorDialog(errorText);
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-rate-error-view').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            showTokenPoolErrorDialog(button.dataset.error || '');
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-usage').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const credentialID = String(button.dataset.id || '');
+            const row = button.closest('tr');
+            const accountText = row?.querySelector('td code')?.textContent?.trim() || '';
+            const label = accountText || '';
+            const usage = tokenPoolUsageCache.get(credentialID) || null;
+            showTokenPoolUsageDialog(label, usage);
+            closeAllTokenPoolActionMenus(bodyEl);
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-update').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const result = await showTokenPoolUpdateTokenDialog();
+            if (!result) {
+                return;
+            }
+            try {
+                await window.go.main.App.UpdateEndpointCredentialToken(
+                    tokenPoolCurrentIndex,
+                    Number(button.dataset.id),
+                    result.token,
+                    result.expiresAt
+                );
+                showNotification('Credential updated', 'success');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                if (window.loadConfig) {
+                    window.loadConfig();
+                }
+            } catch (error) {
+                const message = error?.message || String(error);
+                showNotification(`Failed: ${message}`, 'error');
+            }
+            closeAllTokenPoolActionMenus(bodyEl);
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-rate-refresh').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const credentialID = Number(button.dataset.id);
+            if (!Number.isFinite(credentialID) || credentialID <= 0) {
+                showNotification('Invalid credential id', 'error');
+                return;
+            }
+            const row = button.closest('tr');
+            const accountText = row?.querySelector('td code')?.textContent?.trim() || '';
+            const label = accountText ? `${accountText} (#${credentialID})` : `#${credentialID}`;
+            const modal = ensureTokenPoolModal();
+            try {
+                setTokenPoolHint(modal, `Refreshing rate limits for ${label}...`);
+                const raw = await window.go.main.App.FetchCodexRateLimitsForCredential(tokenPoolCurrentIndex, credentialID);
+                const result = parseAppJSON(raw);
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to refresh rate limits');
+                }
+                const data = result.data || {};
+                const detail = `updated ${data.updated || 0}, failed ${data.failed || 0}, skipped ${data.skipped || 0}`;
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                const refreshedRow = modal.querySelector(`.token-pool-rate-refresh[data-id="${credentialID}"]`)?.closest('tr');
+                const rateMain = refreshedRow?.querySelector('.token-pool-rate-main')?.textContent?.trim();
+                const rateStatus = refreshedRow?.querySelector('.token-pool-rate-status')?.textContent?.trim();
+                const rateSummary = rateMain || rateStatus || '-';
+                showNotification(`Rate limits refreshed for ${label}: ${rateSummary} (${detail})`, 'success');
+                setTokenPoolHint(modal, `Rate limits refreshed for ${label}: ${rateSummary} (${detail})`);
+            } catch (error) {
+                const message = error?.message || String(error);
+                showNotification(`Rate limits refresh failed: ${message}`, 'error');
+                setTokenPoolHint(modal, `Rate limits refresh failed: ${message}`);
+            } finally {
+                closeAllTokenPoolActionMenus(bodyEl);
+            }
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-refresh-token').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const credentialID = Number(button.dataset.id);
+            if (!Number.isFinite(credentialID) || credentialID <= 0) {
+                showNotification('Invalid credential id', 'error');
+                return;
+            }
+            const row = button.closest('tr');
+            const accountText = row?.querySelector('td code')?.textContent?.trim() || '';
+            const label = accountText ? `${accountText} (#${credentialID})` : `#${credentialID}`;
+            const modal = ensureTokenPoolModal();
+            try {
+                setTokenPoolHint(modal, `Refreshing token for ${label}...`);
+                const raw = await window.go.main.App.RefreshEndpointCredential(tokenPoolCurrentIndex, credentialID);
+                const result = parseAppJSON(raw);
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to refresh token');
+                }
+                showNotification(`Token refreshed for ${label}`, 'success');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                setTokenPoolHint(modal, `Token refreshed for ${label}`);
+            } catch (error) {
+                const message = error?.message || String(error);
+                showNotification(`Token refresh failed: ${message}`, 'error');
+                setTokenPoolHint(modal, `Token refresh failed: ${message}`);
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+            } finally {
+                closeAllTokenPoolActionMenus(bodyEl);
+            }
+        });
+    });
+
+    bodyEl.querySelectorAll('.token-pool-delete').forEach((button) => {
+        button.addEventListener('click', async () => {
+            try {
+                const credentialID = Number(button.dataset.id);
+                if (!Number.isFinite(credentialID) || credentialID <= 0) {
+                    throw new Error(`invalid credential id: ${button.dataset.id}`);
+                }
+
+                console.info('[TokenPool] delete clicked', {
+                    endpointIndex: tokenPoolCurrentIndex,
+                    credentialID
+                });
+
+                showNotification(`Deleting credential #${credentialID}...`, 'info');
+                await window.go.main.App.DeleteEndpointCredential(tokenPoolCurrentIndex, credentialID);
+                showNotification('Credential deleted', 'success');
+                await loadTokenPoolData(tokenPoolCurrentIndex);
+                if (window.loadConfig) {
+                    window.loadConfig();
+                }
+            } catch (error) {
+                const message = error?.message || String(error);
+                console.error('[TokenPool] delete failed', {
+                    endpointIndex: tokenPoolCurrentIndex,
+                    credentialID: button.dataset.id,
+                    error
+                });
+                showNotification(`Failed: ${message}`, 'error');
+            }
+            closeAllTokenPoolActionMenus(bodyEl);
+        });
+    });
+}
+
+async function refreshTokenPoolRateLimits(index) {
+    if (index < 0) {
+        return;
+    }
+
+    const modal = ensureTokenPoolModal();
+    const button = modal.querySelector('#tokenPoolRateRefreshBtn');
+    try {
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'Refreshing...';
+        }
+        setTokenPoolHint(modal, 'Fetching rate limits...');
+
+        const raw = await window.go.main.App.FetchCodexRateLimits(index);
+        const result = parseAppJSON(raw);
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to fetch rate limits');
+        }
+
+        const data = result.data || {};
+        showNotification(`Rate limits refreshed: ${data.updated || 0} updated, ${data.failed || 0} failed, ${data.skipped || 0} skipped`, 'success');
+        await loadTokenPoolData(index);
+    } catch (error) {
+        const message = error?.message || String(error);
+        showNotification(`Rate limits refresh failed: ${message}`, 'error');
+        setTokenPoolHint(modal, `Rate limits refresh failed: ${message}`);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Refresh Limits';
+        }
+    }
+}
+
+async function handleTokenPoolImport() {
+    if (tokenPoolCurrentIndex < 0) {
+        return;
+    }
+
+    const modal = ensureTokenPoolModal();
+    const input = modal.querySelector('#tokenPoolImportInput');
+    const overwrite = modal.querySelector('#tokenPoolOverwrite')?.checked === true;
+    const raw = (input?.value || '').trim();
+
+    if (!raw) {
+        showNotification('Please paste JSON first', 'warning');
+        return;
+    }
+
+    try {
+        JSON.parse(raw);
+    } catch {
+        showNotification('Invalid JSON', 'error');
+        return;
+    }
+
+    try {
+        const resultRaw = await window.go.main.App.ImportEndpointCredentials(tokenPoolCurrentIndex, raw, overwrite);
+        const result = parseAppJSON(resultRaw);
+        if (!result.success) {
+            throw new Error(result.error || 'Import failed');
+        }
+
+        const data = result.data || {};
+        showNotification(
+            `Import: +${data.created || 0}, updated ${data.updated || 0}, skipped ${data.skipped || 0}, failed ${data.failed || 0}`,
+            'success'
+        );
+        input.value = '';
+        await loadTokenPoolData(tokenPoolCurrentIndex);
+        if (window.loadConfig) {
+            window.loadConfig();
+        }
+    } catch (error) {
+        const message = error?.message || String(error);
+        showNotification(`Import failed: ${message}`, 'error');
+    }
+}
+
+async function handleTokenPoolFileImport() {
+    if (tokenPoolCurrentIndex < 0) {
+        return;
+    }
+
+    const modal = ensureTokenPoolModal();
+    const overwrite = modal.querySelector('#tokenPoolOverwrite')?.checked === true;
+
+    try {
+        setTokenPoolHint(modal, 'Opening file picker...');
+        const resultRaw = await window.go.main.App.ImportEndpointCredentialsFromFiles(tokenPoolCurrentIndex, overwrite);
+        const result = parseAppJSON(resultRaw);
+        if (!result.success) {
+            throw new Error(result.error || 'Import failed');
+        }
+
+        const data = result.data || {};
+        if ((data.processed || 0) === 0 && (data.failed || 0) === 0) {
+            showNotification('No files selected', 'warning');
+            setTokenPoolHint(modal, 'No files selected.');
+            return;
+        }
+
+        showNotification(
+            `Import files: +${data.created || 0}, updated ${data.updated || 0}, skipped ${data.skipped || 0}, failed ${data.failed || 0}`,
+            (data.failed || 0) > 0 ? 'warning' : 'success'
+        );
+        await loadTokenPoolData(tokenPoolCurrentIndex);
+        if (window.loadConfig) {
+            window.loadConfig();
+        }
+    } catch (error) {
+        const message = error?.message || String(error);
+        if (message.toLowerCase().includes('no files selected')) {
+            showNotification('No files selected', 'warning');
+            setTokenPoolHint(modal, 'No files selected.');
+            return;
+        }
+        showNotification(`Import files failed: ${message}`, 'error');
+        setTokenPoolHint(modal, `Import files failed: ${message}`);
+    }
+}
+
+export async function openTokenPoolModal(index, endpointName = '') {
+    tokenPoolCurrentIndex = index;
+    const modal = ensureTokenPoolModal();
+    const title = modal.querySelector('#tokenPoolTitle');
+    title.textContent = `🪪 Token Pool${endpointName ? `: ${endpointName}` : ''}`;
+    modal.classList.add('active');
+    await loadTokenPoolProxySetting();
+
+    try {
+        await loadTokenPoolData(index);
+    } catch (error) {
+        const message = error?.message || String(error);
+        showNotification(`Failed to load token pool: ${message}`, 'error');
+    }
+}
+
+export function toggleEndpointPanel() {
+    const panel = document.getElementById('endpointPanel');
+    const icon = document.getElementById('endpointToggleIcon');
+    const text = document.getElementById('endpointToggleText');
+
+    endpointPanelExpanded = !endpointPanelExpanded;
+
+    if (endpointPanelExpanded) {
+        panel.style.display = 'block';
+        icon.textContent = '🔼';
+        text.textContent = t('endpoints.collapse');
+    } else {
+        panel.style.display = 'none';
+        icon.textContent = '🔽';
+        text.textContent = t('endpoints.expand');
+    }
 }
 
 // Drag and drop state
@@ -519,6 +1518,7 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
         const enabled = ep.enabled !== undefined ? ep.enabled : true;
         const transformer = ep.transformer || 'claude';
         const model = ep.model || '';
+        const authMode = ep.authMode || 'api_key';
         const isCurrentEndpoint = ep.name === currentEndpointName;
 
         // 获取测试状态

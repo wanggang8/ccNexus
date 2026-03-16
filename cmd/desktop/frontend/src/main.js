@@ -25,8 +25,10 @@ import {
     showAddEndpointModal,
     editEndpoint,
     saveEndpoint,
+    openEndpointTokenPoolFromModal,
     deleteEndpoint,
     closeModal,
+    handleAuthModeChange,
     handleTransformerChange,
     fetchModels,
     initModelInputEvents,
@@ -240,8 +242,10 @@ window.loadConfig = loadConfigAndRender;
 window.showAddEndpointModal = showAddEndpointModal;
 window.editEndpoint = editEndpoint;
 window.saveEndpoint = saveEndpoint;
+window.openEndpointTokenPoolFromModal = openEndpointTokenPoolFromModal;
 window.deleteEndpoint = deleteEndpoint;
 window.closeModal = closeModal;
+window.handleAuthModeChange = handleAuthModeChange;
 window.handleTransformerChange = handleTransformerChange;
 window.fetchModels = fetchModels;
 window.toggleModelDropdown = toggleModelDropdown;

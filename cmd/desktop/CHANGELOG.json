@@ -1,5 +1,60 @@
 [
   {
+    "version": "v5.2.0",
+    "date": "2026-03-11",
+    "changes": [
+      "Added per-credential Token Pool usage stats (requests/errors/tokens) with quick view",
+      "Added per-credential token refresh and improved the token update prompt",
+      "Refined the Token Pool list UI with latest-used highlighting and clearer status/error display"
+    ]
+  },
+  {
+    "version": "v5.1.0",
+    "date": "2026-03-11",
+    "changes": [
+      "Added Codex rate limit/credits fetching with manual refresh (including per-credential refresh)",
+      "Captured Codex rate limit snapshots from API responses and SSE events for better accuracy",
+      "Added rate limit storage and Token Pool display with compact summary + tooltip details",
+      "Added multi-file JSON import for credential pools",
+      "Improved Token Pool UI: masked email display, fixed timestamp format, compact stats bar, refined layout and actions",
+      "Added per-credential rate limit refresh feedback showing the latest usage summary"
+    ]
+  },
+  {
+    "version": "v5.0.1",
+    "date": "2026-03-10",
+    "changes": [
+      "Added Codex Token Pool authentication mode with endpoint-level credential pool support",
+      "Implemented credential lifecycle management: bulk import/update/delete, enable/disable, activation, status tracking, and refresh-on-401",
+      "Added dedicated Token Pool management UI for Desktop and Web, including Codex proxy configuration and improved action layout",
+      "Hardened Codex /responses handling with stream enforcement compatibility and improved retry/failover behavior",
+      "Made endpoint model optional and only override upstream model when a value is provided (Codex Token Pool friendly)",
+      "Fixed token accounting issues where request counts increased but token totals stayed unchanged in specific Codex streaming scenarios",
+      "Updated endpoint behavior for Codex mode with fixed upstream route and transformer constraints for better compatibility"
+    ]
+  },
+  {
+    "version": "v4.13.3",
+    "date": "2026-03-07",
+    "changes": [
+      "Fixed incorrect endpoint count in the statistics bar by syncing visible active/total endpoint counters after config reload"
+    ]
+  },
+  {
+    "version": "v4.13.2",
+    "date": "2026-03-07",
+    "changes": [
+      "Fixed endpoint index mismatch after filtering to prevent edit/test/delete/toggle actions from targeting the wrong endpoint"
+    ]
+  },
+  {
+    "version": "v4.13.1",
+    "date": "2026-03-07",
+    "changes": [
+      "Fixed cc_openai2 converter transformation issue"
+    ]
+  },
+  {
     "version": "v4.13.0",
     "date": "2026-01-06",
     "changes": [

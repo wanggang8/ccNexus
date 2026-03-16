@@ -51,13 +51,17 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle /test and /toggle sub-paths (only when subpath is exactly "test" or "toggle")
+	// Handle /test, /toggle, and /credentials sub-paths
 	if subpath == "test" {
 		h.testEndpoint(w, r, name)
 		return
 	}
 	if subpath == "toggle" {
 		h.toggleEndpoint(w, r, name)
+		return
+	}
+	if subpath == "credentials" {
+		h.handleEndpointCredentials(w, r, name, parts[2:])
 		return
 	}
 
@@ -96,8 +100,15 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		endpoints[i].APIKey = maskAPIKey(endpoints[i].APIKey)
 	}
 
+	tokenPools, err := h.storage.GetAllTokenPoolStats()
+	if err != nil {
+		logger.Warn("Failed to get token pool stats: %v", err)
+		tokenPools = map[string]storage.TokenPoolStats{}
+	}
+
 	WriteSuccess(w, map[string]interface{}{
-		"endpoints": endpoints,
+		"endpoints":  endpoints,
+		"tokenPools": tokenPools,
 	})
 }
 
@@ -127,6 +138,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		APIUrl      string `json:"apiUrl"`
 		APIKey      string `json:"apiKey"`
+		AuthMode    string `json:"authMode"`
 		Enabled     bool   `json:"enabled"`
 		Transformer string `json:"transformer"`
 		Model       string `json:"model"`
@@ -138,10 +150,35 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authMode := config.NormalizeAuthMode(req.AuthMode)
+	normalizedEndpoint := config.Endpoint{
+		APIUrl:      normalizeAPIUrl(req.APIUrl),
+		APIKey:      req.APIKey,
+		AuthMode:    authMode,
+		Transformer: req.Transformer,
+		Model:       req.Model,
+		Remark:      req.Remark,
+	}
+	if normalizedEndpoint.Transformer == "" {
+		normalizedEndpoint.Transformer = "claude"
+	}
+	config.ApplyEndpointAuthModeRules(&normalizedEndpoint)
+	authMode = normalizedEndpoint.AuthMode
+	req.APIUrl = normalizedEndpoint.APIUrl
+	req.APIKey = normalizedEndpoint.APIKey
+	req.Transformer = normalizedEndpoint.Transformer
+
 	// Validate required fields
-	if req.Name == "" || req.APIUrl == "" || req.APIKey == "" {
-		WriteError(w, http.StatusBadRequest, "Name, apiUrl, and apiKey are required")
+	if req.Name == "" || req.APIUrl == "" {
+		WriteError(w, http.StatusBadRequest, "Name and apiUrl are required")
 		return
+	}
+	if authMode == config.AuthModeAPIKey && req.APIKey == "" {
+		WriteError(w, http.StatusBadRequest, "apiKey is required in api_key mode")
+		return
+	}
+	if config.IsTokenPoolAuthMode(authMode) {
+		req.APIKey = ""
 	}
 
 	// Get current endpoints to determine sort order
@@ -165,6 +202,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		APIUrl:      normalizeAPIUrl(req.APIUrl),
 		APIKey:      req.APIKey,
+		AuthMode:    authMode,
 		Enabled:     req.Enabled,
 		Transformer: req.Transformer,
 		Model:       req.Model,
@@ -197,6 +235,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		Name        string `json:"name"`
 		APIUrl      string `json:"apiUrl"`
 		APIKey      string `json:"apiKey"`
+		AuthMode    string `json:"authMode"`
 		Enabled     bool   `json:"enabled"`
 		Transformer string `json:"transformer"`
 		Model       string `json:"model"`
@@ -238,6 +277,34 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	}
 	if req.APIKey != "" {
 		existing.APIKey = req.APIKey
+	}
+	if req.AuthMode != "" {
+		existing.AuthMode = config.NormalizeAuthMode(req.AuthMode)
+	}
+	if existing.AuthMode == "" {
+		existing.AuthMode = config.AuthModeAPIKey
+	}
+	normalizedEndpoint := config.Endpoint{
+		Name:        existing.Name,
+		APIUrl:      existing.APIUrl,
+		APIKey:      existing.APIKey,
+		AuthMode:    existing.AuthMode,
+		Enabled:     existing.Enabled,
+		Transformer: existing.Transformer,
+		Model:       existing.Model,
+		Remark:      existing.Remark,
+	}
+	if normalizedEndpoint.Transformer == "" {
+		normalizedEndpoint.Transformer = "claude"
+	}
+	config.ApplyEndpointAuthModeRules(&normalizedEndpoint)
+	existing.APIUrl = normalizedEndpoint.APIUrl
+	existing.APIKey = normalizedEndpoint.APIKey
+	existing.AuthMode = normalizedEndpoint.AuthMode
+	existing.Transformer = normalizedEndpoint.Transformer
+	if existing.AuthMode == config.AuthModeAPIKey && existing.APIKey == "" {
+		WriteError(w, http.StatusBadRequest, "apiKey is required in api_key mode")
+		return
 	}
 	existing.Enabled = req.Enabled
 	if req.Transformer != "" {
@@ -649,6 +716,9 @@ func (h *Handler) reloadConfig() error {
 
 // maskAPIKey masks an API key, showing only the last 4 characters
 func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
 	if len(key) <= 4 {
 		return "****"
 	}
