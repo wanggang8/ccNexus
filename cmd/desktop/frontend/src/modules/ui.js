@@ -286,7 +286,8 @@ export function initUI() {
                                         ${isShowBtn ? `
                                         <button class="dropdown-item" onclick="window.openTerminal(); window.closeMoreMenu();">
                                             <span class="icon">${getIcon('terminal')}</span> <span data-i18n="terminal.title">${t('terminal.title')}</span>
-                                        </button>` : ''}
+                                        </button>
+                                        <div class="dropdown-divider"></div>` : ''}
                                         <button class="dropdown-item" onclick="window.openDataSync(); window.closeMoreMenu();">
                                             <span class="icon">${getIcon('refreshCw')}</span> <span data-i18n="webdav.dataSync">${t('webdav.dataSync')}</span>
                                         </button>
@@ -306,39 +307,6 @@ export function initUI() {
                             <button class="btn btn-primary btn-toolbar-primary" onclick="window.showAddEndpointModal()">
                                 <span class="icon">${getIcon('plus')}</span> <span data-i18n="header.addEndpoint">${t('header.addEndpoint')}</span>
                             </button>
-
-                            <!-- 统一筛选面板（在工具栏下方） -->
-                            <div id="unifiedFilterPanel" class="unified-filter-panel hidden">
-                                <div class="filter-panel-header">
-                                    <h3 data-i18n="endpoints.filterPanel">${t('endpoints.filterPanel')}</h3>
-                                    <button class="btn-close">×</button>
-                                </div>
-                                <div class="filter-panel-body">
-                                    <!-- 类型筛选 -->
-                                    <div class="filter-section">
-                                        <h4 data-i18n="endpoints.type">${t('endpoints.type')}</h4>
-                                        <div id="filterTypeOptions" class="filter-options"></div>
-                                    </div>
-                                    <!-- 可用性筛选 -->
-                                    <div class="filter-section">
-                                        <h4 data-i18n="endpoints.availability">${t('endpoints.availability')}</h4>
-                                        <div id="filterAvailabilityOptions" class="filter-options"></div>
-                                    </div>
-                                    <!-- 启用状态筛选 -->
-                                    <div class="filter-section">
-                                        <h4 data-i18n="endpoints.enabledStatus">${t('endpoints.enabledStatus')}</h4>
-                                        <div id="filterEnabledOptions" class="filter-options"></div>
-                                    </div>
-                                </div>
-                                <div class="filter-panel-footer">
-                                    <button class="btn btn-secondary btn-clear-all">
-                                        <span data-i18n="endpoints.clearAll">${t('endpoints.clearAll')}</span>
-                                    </button>
-                                    <button class="btn btn-primary btn-apply-unified">
-                                        <span data-i18n="endpoints.apply">${t('endpoints.apply')}</span>
-                                    </button>
-                                </div>
-                            </div>
                         </div>
                         <!-- Traffic Actions -->
                         <div id="trafficActions" class="tab-actions">
@@ -890,6 +858,39 @@ export function initUI() {
                 <div class="modal-body" id="trafficDetailContent">
                     <!-- Traffic detail will be inserted here -->
                 </div>
+            </div>
+        </div>
+
+        <!-- 统一筛选面板（独立定位） -->
+        <div id="unifiedFilterPanel" class="unified-filter-panel hidden">
+            <div class="filter-panel-header">
+                <h3 data-i18n="endpoints.filterPanel"><span class="icon">${getIcon('filter')}</span> ${t('endpoints.filterPanel')}</h3>
+                <button class="btn-close"><span class="icon">${getIcon('x')}</span></button>
+            </div>
+            <div class="filter-panel-body">
+                <!-- 类型筛选 -->
+                <div class="filter-section">
+                    <h4 data-i18n="endpoints.type"><span class="icon">${getIcon('layers')}</span> ${t('endpoints.type')}</h4>
+                    <div id="filterTypeOptions" class="filter-options"></div>
+                </div>
+                <!-- 可用性筛选 -->
+                <div class="filter-section">
+                    <h4 data-i18n="endpoints.availability"><span class="icon">${getIcon('activity')}</span> ${t('endpoints.availability')}</h4>
+                    <div id="filterAvailabilityOptions" class="filter-options"></div>
+                </div>
+                <!-- 启用状态筛选 -->
+                <div class="filter-section">
+                    <h4 data-i18n="endpoints.enabledStatus"><span class="icon">${getIcon('toggleRight')}</span> ${t('endpoints.enabledStatus')}</h4>
+                    <div id="filterEnabledOptions" class="filter-options"></div>
+                </div>
+            </div>
+            <div class="filter-panel-footer">
+                <button class="btn btn-secondary btn-clear-all">
+                    <span class="icon">${getIcon('x')}</span> <span data-i18n="endpoints.clearAll">${t('endpoints.clearAll')}</span>
+                </button>
+                <button class="btn btn-primary btn-apply-unified">
+                    <span class="icon">${getIcon('check')}</span> <span data-i18n="endpoints.apply">${t('endpoints.apply')}</span>
+                </button>
             </div>
         </div>
     `;

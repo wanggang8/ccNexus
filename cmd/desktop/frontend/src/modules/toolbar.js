@@ -64,8 +64,8 @@ export function closeMoreMenu() {
 // 导出给 window 使用
 export function openTerminal() {
     closeMoreMenu();
-    if (window.initTerminal) {
-        window.initTerminal();
+    if (window.showTerminalModal) {
+        window.showTerminalModal();
     }
 }
 

@@ -281,6 +281,7 @@ body {
     font-weight: bold;
     margin: 8px 0;
     line-height: 1.2;
+    text-align: center;
 }
 
 /* 端点卡片：突出活跃数字 */
@@ -290,32 +291,43 @@ body {
 
 .stat-box .stat-secondary {
     font-size: 19px;
-    color: var(--text-secondary);
+    color: white;
     margin: 0 4px;
 }
 
 /* Stat Box Detail - 详细信息统一13px */
 .stat-box .stat-detail {
-    font-size: 13px;
-    color: var(--text-secondary);
+    font-size: 14px;
+    color: white;
     margin-top: 8px;
     -webkit-font-smoothing: antialiased;
+    text-align: center;
+}
+
+.stat-box .stat-detail span:not(.stat-text):not(.stat-divider) {
+    font-weight: 700;
+    color: white;
+}
+
+.stat-box .stat-detail .stat-text {
+    color: white;
+    font-weight: 500;
 }
 
 /* 分隔符样式 */
 .stat-separator {
     font-size: 28px;
-    color: var(--text-tertiary);
+    color: white;
     margin: 0 4px;
 }
 
 .stat-total {
     font-size: 28px;
-    color: var(--text-secondary);
+    color: white;
 }
 
 .stat-divider {
-    color: var(--text-tertiary);
+    color: white;
     margin: 0;
 }
 
@@ -323,10 +335,10 @@ body {
 .trend {
     display: inline-flex;
     align-items: center;
-    padding: 2px 8px 4px 8px;
+    padding: 4px 10px;
     border-radius: 12px;
-    font-weight: 600;
-    font-size: 11px;
+    font-weight: 700;
+    font-size: 12px;
     background: var(--hover-bg);
     white-space: nowrap;
     position: absolute;
@@ -335,18 +347,18 @@ body {
 }
 
 .trend-up {
-    background: var(--active-bg);
-    color: var(--text-inverse);
+    background: var(--primary-color);
+    color: white;
 }
 
 .trend-down {
-    background: var(--active-bg);
-    color: var(--success-color);
+    background: var(--success-color);
+    color: white;
 }
 
 .trend-flat {
-    background: var(--hover-bg);
-    color: var(--text-primary);
+    background: var(--text-secondary);
+    color: white;
 }
 
 /* Statistics Tabs */
@@ -759,14 +771,14 @@ body {
 }
 
 .btn-secondary {
-    background: #6c757d;
+    background: var(--primary-color);
     color: white;
 }
 
 .btn-secondary:hover {
-    background: #5a6268;
+    background: var(--primary-hover);
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(108, 117, 125, 0.4);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
 }
 
 .btn-danger {
@@ -1582,6 +1594,7 @@ body {
     cursor: pointer;
     transition: all 0.2s;
     min-width: 55px;
+    font-weight: 500;
     background: var(--primary-color);
     color: white;
 }
@@ -1590,15 +1603,6 @@ body {
     background: var(--primary-hover);
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(102, 126, 234, 0.3);
-}
-
-.btn-card.btn-secondary {
-    background: #6c757d;
-    color: white;
-}
-
-.btn-card.btn-secondary:hover {
-    background: #5a6268;
 }
 
 .btn-card.btn-danger {
@@ -5126,55 +5130,123 @@ body {
     display: inline-block;
 }
 
+.dropdown-toggle.active {
+    background: var(--primary-hover) !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+    transform: translateY(-1px);
+}
+
 .dropdown-menu {
     position: absolute;
-    top: calc(100% + 4px);
+    top: calc(100% + 8px);
     right: 0;
-    min-width: 180px;
+    min-width: 240px;
     background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border: 2px solid rgba(139, 92, 246, 0.3);
+    border-radius: 16px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 
+                0 0 0 1px rgba(139, 92, 246, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
     z-index: 1000;
     overflow: hidden;
-    transition: opacity 0.2s, transform 0.2s;
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 12px;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
 
 .dropdown-menu.hidden {
     display: none;
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(-12px) scale(0.95);
 }
 
 .dropdown-menu:not(.hidden) {
     display: block;
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
 }
 
 .dropdown-item {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 14px;
     width: 100%;
-    padding: 10px 16px;
+    padding: 14px 16px;
     background: transparent;
     border: none;
+    border-radius: 10px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 500;
+    position: relative;
+    overflow: hidden;
+}
+
+.dropdown-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 100%;
+    background: linear-gradient(180deg, var(--primary-color) 0%, rgba(139, 92, 246, 0.6) 100%);
+    transform: scaleY(0);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 0 2px 2px 0;
 }
 
 .dropdown-item:hover {
-    background: var(--hover-bg);
+    background: linear-gradient(135deg,
+                rgba(139, 92, 246, 0.2) 0%,
+                rgba(139, 92, 246, 0.08) 100%);
+    color: var(--primary-color);
+    transform: translateX(6px);
+    padding-left: 22px;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.15);
+}
+
+.dropdown-item:hover::before {
+    transform: scaleY(1);
+}
+
+.dropdown-item:active {
+    transform: translateX(4px) scale(0.98);
+    background: linear-gradient(135deg,
+                rgba(139, 92, 246, 0.25) 0%,
+                rgba(139, 92, 246, 0.1) 100%);
 }
 
 .dropdown-item .icon {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
     flex-shrink: 0;
+    opacity: 0.75;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    filter: grayscale(0.4) brightness(0.9);
+}
+
+.dropdown-item:hover .icon {
+    opacity: 1;
+    filter: grayscale(0) brightness(1.1);
+    transform: scale(1.15) rotate(5deg);
+}
+
+/* 分隔线样式 */
+.dropdown-divider {
+    height: 1px;
+    margin: 10px 0;
+    background: linear-gradient(90deg, 
+                transparent 0%, 
+                rgba(139, 92, 246, 0.3) 20%,
+                rgba(139, 92, 246, 0.5) 50%,
+                rgba(139, 92, 246, 0.3) 80%,
+                transparent 100%);
+    box-shadow: 0 1px 2px rgba(139, 92, 246, 0.1);
 }
 
 /* ============================================
@@ -5187,53 +5259,95 @@ body {
 
 .more-dropdown-menu {
     position: absolute;
-    top: calc(100% + 4px);
+    top: calc(100% + 8px);
     right: 0;
-    min-width: 160px;
+    min-width: 220px;
     background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25),
+                0 0 0 1px rgba(139, 92, 246, 0.1);
     z-index: 1000;
     overflow: hidden;
-    transition: opacity 0.2s, transform 0.2s;
+    transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 8px;
+    backdrop-filter: blur(10px);
 }
 
 .more-dropdown-menu.hidden {
     display: none;
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(-12px) scale(0.95);
 }
 
 .more-dropdown-menu:not(.hidden) {
     display: block;
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
 }
 
 .more-dropdown-menu button {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
     width: 100%;
-    padding: 10px 16px;
+    padding: 12px 14px;
     background: transparent;
     border: none;
+    border-radius: 8px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     color: var(--text-primary);
     font-size: 14px;
+    font-weight: 500;
+    position: relative;
+    overflow: hidden;
+}
+
+.more-dropdown-menu button::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 3px;
+    height: 100%;
+    background: var(--primary-color);
+    transform: scaleY(0);
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .more-dropdown-menu button:hover {
-    background: var(--bg-secondary);
+    background: linear-gradient(90deg,
+                rgba(139, 92, 246, 0.15) 0%,
+                rgba(139, 92, 246, 0.05) 100%);
+    color: var(--primary-color);
+    transform: translateX(4px);
+    padding-left: 18px;
+}
+
+.more-dropdown-menu button:hover::before {
+    transform: scaleY(1);
+}
+
+.more-dropdown-menu button:active {
+    transform: translateX(2px) scale(0.98);
 }
 
 .more-dropdown-menu button .icon {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     flex-shrink: 0;
+    opacity: 0.7;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    filter: grayscale(0.3);
+}
+
+.more-dropdown-menu button:hover .icon {
+    opacity: 1;
+    filter: grayscale(0);
+    transform: scale(1.1);
 }
 
 .workspace-content {

@@ -78,7 +78,9 @@ go test -v -run TestClaudeToOpenAI ./internal/transformer/convert/
 - Registry-based transformer system (`registry.go`)
 - Three transformer categories:
   - `cc/` - Claude Code format transformers (claude, openai, openai2, gemini, cli)
-  - `cx/` - Codex CLI format transformers (chat/ and responses/ subdirs)
+  - `cx/` - Codex CLI format transformers:
+    - `chat/` - OpenAI chat completion format (wire_api = "chat")
+    - `responses/` - Codex responses format (wire_api = "responses")
   - `convert/` - Cross-format converters (claude→openai, openai→gemini, etc.)
 - Each transformer implements the `Transformer` interface
 - Supports bidirectional conversion with streaming SSE support
@@ -194,6 +196,13 @@ Follow the workflow defined in `.cursor/rules/project-norms.mdc`:
 
 For small changes, user may request "quick path" (Execution → Review only).
 
+### Feature Specifications
+
+Feature requirements and design documents are stored in `.cwf/<FEATURE-*>/`:
+- `spec.md` - Feature specification
+- `recon.md` - Technical reconnaissance and analysis
+- These documents are the source of truth for requirements during development
+
 ## Frontend Guidelines
 
 - **No frameworks** - Vanilla JS with Vite bundler
@@ -202,6 +211,13 @@ For small changes, user may request "quick path" (Execution → Review only).
 - **Responsive design** - Primary target: 1024px+, graceful degradation for smaller screens
 - **Module organization** - New features go in `cmd/desktop/frontend/src/modules/`, follow existing patterns
 - **Modular CSS** - Component-specific styles go in `frontend/src/styles/`, use CSS variables for theming
+
+## Code Quality Standards
+
+- **Error handling** - Maintain consistency with existing error codes, return values, and logging patterns
+- **Minimal refactoring** - Only refactor what's necessary; structural changes require explicit approval in Ideation/Planning
+- **I/O semantics** - Never change input/output behavior without explicit planning and approval
+- **Naming conventions** - Follow existing patterns in the codebase
 
 ## Data Storage
 
@@ -215,23 +231,6 @@ For small changes, user may request "quick path" (Execution → Review only).
 - Test files follow `*_test.go` naming convention
 - Transformer tests verify bidirectional conversion accuracy
 - No tests currently for `internal/proxy/` or `internal/service/` (opportunity for contribution)
-
-## Recent Optimizations
-
-### Endpoint Toolbar Optimization (March 2024)
-Reduced button count from 8 to 6 (25% reduction) with improved UX:
-- **Unified filter panel** (`filters.js`) - Consolidated 3 separate filter buttons into one
-- **"More" dropdown menu** (`toolbar.js`) - Groups less-frequent actions (Terminal, Sync)
-- **Responsive layout** - Better mobile/small window support with 768px and 480px breakpoints
-- **Filter badges** - Visual indicators showing active filter count
-- **Modular CSS** - Separated toolbar and filter styles into `frontend/src/styles/`
-
-Key files modified:
-- `cmd/desktop/frontend/src/modules/endpoints.js` - Toolbar HTML structure
-- `cmd/desktop/frontend/src/modules/filters.js` - Filter panel logic
-- `cmd/desktop/frontend/src/modules/toolbar.js` - "More" menu implementation
-- `cmd/desktop/frontend/src/styles/toolbar.css` - Toolbar styles
-- `cmd/desktop/frontend/src/styles/filters.css` - Filter panel styles
 
 ## Important Constraints
 

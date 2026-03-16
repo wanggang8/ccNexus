@@ -293,6 +293,13 @@ export function toggleUnifiedFilterPanel() {
         closeAllPanels(); // 关闭其他面板
         syncTempStateFromFilterState();
         syncUnifiedCheckboxesFromState();
+        
+        // 动态计算位置 - 面板右对齐按钮
+        const btnRect = filterBtn.getBoundingClientRect();
+        const panelWidth = 420; // 面板宽度
+        filterPanel.style.top = `${btnRect.bottom + 8}px`;
+        filterPanel.style.left = `${btnRect.right - panelWidth}px`;
+        
         filterPanel.classList.remove('hidden');
         filterBtn.classList.add('active');
     }
