@@ -710,35 +710,62 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		if resp.StatusCode == http.StatusOK {
 			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
-			if err == nil {
+			if err != nil {
+				// Transform failed: send error to client + clean up
+				logger.Error("[%s] Non-streaming response transformation failed: %v", endpoint.Name, err)
 				p.stats.RecordRequest(endpoint.Name)
-				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
-				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
-				p.markCredentialSuccess(credentialID)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
+				http.Error(w, fmt.Sprintf(`{"error":{"message":"response transformation failed: %s","type":"proxy_error"}}`, err.Error()), http.StatusBadGateway)
 
-				// Record traffic log for successful non-streaming response
+				// Record traffic log for failed non-streaming response
 				p.trafficRecorder.Record(&TrafficLog{
-					Timestamp:           startTime,
-					EndpointName:        endpoint.Name,
-					ClientFormat:        string(clientFormat),
-					TransformerName:     transformerName,
-					Method:              r.Method,
-					Path:                r.URL.Path,
-					StatusCode:          resp.StatusCode,
-					Duration:            time.Since(startTime),
-					InputTokens:         inputTokens,
-					OutputTokens:        outputTokens,
-					IsStreaming:         false,
-					OriginalRequest:     bodyBytes,
-					TransformedRequest:  transformedBody,
-					OriginalResponse:    originalResp,
-					TransformedResponse: transformedResp,
+					Timestamp:       startTime,
+					EndpointName:    endpoint.Name,
+					ClientFormat:    string(clientFormat),
+					TransformerName: transformerName,
+					Method:          r.Method,
+					Path:            r.URL.Path,
+					StatusCode:      http.StatusBadGateway,
+					Duration:        time.Since(startTime),
+					IsStreaming:     false,
+					Error:           err.Error(),
+					OriginalRequest: bodyBytes,
+					TransformedRequest: transformedBody,
+					OriginalResponse:   originalResp,
 				})
+				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+				logger.Debug("[%s] Transform error latency=%s cred_id=%d", endpoint.Name, totalElapsed, credentialID)
+				return
+			}
 
-				if p.onEndpointSuccess != nil {
-					p.onEndpointSuccess(endpoint.Name)
-				}
+			p.stats.RecordRequest(endpoint.Name)
+			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
+			p.markCredentialSuccess(credentialID)
+			p.markRequestInactive(endpoint.Name)
+
+			// Record traffic log for successful non-streaming response
+			p.trafficRecorder.Record(&TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        string(clientFormat),
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				IsStreaming:         false,
+				OriginalRequest:     bodyBytes,
+				TransformedRequest:  transformedBody,
+				OriginalResponse:    originalResp,
+				TransformedResponse: transformedResp,
+			})
+
+			if p.onEndpointSuccess != nil {
+				p.onEndpointSuccess(endpoint.Name)
 			}
 			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 			logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
