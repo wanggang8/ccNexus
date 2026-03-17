@@ -485,7 +485,7 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 
 // ClaudeStreamToOpenAI converts Claude SSE event to OpenAI Chat stream chunk
 func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -625,7 +625,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 // OpenAIStreamToClaude converts OpenAI Chat stream chunk to Claude SSE event
 func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte

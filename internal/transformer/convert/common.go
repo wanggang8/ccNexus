@@ -46,8 +46,8 @@ func cleanSchemaForGemini(schema interface{}) interface{} {
 	return cleaned
 }
 
-// parseSSE parses SSE event data
-func parseSSE(data []byte) (eventType, jsonData string) {
+// ParseSSE parses SSE event data, returning the event type and JSON data payload.
+func ParseSSE(data []byte) (eventType, jsonData string) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "event: ") {

@@ -397,7 +397,7 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 
 // OpenAIStreamToOpenAI2 converts OpenAI Chat stream chunk to OpenAI Responses stream event
 func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" && !ctx.FinishReasonSent {
 			// Handle [DONE] if finish_reason wasn't received
@@ -563,7 +563,7 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 // OpenAI2StreamToOpenAI converts OpenAI Responses stream event to OpenAI Chat stream chunk
 func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil

@@ -145,7 +145,7 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 
 // GeminiStreamToOpenAI2 converts Gemini stream chunk to OpenAI Responses stream event
 func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result strings.Builder
@@ -277,7 +277,7 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 // OpenAI2StreamToGemini converts OpenAI Responses stream event to Gemini stream format
 func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil

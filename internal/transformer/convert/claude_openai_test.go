@@ -179,7 +179,7 @@ func TestOpenAIStreamToClaudeUsageHasDelta(t *testing.T) {
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
-		eventType, jsonData := parseSSE([]byte(part + "\n"))
+		eventType, jsonData := ParseSSE([]byte(part + "\n"))
 		if eventType != "message_delta" {
 			continue
 		}

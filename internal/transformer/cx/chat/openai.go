@@ -181,8 +181,8 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 		return resp, nil
 	}
 
-	eventType, payload := parseOpenAISSE(resp)
-	if eventType != "data" {
+	_, payload := convert.ParseSSE(resp)
+	if payload == "" {
 		return resp, nil
 	}
 
@@ -245,20 +245,6 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 		return nil, err
 	}
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
-}
-
-func parseOpenAISSE(resp []byte) (eventType, payload string) {
-	for _, line := range strings.Split(string(resp), "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "event: "):
-			eventType = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			eventType = "data"
-			payload = strings.TrimPrefix(line, "data: ")
-		}
-	}
-	return eventType, payload
 }
 
 func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamContext) ([]interface{}, bool) {

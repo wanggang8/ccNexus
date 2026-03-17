@@ -316,7 +316,7 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 // ClaudeStreamToGemini converts Claude SSE event to Gemini stream format
 func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -406,7 +406,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 // GeminiStreamToClaude converts Gemini stream chunk to Claude SSE event
 func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte

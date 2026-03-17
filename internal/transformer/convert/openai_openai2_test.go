@@ -642,7 +642,7 @@ func TestOpenAI2StreamToOpenAIIncludesUsageOnCompleted(t *testing.T) {
 		t.Fatal("expected transformed chunk, got nil")
 	}
 
-	_, jsonData := parseSSE(out)
+	_, jsonData := ParseSSE(out)
 	var chunk map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 		t.Fatalf("unmarshal chunk failed: %v, raw=%s", err, jsonData)

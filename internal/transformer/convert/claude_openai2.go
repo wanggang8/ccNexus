@@ -317,7 +317,7 @@ func OpenAI2RespToClaude(openai2Resp []byte) ([]byte, error) {
 
 // ClaudeStreamToOpenAI2 converts Claude SSE event to OpenAI Responses stream event
 func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -502,7 +502,7 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 // OpenAI2StreamToClaude converts OpenAI Responses stream event to Claude SSE event
 func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte
