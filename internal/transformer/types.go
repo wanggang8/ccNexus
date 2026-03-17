@@ -171,6 +171,14 @@ type ClaudeStreamEvent struct {
 	} `json:"usage,omitempty"`
 }
 
+// ActiveToolCall tracks a single tool call being streamed
+type ActiveToolCall struct {
+	ID          string
+	Name        string
+	Arguments   string
+	OutputIndex int
+}
+
 // StreamContext holds the state for a single streaming response
 // This allows multiple concurrent streams to be processed independently
 type StreamContext struct {
@@ -198,6 +206,8 @@ type StreamContext struct {
 	CurrentToolID   string // Current tool call ID being processed
 	CurrentToolName string // Current tool call name being processed
 	ToolArguments   string // Accumulated tool arguments
+	// Track all active tool calls for multi-tool-call streaming (OpenAI→OpenAI2)
+	ActiveToolCalls []ActiveToolCall // All tool calls accumulated during streaming
 	IncludeUsage    bool   // Whether OpenAI-compatible streaming should emit usage chunk
 	// <think> tag handling for streaming text
 	InThinkingTag       bool   // Track if we are inside a <think> tag

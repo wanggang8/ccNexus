@@ -484,22 +484,41 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
+			outputIndex := idx + 1
+			if ctx.ContentBlockStarted {
+				outputIndex = idx + 1
+			}
+
 			// New tool call (has ID)
 			if tc.ID != "" {
 				ctx.ToolCallCounter++
 				ctx.CurrentToolID = tc.ID
 				ctx.CurrentToolName = tc.Function.Name
 				ctx.ToolArguments = ""
+				// Track this tool call for multi-tool-call completion
+				ctx.ActiveToolCalls = append(ctx.ActiveToolCalls, transformer.ActiveToolCall{
+					ID:          tc.ID,
+					Name:        tc.Function.Name,
+					Arguments:   "",
+					OutputIndex: outputIndex,
+				})
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": idx + 1,
+					"type": "response.output_item.added", "output_index": outputIndex,
 					"item": map[string]interface{}{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": "", "status": "in_progress"},
 				})
 			}
 			// Accumulate arguments
 			if tc.Function.Arguments != "" {
 				ctx.ToolArguments += tc.Function.Arguments
+				// Update the matching active tool call
+				for i := range ctx.ActiveToolCalls {
+					if ctx.ActiveToolCalls[i].ID == ctx.CurrentToolID {
+						ctx.ActiveToolCalls[i].Arguments += tc.Function.Arguments
+						break
+					}
+				}
 				writeEvent(map[string]interface{}{
-					"type": "response.function_call_arguments.delta", "output_index": idx + 1, "delta": tc.Function.Arguments,
+					"type": "response.function_call_arguments.delta", "output_index": outputIndex, "delta": tc.Function.Arguments,
 				})
 			}
 		}
@@ -514,12 +533,15 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 				ctx.ContentBlockStarted = false
 			}
-			if *finishReason == "tool_calls" && ctx.CurrentToolID != "" {
-				writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": 1, "arguments": ctx.ToolArguments})
-				writeEvent(map[string]interface{}{
-					"type": "response.output_item.done", "output_index": 1,
-					"item": map[string]interface{}{"type": "function_call", "call_id": ctx.CurrentToolID, "name": ctx.CurrentToolName, "arguments": ctx.ToolArguments, "status": "completed"},
-				})
+			// Complete ALL active tool calls, not just the last one
+			if *finishReason == "tool_calls" && len(ctx.ActiveToolCalls) > 0 {
+				for _, atc := range ctx.ActiveToolCalls {
+					writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": atc.OutputIndex, "arguments": atc.Arguments})
+					writeEvent(map[string]interface{}{
+						"type": "response.output_item.done", "output_index": atc.OutputIndex,
+						"item": map[string]interface{}{"type": "function_call", "call_id": atc.ID, "name": atc.Name, "arguments": atc.Arguments, "status": "completed"},
+					})
+				}
 			}
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
