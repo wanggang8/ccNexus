@@ -185,8 +185,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     //     }
     // }, 30000); // 降低频率到 30 秒
 
-    // Refresh logs every 2 seconds
-    setInterval(loadLogs, 2000);
+    // Refresh logs every 2 seconds, but only when logs tab is visible
+    setInterval(() => {
+        const logsTab = document.getElementById('logs');
+        if (logsTab && logsTab.classList.contains('active')) {
+            loadLogs();
+        }
+    }, 2000);
 
     // Show welcome modal on first launch
     showWelcomeModalIfFirstTime();

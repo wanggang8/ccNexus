@@ -1,6 +1,7 @@
 import { t } from '../i18n/index.js';
 import { getIcon } from '../icons.js';
 import { showNotification } from './modal.js';
+import { escapeHtml } from '../utils/format.js';
 
 let refreshInterval = null;
 let currentFilter = {};
@@ -255,17 +256,6 @@ export function copyTrafficJson(tabKey) {
     navigator.clipboard.writeText(raw.trim()).then(() => {
         showNotification(t('traffic.copied'), 'success');
     }).catch(() => {});
-}
-
-// Escape HTML
-function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
 }
 
 // Close traffic detail modal

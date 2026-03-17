@@ -231,6 +231,10 @@ export default {
             minimize: 'Minimize to Tray',
             ask: 'Ask Every Time'
         },
+        closeDialogTitle: 'Close Window',
+        closeDialogMessage: 'What would you like to do?',
+        closeDialogQuit: 'Quit',
+        closeDialogMinimize: 'Minimize to Tray',
         proxy: 'Proxy Settings',
         proxyUrl: 'Proxy URL',
         proxyUrlPlaceholder: 'e.g., http://127.0.0.1:7890 or socks5://127.0.0.1:1080',

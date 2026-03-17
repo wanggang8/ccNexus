@@ -694,14 +694,14 @@ export function initUI() {
                         </svg>
                     </div>
                     <div class="confirm-content">
-                        <h4 class="confirm-title">关闭窗口</h4>
-                        <p class="confirm-message">您希望如何处理？</p>
+                        <h4 class="confirm-title">${t('settings.closeDialogTitle')}</h4>
+                        <p class="confirm-message">${t('settings.closeDialogMessage')}</p>
                     </div>
                 </div>
                 <div class="confirm-divider"></div>
                 <div class="confirm-footer">
-                    <button class="btn-confirm-delete" onclick="window.quitApplication()">退出程序</button>
-                    <button class="btn-confirm-cancel" onclick="window.minimizeToTray()">最小化到托盘</button>
+                    <button class="btn-confirm-delete" onclick="window.quitApplication()">${t('settings.closeDialogQuit')}</button>
+                    <button class="btn-confirm-cancel" onclick="window.minimizeToTray()">${t('settings.closeDialogMinimize')}</button>
                 </div>
             </div>
         </div>
