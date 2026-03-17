@@ -17,6 +17,11 @@ class Router {
             return;
         }
 
+        // Destroy previous view if it has a destroy method
+        if (this.currentView && typeof this.currentView.destroy === 'function') {
+            this.currentView.destroy();
+        }
+
         // Update active nav link
         document.querySelectorAll('.nav-link').forEach(link => {
             link.classList.remove('active');

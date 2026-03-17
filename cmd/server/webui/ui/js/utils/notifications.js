@@ -1,5 +1,6 @@
 // Toast notification system
 import { getIcon } from '../icons.js';
+import { escapeHtml } from './formatters.js';
 
 class NotificationManager {
     constructor() {
@@ -20,7 +21,7 @@ class NotificationManager {
         toast.innerHTML = `
             <span class="toast-icon icon">${getIcon(iconMap[type] || iconMap.info)}</span>
             <div class="toast-content">
-                <div class="toast-message">${message}</div>
+                <div class="toast-message">${escapeHtml(message)}</div>
             </div>
             <button class="toast-close"><span class="icon">${getIcon('x')}</span></button>
         `;

@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
-import { getTransformerLabel, getStatusBadge } from '../utils/formatters.js';
+import { getTransformerLabel, getStatusBadge, escapeHtml, copyText } from '../utils/formatters.js';
 import { getIcon } from '../icons.js';
 
 class Endpoints {
@@ -128,49 +128,49 @@ class Endpoints {
         }
 
         return `
-            <tr data-endpoint="${this.escapeHtml(ep.name)}" data-index="${index}" draggable="true" style="cursor: move;">
+            <tr data-endpoint="${escapeHtml(ep.name)}" data-index="${index}" draggable="true" style="cursor: move;">
                 <td style="cursor: grab; text-align: center;">⋮⋮</td>
                 <td>
                     <div>
-                        <strong>${this.escapeHtml(ep.name)}</strong>
+                        <strong>${escapeHtml(ep.name)}</strong>
                         <span title="${testStatusTitle}" style="margin-left: 5px;">${testStatusIcon}</span>
                         ${isCurrentEndpoint ? '<span class="badge badge-primary" style="margin-left: 5px;">Current</span>' : ''}
                     </div>
-                    ${ep.remark ? `<div class="endpoint-remark text-xs text-muted">${this.escapeHtml(ep.remark)}</div>` : ''}
+                    ${ep.remark ? `<div class="endpoint-remark text-xs text-muted">${escapeHtml(ep.remark)}</div>` : ''}
                 </td>
                 <td class="endpoint-url-cell">
-                    <span class="endpoint-url" title="${this.escapeHtml(ep.apiUrl)}">
-                        <code>${this.escapeHtml(ep.apiUrl)}</code>
+                    <span class="endpoint-url" title="${escapeHtml(ep.apiUrl)}">
+                        <code>${escapeHtml(ep.apiUrl)}</code>
                     </span>
-                    <button class="btn-icon copy-btn" data-copy="${this.escapeHtml(ep.apiUrl)}" title="Copy URL">
+                    <button class="btn-icon copy-btn" data-copy="${escapeHtml(ep.apiUrl)}" title="Copy URL">
                         <span class="icon">${getIcon('clipboard')}</span>
                     </button>
                 </td>
                 <td>${getTransformerLabel(ep.transformer)}</td>
-                <td>${this.escapeHtml(ep.model || '-')}</td>
+                <td>${escapeHtml(ep.model || '-')}</td>
                 <td>${this.renderTokenPoolSummary(this.tokenPools[ep.name])}</td>
                 <td>${getStatusBadge(ep.enabled)}</td>
                 <td>
                     <div class="flex gap-2">
                         ${ep.enabled && !isCurrentEndpoint ? `
-                            <button class="btn btn-sm btn-secondary switch-btn" data-name="${this.escapeHtml(ep.name)}" title="Switch to this endpoint">
+                            <button class="btn btn-sm btn-secondary switch-btn" data-name="${escapeHtml(ep.name)}" title="Switch to this endpoint">
                                 Switch
                             </button>
                         ` : ''}
-                        <button class="btn btn-sm btn-secondary test-btn" data-name="${this.escapeHtml(ep.name)}">
+                        <button class="btn btn-sm btn-secondary test-btn" data-name="${escapeHtml(ep.name)}">
                             Test
                         </button>
-                        <button class="btn btn-sm btn-secondary token-pool-btn" data-name="${this.escapeHtml(ep.name)}">
+                        <button class="btn btn-sm btn-secondary token-pool-btn" data-name="${escapeHtml(ep.name)}">
                             Token Pool
                         </button>
                         <label class="toggle-switch">
-                            <input type="checkbox" class="toggle-endpoint" data-name="${this.escapeHtml(ep.name)}" ${ep.enabled ? 'checked' : ''}>
+                            <input type="checkbox" class="toggle-endpoint" data-name="${escapeHtml(ep.name)}" ${ep.enabled ? 'checked' : ''}>
                             <span class="toggle-slider"></span>
                         </label>
-                        <button class="btn btn-sm btn-secondary edit-btn" data-name="${this.escapeHtml(ep.name)}">
+                        <button class="btn btn-sm btn-secondary edit-btn" data-name="${escapeHtml(ep.name)}">
                             Edit
                         </button>
-                        <button class="btn btn-sm btn-danger delete-btn" data-name="${this.escapeHtml(ep.name)}">
+                        <button class="btn btn-sm btn-danger delete-btn" data-name="${escapeHtml(ep.name)}">
                             Delete
                         </button>
                     </div>
@@ -337,52 +337,13 @@ class Endpoints {
             return;
         }
 
-        const showSuccess = () => {
+        copyText(text).then(() => {
             const originalHTML = button.innerHTML;
             button.innerHTML = `<span class="icon icon-success">${getIcon('check')}</span>`;
-            setTimeout(() => {
-                button.innerHTML = originalHTML;
-            }, 1000);
-        };
-
-        try {
-            // Prefer modern Clipboard API when available and permitted
-            if (typeof navigator !== 'undefined' &&
-                navigator.clipboard &&
-                typeof navigator.clipboard.writeText === 'function') {
-                navigator.clipboard.writeText(text)
-                    .then(showSuccess)
-                    .catch(() => {
-                        notifications.error('Failed to copy to clipboard');
-                    });
-                return;
-            }
-        } catch {
-            // Ignore and fall through to legacy path
-        }
-
-        // Fallback: use a temporary textarea and execCommand
-        try {
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            textarea.style.position = 'fixed';
-            textarea.style.top = '-1000px';
-            textarea.style.left = '-1000px';
-            document.body.appendChild(textarea);
-            textarea.focus();
-            textarea.select();
-
-            const successful = document.execCommand && document.execCommand('copy');
-            document.body.removeChild(textarea);
-
-            if (successful) {
-                showSuccess();
-            } else {
-                notifications.error('Failed to copy to clipboard');
-            }
-        } catch (error) {
+            setTimeout(() => { button.innerHTML = originalHTML; }, 1000);
+        }).catch(() => {
             notifications.error('Failed to copy to clipboard');
-        }
+        });
     }
 
     getTestStatus(endpointName) {
@@ -430,11 +391,11 @@ class Endpoints {
                         <form id="endpoint-form">
                             <div class="form-group">
                                 <label class="form-label">Name *</label>
-                                <input type="text" class="form-input" name="name" value="${endpoint ? this.escapeHtml(endpoint.name) : ''}" required ${isEdit ? 'readonly' : ''}>
+                                <input type="text" class="form-input" name="name" value="${endpoint ? escapeHtml(endpoint.name) : ''}" required ${isEdit ? 'readonly' : ''}>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">API URL *</label>
-                                <input type="text" class="form-input" name="apiUrl" value="${endpoint ? this.escapeHtml(endpoint.apiUrl) : ''}" placeholder="https://api.example.com" required>
+                                <input type="text" class="form-input" name="apiUrl" value="${endpoint ? escapeHtml(endpoint.apiUrl) : ''}" placeholder="https://api.example.com" required>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">API Key *</label>
@@ -454,7 +415,7 @@ class Endpoints {
                             <div class="form-group">
                                 <label class="form-label">Model</label>
                                 <div style="display: flex; gap: 8px;">
-                                    <input type="text" class="form-input" name="model" id="model-input" value="${endpoint ? this.escapeHtml(endpoint.model || '') : ''}" placeholder="gpt-4, gemini-pro, etc." style="flex: 1;">
+                                    <input type="text" class="form-input" name="model" id="model-input" value="${endpoint ? escapeHtml(endpoint.model || '') : ''}" placeholder="gpt-4, gemini-pro, etc." style="flex: 1;">
                                     <button type="button" class="btn btn-secondary" id="fetch-models-btn" style="white-space: nowrap;">
                                         Fetch Models
                                     </button>
@@ -463,7 +424,7 @@ class Endpoints {
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Remark</label>
-                                <textarea class="form-textarea" name="remark">${endpoint ? this.escapeHtml(endpoint.remark || '') : ''}</textarea>
+                                <textarea class="form-textarea" name="remark">${endpoint ? escapeHtml(endpoint.remark || '') : ''}</textarea>
                             </div>
                             <div class="form-group">
                                 <label>
@@ -545,8 +506,8 @@ class Endpoints {
                 <div class="modal-body">
                     <div style="max-height: 400px; overflow-y: auto;">
                         ${models.map(model => `
-                            <div class="model-item" style="padding: 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer;" data-model="${this.escapeHtml(model)}">
-                                <strong>${this.escapeHtml(model)}</strong>
+                            <div class="model-item" style="padding: 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer;" data-model="${escapeHtml(model)}">
+                                <strong>${escapeHtml(model)}</strong>
                             </div>
                         `).join('')}
                     </div>
@@ -661,7 +622,7 @@ class Endpoints {
             <div class="modal-overlay">
                 <div class="modal">
                     <div class="modal-header">
-                        <h3 class="modal-title">Test Result: ${this.escapeHtml(name)}</h3>
+                        <h3 class="modal-title">Test Result: ${escapeHtml(name)}</h3>
                         <button class="modal-close" id="close-modal">×</button>
                     </div>
                     <div class="modal-body">
@@ -673,7 +634,7 @@ class Endpoints {
                         </div>
                         <div class="mb-2">
                             <strong>Response:</strong>
-                            <div class="code-block mt-1">${this.escapeHtml(result.response || 'No response')}</div>
+                            <div class="code-block mt-1">${escapeHtml(result.response || 'No response')}</div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -714,7 +675,7 @@ class Endpoints {
                 <div class="modal-overlay">
                     <div class="modal" style="max-width: 960px; width: 95vw;">
                         <div class="modal-header">
-                            <h3 class="modal-title">Token Pool: ${this.escapeHtml(endpointName)}</h3>
+                            <h3 class="modal-title">Token Pool: ${escapeHtml(endpointName)}</h3>
                             <button class="modal-close" id="close-modal">×</button>
                         </div>
                         <div class="modal-body">
@@ -796,12 +757,12 @@ class Endpoints {
         return credentials.map(cred => `
             <tr>
                 <td>${cred.id}</td>
-                <td><code>${this.escapeHtml(cred.accountId || '-')}</code></td>
-                <td>${this.escapeHtml(cred.email || '-')}</td>
+                <td><code>${escapeHtml(cred.accountId || '-')}</code></td>
+                <td>${escapeHtml(cred.email || '-')}</td>
                 <td>${this.renderCredentialStatusBadge(cred.status)}</td>
-                <td>${this.escapeHtml(this.formatDateTime(cred.expiresAt))}</td>
-                <td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${this.escapeHtml(cred.lastError || '')}">
-                    ${this.escapeHtml(cred.lastError || '-')}
+                <td>${escapeHtml(this.formatDateTime(cred.expiresAt))}</td>
+                <td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(cred.lastError || '')}">
+                    ${escapeHtml(cred.lastError || '-')}
                 </td>
                 <td>
                     <div class="flex gap-2">
@@ -830,7 +791,7 @@ class Endpoints {
             disabled: '#6b7280'
         };
         const color = colorMap[normalized] || '#6b7280';
-        return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${color};color:#fff;font-size:12px;">${this.escapeHtml(normalized)}</span>`;
+        return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${color};color:#fff;font-size:12px;">${escapeHtml(normalized)}</span>`;
     }
 
     async importEndpointCredentials(endpointName) {
@@ -949,11 +910,6 @@ class Endpoints {
         document.getElementById('modal-container').innerHTML = '';
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
 }
 
 export const endpoints = new Endpoints();

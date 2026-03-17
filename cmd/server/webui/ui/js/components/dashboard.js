@@ -1,12 +1,20 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
-import { formatNumber, formatTokens } from '../utils/formatters.js';
+import { formatNumber, formatTokens, escapeHtml } from '../utils/formatters.js';
 import { getIcon } from '../icons.js';
 
 class Dashboard {
     constructor() {
         this.container = document.getElementById('view-container');
+        this.chart = null;
+    }
+
+    destroy() {
+        if (this.chart) {
+            this.chart.destroy();
+            this.chart = null;
+        }
     }
 
     async render() {
@@ -136,8 +144,8 @@ class Dashboard {
                     <tbody>
                         ${enabledEndpoints.map(ep => `
                             <tr>
-                                <td>${this.escapeHtml(ep.name)}</td>
-                                <td>${this.escapeHtml(ep.transformer)}</td>
+                                <td>${escapeHtml(ep.name)}</td>
+                                <td>${escapeHtml(ep.transformer)}</td>
                                 <td>
                                     <span class="status-indicator online"></span>
                                     <span class="badge badge-success">Active</span>
@@ -151,15 +159,19 @@ class Dashboard {
     }
 
     renderChart(dailyStats) {
+        if (this.chart) {
+            this.chart.destroy();
+            this.chart = null;
+        }
+
         const canvas = document.getElementById('activity-chart');
         const ctx = canvas.getContext('2d');
 
-        // Simple bar chart showing requests
         const stats = dailyStats.stats || {};
         const endpoints = Object.keys(stats.endpoints || {});
         const requests = endpoints.map(ep => stats.endpoints[ep].requests || 0);
 
-        new Chart(ctx, {
+        this.chart = new Chart(ctx, {
             type: 'bar',
             data: {
                 labels: endpoints,
@@ -188,11 +200,6 @@ class Dashboard {
         });
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
 }
 
 export const dashboard = new Dashboard();
