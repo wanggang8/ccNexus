@@ -19,24 +19,31 @@ func GenerateToolCallID(name string) string {
 	return fmt.Sprintf("toolu_%s_%d", name, counter)
 }
 
-// cleanSchemaForGemini removes fields not supported by Gemini API
+// cleanSchemaForGemini returns a copy of the schema with fields not supported by Gemini API removed.
+// The original map is NOT modified.
 func cleanSchemaForGemini(schema interface{}) interface{} {
 	m, ok := schema.(map[string]interface{})
 	if !ok {
 		return schema
 	}
-	// Remove unsupported fields
-	delete(m, "additionalProperties")
-	delete(m, "$schema")
-	if props, ok := m["properties"].(map[string]interface{}); ok {
-		for k, v := range props {
-			props[k] = cleanSchemaForGemini(v)
+	cleaned := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if k == "additionalProperties" || k == "$schema" {
+			continue
 		}
+		cleaned[k] = v
 	}
-	if items, ok := m["items"]; ok {
-		m["items"] = cleanSchemaForGemini(items)
+	if props, ok := cleaned["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{}, len(props))
+		for k, v := range props {
+			newProps[k] = cleanSchemaForGemini(v)
+		}
+		cleaned["properties"] = newProps
 	}
-	return m
+	if items, ok := cleaned["items"]; ok {
+		cleaned["items"] = cleanSchemaForGemini(items)
+	}
+	return cleaned
 }
 
 // parseSSE parses SSE event data

@@ -438,24 +438,6 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 				applyUsage(usage)
 			}
 		}
-
-		// OpenAI format: usage in final chunk (prompt_tokens/completion_tokens or input_tokens/output_tokens)
-		if usage, ok := event["usage"].(map[string]interface{}); ok {
-			// OpenAI naming: prompt_tokens / completion_tokens
-			if input, ok := usage["prompt_tokens"].(float64); ok && int(input) > 0 {
-				*inputTokens = int(input)
-			}
-			if output, ok := usage["completion_tokens"].(float64); ok && int(output) > 0 {
-				*outputTokens = int(output)
-			}
-			// Alternative naming: input_tokens / output_tokens (some providers use this)
-			if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
-				*inputTokens = int(input)
-			}
-			if output, ok := usage["output_tokens"].(float64); ok && int(output) > 0 {
-				*outputTokens = int(output)
-			}
-		}
 	}
 }
 
