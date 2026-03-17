@@ -84,7 +84,10 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		// Handle tool_calls
 		for _, tc := range msg.ToolCalls {
 			var args map[string]interface{}
-			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				logger.Warn("Failed to parse tool call arguments for %s: %v", tc.Function.Name, err)
+				args = map[string]interface{}{"raw": tc.Function.Arguments}
+			}
 			parts = append(parts, map[string]interface{}{
 				"functionCall": map[string]interface{}{"name": tc.Function.Name, "args": args},
 			})

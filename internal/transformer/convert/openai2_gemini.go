@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -319,7 +320,10 @@ func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte
 		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
 			var args map[string]interface{}
-			json.Unmarshal([]byte(ctx.ToolArguments), &args)
+			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
+				logger.Warn("Failed to parse tool arguments: %v", err)
+				args = map[string]interface{}{"raw": ctx.ToolArguments}
+			}
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{
