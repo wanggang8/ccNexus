@@ -133,12 +133,7 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
+			geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 		}
 	}
 
@@ -329,6 +324,40 @@ func convertOpenAIContentToGeminiParts(content []interface{}) []map[string]inter
 		}
 	}
 	return parts
+}
+
+// mapToolChoiceToGeminiConfig converts OpenAI/Claude tool_choice to Gemini toolConfig.
+func mapToolChoiceToGeminiConfig(toolChoice interface{}) map[string]interface{} {
+	config := map[string]interface{}{"mode": "AUTO"}
+	if toolChoice == nil {
+		return map[string]interface{}{"functionCallingConfig": config}
+	}
+	switch v := toolChoice.(type) {
+	case string:
+		switch v {
+		case "required", "any":
+			config["mode"] = "ANY"
+		case "none":
+			config["mode"] = "NONE"
+		case "auto":
+			config["mode"] = "AUTO"
+		}
+	case map[string]interface{}:
+		// OpenAI: {type:"function", function:{name:"X"}} or Claude: {type:"tool", name:"X"}
+		if name, _ := v["name"].(string); name != "" {
+			config["mode"] = "ANY"
+			config["allowedFunctionNames"] = []string{name}
+		} else if fn, ok := v["function"].(map[string]interface{}); ok {
+			if name, ok := fn["name"].(string); ok && name != "" {
+				config["mode"] = "ANY"
+				config["allowedFunctionNames"] = []string{name}
+			}
+		}
+		if t, _ := v["type"].(string); t == "any" {
+			config["mode"] = "ANY"
+		}
+	}
+	return map[string]interface{}{"functionCallingConfig": config}
 }
 
 // mapGeminiFinishToOpenAI maps Gemini finishReason to OpenAI finish_reason.

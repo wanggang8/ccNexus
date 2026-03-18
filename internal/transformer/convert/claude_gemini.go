@@ -72,12 +72,7 @@ func ClaudeReqToGemini(claudeReq []byte, model string) ([]byte, error) {
 			})
 		}
 		geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-		// Add toolConfig to enable function calling
-		geminiReq["toolConfig"] = map[string]interface{}{
-			"functionCallingConfig": map[string]interface{}{
-				"mode": "AUTO",
-			},
-		}
+		geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 	}
 
 	return json.Marshal(geminiReq)

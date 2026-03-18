@@ -367,6 +367,29 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 
 		if len(tools) > 0 {
 			claudeReq["tools"] = tools
+
+			// D5: Convert OpenAI tool_choice to Claude format
+			if tc, ok := reqMap["tool_choice"]; ok && tc != nil {
+				switch v := tc.(type) {
+				case string:
+					switch v {
+					case "required":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "any"}
+					case "auto":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "auto"}
+					case "none":
+						delete(claudeReq, "tools")
+					}
+				case map[string]interface{}:
+					if v["type"] == "function" {
+						if fn, ok := v["function"].(map[string]interface{}); ok {
+							if name, ok := fn["name"].(string); ok && name != "" {
+								claudeReq["tool_choice"] = map[string]interface{}{"type": "tool", "name": name}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
