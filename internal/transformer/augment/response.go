@@ -102,6 +102,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	var lastEventType string
 	var buf toolUseBuffer
 	nextNodeID := 1
+	hasEmittedToolUse := false // Track if any tool_use was emitted for stop_reason fallback
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -225,29 +226,41 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				chunk["stop_reason"] = augmentStopReasonToolUseRequested
 				writeChunkLine(w, chunk)
 				buf.active = false
+				hasEmittedToolUse = true
 			}
 
 		case "message_delta":
-			// stop_reason may be present here (Claude style)
 			delta, _ := ev["delta"].(map[string]interface{})
 			if sr, ok := delta["stop_reason"].(string); ok && sr != "" {
+				reason := mapClaudeStopReason(sr)
+				// Fallback: if we already emitted tool_use but upstream sends end_turn/stop,
+				// force TOOL_USE_REQUESTED so the Augment UI triggers tool execution.
+				if hasEmittedToolUse && reason == augmentStopReasonEndTurn {
+					reason = augmentStopReasonToolUseRequested
+				}
 				chunk := newBaseChunk("")
-				chunk["stop_reason"] = mapClaudeStopReason(sr)
+				chunk["stop_reason"] = reason
 				writeChunkLine(w, chunk)
 			}
-			// Extract usage information if present
+			// Extract usage from both delta["usage"] and top-level ev["usage"]
 			if usage, ok := delta["usage"].(map[string]interface{}); ok {
+				emitTokenUsageNode(w, usage, &nextNodeID)
+			}
+			if usage, ok := ev["usage"].(map[string]interface{}); ok {
 				emitTokenUsageNode(w, usage, &nextNodeID)
 			}
 
 		case "message_stop":
-			// Check for usage in the final message
 			if usage, ok := ev["usage"].(map[string]interface{}); ok {
 				emitTokenUsageNode(w, usage, &nextNodeID)
 			}
-			// Ensure we always terminate with an END_TURN chunk if none has been emitted.
+			// Fallback: if tool_use was emitted, final stop_reason must be TOOL_USE_REQUESTED.
+			finalReason := augmentStopReasonEndTurn
+			if hasEmittedToolUse {
+				finalReason = augmentStopReasonToolUseRequested
+			}
 			chunk := newBaseChunk("")
-			chunk["stop_reason"] = augmentStopReasonEndTurn
+			chunk["stop_reason"] = finalReason
 			writeChunkLine(w, chunk)
 		}
 	}

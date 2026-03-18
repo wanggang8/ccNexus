@@ -1,5 +1,7 @@
 package augment
 
+import "encoding/json"
+
 // AugmentRequest is the wire format sent by the VSCode Augment plugin.
 // After decryption (or as-is for plaintext requests) it has this shape.
 type AugmentRequest struct {
@@ -112,10 +114,16 @@ type ToolDefinition struct {
 }
 
 // EffectiveInputSchema returns the parsed input schema, preferring the
-// already-decoded InputSchema over InputSchemaJSON.
+// already-decoded InputSchema over InputSchemaJSON over Parameters.
 func (t *ToolDefinition) EffectiveInputSchema() map[string]interface{} {
 	if len(t.InputSchema) > 0 {
 		return t.InputSchema
+	}
+	if t.InputSchemaJSON != "" {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(t.InputSchemaJSON), &parsed); err == nil && len(parsed) > 0 {
+			return parsed
+		}
 	}
 	if len(t.Parameters) > 0 {
 		return t.Parameters

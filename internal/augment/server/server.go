@@ -342,18 +342,92 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, resp *http.Respo
 	flusher.Flush()
 }
 
-// handleNonStreamingResponse handles non-streaming responses.
+// handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
+// Augment clients expect NDJSON even for non-streaming responses.
 func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Augment: failed to read upstream response: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	w.Write(body)
+	// If upstream returned an error status, pass through as JSON.
+	if resp.StatusCode >= 400 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+
+	// Convert the JSON response to a single NDJSON chunk with text + stop_reason.
+	text := extractTextFromResponse(body)
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+
+	if text != "" {
+		textChunk := map[string]interface{}{
+			"text":                  text,
+			"unknown_blob_names":    []interface{}{},
+			"checkpoint_not_found":  false,
+			"workspace_file_chunks": []interface{}{},
+			"nodes":                 []interface{}{},
+		}
+		line, _ := json.Marshal(textChunk)
+		w.Write(line)
+		w.Write([]byte("\n"))
+	}
+
+	// Final chunk with stop_reason.
+	finalChunk := map[string]interface{}{
+		"text":                  "",
+		"unknown_blob_names":    []interface{}{},
+		"checkpoint_not_found":  false,
+		"workspace_file_chunks": []interface{}{},
+		"nodes":                 []interface{}{},
+		"stop_reason":           1, // END_TURN
+	}
+	line, _ := json.Marshal(finalChunk)
+	w.Write(line)
+	w.Write([]byte("\n"))
+}
+
+// extractTextFromResponse extracts text content from Claude or OpenAI JSON responses.
+func extractTextFromResponse(body []byte) string {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return ""
+	}
+
+	// Claude format: content[].text
+	if content, ok := resp["content"].([]interface{}); ok {
+		var parts []string
+		for _, block := range content {
+			if b, ok := block.(map[string]interface{}); ok {
+				if text, ok := b["text"].(string); ok && text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "")
+		}
+	}
+
+	// OpenAI format: choices[].message.content
+	if choices, ok := resp["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if msg, ok := choice["message"].(map[string]interface{}); ok {
+				if text, ok := msg["content"].(string); ok {
+					return text
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // writeErrorResponse writes an error response in Augment format.

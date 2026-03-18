@@ -2,7 +2,6 @@ package augment
 
 import (
 	"encoding/json"
-	"strings"
 )
 
 // toOpenAIRequest converts an AugmentRequest to an OpenAI Chat Completions API request body.
@@ -77,12 +76,32 @@ func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, messa
 
 func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string) {
 	// Tool results (type=1) → tool role messages.
+	// OpenAI requires that tool messages are preceded by an assistant message with tool_calls.
+	// Check if the last message already has matching tool_calls; if not, synthesize one.
 	if toolResults := extractToolResults(nodes); len(toolResults) > 0 {
+		if !lastMessageHasToolCalls(*msgs, toolResults) {
+			var syntheticToolCalls []map[string]interface{}
+			for _, tr := range toolResults {
+				syntheticToolCalls = append(syntheticToolCalls, map[string]interface{}{
+					"id":   tr.ToolUseID,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      "tool_" + tr.ToolUseID,
+						"arguments": "{}",
+					},
+				})
+			}
+			*msgs = append(*msgs, map[string]interface{}{
+				"role":       "assistant",
+				"content":    "",
+				"tool_calls": syntheticToolCalls,
+			})
+		}
 		for _, tr := range toolResults {
 			*msgs = append(*msgs, map[string]interface{}{
-				"role":       "tool",
+				"role":         "tool",
 				"tool_call_id": tr.ToolUseID,
-				"content":    tr.Content,
+				"content":      tr.Content,
 			})
 		}
 	}
@@ -205,26 +224,31 @@ func buildOpenAITools(defs []ToolDefinition) []map[string]interface{} {
 	return tools
 }
 
-// openAIIdeStateDuplicate checks if the ide_state text already appears in the last 3 messages.
-func openAIIdeStateDuplicate(msgs []map[string]interface{}, ideState string) bool {
-	needle := "[ide_state]\n" + ideState
-	start := len(msgs) - 3
-	if start < 0 {
-		start = 0
+// lastMessageHasToolCalls checks if the last assistant message already contains tool_calls
+// matching the given tool results. This avoids inserting a duplicate synthetic assistant message.
+func lastMessageHasToolCalls(msgs []map[string]interface{}, results []toolResult) bool {
+	if len(msgs) == 0 {
+		return false
 	}
-	for i := start; i < len(msgs); i++ {
-		switch c := msgs[i]["content"].(type) {
-		case string:
-			if strings.Contains(c, needle) {
-				return true
-			}
-		case []map[string]interface{}:
-			for _, block := range c {
-				if text, _ := block["text"].(string); strings.Contains(text, needle) {
-					return true
-				}
-			}
+	last := msgs[len(msgs)-1]
+	if last["role"] != "assistant" {
+		return false
+	}
+	tcs, ok := last["tool_calls"].([]map[string]interface{})
+	if !ok {
+		return false
+	}
+	ids := make(map[string]bool, len(tcs))
+	for _, tc := range tcs {
+		if id, ok := tc["id"].(string); ok {
+			ids[id] = true
 		}
 	}
-	return false
+	for _, tr := range results {
+		if !ids[tr.ToolUseID] {
+			return false
+		}
+	}
+	return true
 }
+

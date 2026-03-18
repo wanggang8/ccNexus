@@ -215,7 +215,8 @@ func TestStreamConvertClaude_TokenUsageNode(t *testing.T) {
 	}
 	lines := readNDJSONLines(t, b.String())
 
-	foundUsage := false
+	// Collect all TOKEN_USAGE nodes; the last one (from message_stop) should have full data.
+	var usageNodes []map[string]interface{}
 	for _, obj := range lines {
 		nodes, _ := obj["nodes"].([]interface{})
 		if len(nodes) == 0 {
@@ -223,20 +224,22 @@ func TestStreamConvertClaude_TokenUsageNode(t *testing.T) {
 		}
 		n0, _ := nodes[0].(map[string]interface{})
 		if n0["type"] == float64(augmentNodeTypeTokenUsage) {
-			foundUsage = true
 			usage, _ := n0["token_usage"].(map[string]interface{})
-			// Should have at least input_tokens and output_tokens
-			if _, ok := usage["input_tokens"]; !ok {
-				t.Fatalf("expected input_tokens in usage, got %#v", usage)
-			}
-			if _, ok := usage["output_tokens"]; !ok {
-				t.Fatalf("expected output_tokens in usage, got %#v", usage)
-			}
+			usageNodes = append(usageNodes, usage)
 		}
 	}
 
-	if !foundUsage {
-		t.Fatalf("expected TOKEN_USAGE node (type=10) in output")
+	if len(usageNodes) == 0 {
+		t.Fatalf("expected at least one TOKEN_USAGE node (type=10) in output")
+	}
+
+	// The last TOKEN_USAGE node (from message_stop) should contain both input and output tokens.
+	lastUsage := usageNodes[len(usageNodes)-1]
+	if _, ok := lastUsage["input_tokens"]; !ok {
+		t.Fatalf("expected input_tokens in last TOKEN_USAGE node, got %#v", lastUsage)
+	}
+	if _, ok := lastUsage["output_tokens"]; !ok {
+		t.Fatalf("expected output_tokens in last TOKEN_USAGE node, got %#v", lastUsage)
 	}
 }
 
