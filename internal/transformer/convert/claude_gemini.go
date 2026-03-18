@@ -582,6 +582,8 @@ func convertClaudeContentToGeminiParts(content []interface{}, toolUseIDToName ma
 							"data":     source["data"],
 						},
 					})
+				} else if source["type"] == "url" {
+					logger.Warn("URL image source not supported for Gemini conversion, image dropped (url=%v)", source["url"])
 				}
 			}
 		}

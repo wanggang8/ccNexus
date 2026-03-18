@@ -17,6 +17,11 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		return nil, err
 	}
 
+	// Parse raw map to detect explicit temperature (including 0)
+	var rawReq map[string]interface{}
+	json.Unmarshal(claudeReq, &rawReq)
+	_, hasTemperature := rawReq["temperature"]
+
 	var messages []transformer.OpenAIMessage
 
 	// Convert system prompt
@@ -151,7 +156,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxTokens
 	}
-	if req.Temperature > 0 {
+	if hasTemperature {
 		openaiReq.Temperature = &req.Temperature
 	}
 

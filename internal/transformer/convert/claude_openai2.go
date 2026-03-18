@@ -521,6 +521,14 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 				ctx.ToolBlockStarted = false
 			}
 			if !ctx.FinishReasonSent {
+				stopReason := "end_turn"
+				if ctx.ToolIndex > 0 || ctx.CurrentToolID != "" {
+					stopReason = "tool_use"
+				}
+				result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
+					"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
+					"usage": map[string]interface{}{"output_tokens": ctx.OutputTokens},
+				})...)
 				result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
 				ctx.FinishReasonSent = true
 			}

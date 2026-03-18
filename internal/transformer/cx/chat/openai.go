@@ -45,22 +45,24 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 				continue
 			}
 
-			// Check if message has Claude-format content blocks
+			// Check if message has Claude-format content blocks with tool_result
 			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
-				// Check if it's a tool_result block
-				if len(content) == 1 {
-					if block, ok := content[0].(map[string]interface{}); ok {
+				hasToolResult := false
+				for _, item := range content {
+					if block, ok := item.(map[string]interface{}); ok {
 						if block["type"] == "tool_result" {
-							// Convert to OpenAI tool message format
+							hasToolResult = true
 							openaiMsg := map[string]interface{}{
 								"role":         "tool",
 								"tool_call_id": block["tool_use_id"],
 								"content":      block["content"],
 							}
 							fixedMessages = append(fixedMessages, openaiMsg)
-							continue
 						}
 					}
+				}
+				if hasToolResult {
+					continue
 				}
 			}
 
@@ -114,6 +116,33 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 
 		data["tools"] = fixedTools
 	}
+
+	// Strip cache_control from all messages (Anthropic-specific)
+	if messages, ok := data["messages"].([]interface{}); ok {
+		for _, msgInterface := range messages {
+			if msg, ok := msgInterface.(map[string]interface{}); ok {
+				delete(msg, "cache_control")
+			}
+		}
+	}
+
+	// Strip cache_control from tool definitions
+	if tools, ok := data["tools"].([]interface{}); ok {
+		for _, toolInterface := range tools {
+			if tool, ok := toolInterface.(map[string]interface{}); ok {
+				delete(tool, "cache_control")
+				if fn, ok := tool["function"].(map[string]interface{}); ok {
+					delete(fn, "cache_control")
+				}
+			}
+		}
+	}
+
+	// Strip Anthropic-specific top-level fields
+	delete(data, "thinking")
+	delete(data, "budget_tokens")
+	delete(data, "reasoning_effort")
+	delete(data, "metadata")
 
 	return json.Marshal(data)
 }

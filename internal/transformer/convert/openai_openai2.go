@@ -195,6 +195,9 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 	if req.MaxOutputTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxOutputTokens
 	}
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
+	}
 
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
@@ -442,6 +445,15 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		return nil, nil
 	}
 
+	if chunk.Usage != nil {
+		if chunk.Usage.PromptTokens > 0 {
+			ctx.InputTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			ctx.OutputTokens = chunk.Usage.CompletionTokens
+		}
+	}
+
 	var result strings.Builder
 	writeEvent := func(evt map[string]interface{}) {
 		d, _ := json.Marshal(evt)
@@ -592,6 +604,7 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 			ctx.CurrentToolID = evt.Item.CallID
 			ctx.CurrentToolName = evt.Item.Name
 			ctx.ToolArguments = ""
+			ctx.ToolIndex++
 		}
 		return nil, nil
 

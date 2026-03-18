@@ -147,12 +147,18 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 					buf.input.WriteString(partial)
 				}
 			case deltaTypeThinkingDelta:
-				// Extended thinking support (Claude 4.6+)
-				// For now, we emit thinking content as regular text
-				// Future: could emit as a separate THINKING node (type=8)
 				thinking, _ := delta["thinking"].(string)
 				if thinking != "" {
-					writeChunkLine(w, newBaseChunk(thinking))
+					thinkingNode := map[string]interface{}{
+						"id":       nextNodeID,
+						"type":     augmentNodeTypeThinking,
+						"content":  "",
+						"thinking": map[string]interface{}{"summary": thinking},
+					}
+					nextNodeID++
+					chunk := newBaseChunk("")
+					chunk["nodes"] = []interface{}{thinkingNode}
+					writeChunkLine(w, chunk)
 				}
 			}
 
@@ -333,6 +339,16 @@ func emitTokenUsageNode(w io.Writer, usage map[string]interface{}, nextNodeID *i
 	}
 	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
 		tokenUsage["cache_creation_input_tokens"] = int(val)
+	}
+
+	// OpenAI-specific: prompt_tokens_details
+	if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+		if val, ok := details["cached_tokens"].(float64); ok {
+			tokenUsage["cache_read_input_tokens"] = int(val)
+		}
+		if val, ok := details["cache_creation_tokens"].(float64); ok {
+			tokenUsage["cache_creation_input_tokens"] = int(val)
+		}
 	}
 
 	// Only emit if we have at least one token count

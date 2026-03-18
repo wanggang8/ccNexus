@@ -285,10 +285,40 @@ func OpenAIStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 	}
 
 	delta := chunk.Choices[0].Delta
+	var parts []map[string]interface{}
+
 	if delta.Content != "" {
+		parts = append(parts, map[string]interface{}{"text": delta.Content})
+	}
+
+	for _, tc := range delta.ToolCalls {
+		if tc.ID != "" {
+			ctx.CurrentToolName = tc.Function.Name
+			ctx.ToolArguments = ""
+		}
+		if tc.Function.Arguments != "" {
+			ctx.ToolArguments += tc.Function.Arguments
+		}
+		if tc.ID != "" || (tc.Function.Name == "" && tc.Function.Arguments == "") {
+			continue
+		}
+	}
+
+	finishReason := chunk.Choices[0].FinishReason
+	if finishReason != nil && *finishReason == "tool_calls" && ctx.CurrentToolName != "" {
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
+			args = map[string]interface{}{}
+		}
+		parts = append(parts, map[string]interface{}{
+			"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args},
+		})
+	}
+
+	if len(parts) > 0 {
 		geminiChunk := map[string]interface{}{
 			"candidates": []map[string]interface{}{
-				{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{{"text": delta.Content}}}},
+				{"content": map[string]interface{}{"role": "model", "parts": parts}},
 			},
 		}
 		d, _ := json.Marshal(geminiChunk)
@@ -311,13 +341,17 @@ func convertOpenAIContentToGeminiParts(content []interface{}) []map[string]inter
 			parts = append(parts, map[string]interface{}{"text": m["text"]})
 		case "image_url":
 			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := urlObj["url"].(string); ok && strings.HasPrefix(url, "data:") {
-					urlParts := strings.SplitN(url, ",", 2)
-					if len(urlParts) == 2 {
-						mimeType := strings.TrimPrefix(strings.Split(urlParts[0], ";")[0], "data:")
-						parts = append(parts, map[string]interface{}{
-							"inlineData": map[string]interface{}{"mimeType": mimeType, "data": urlParts[1]},
-						})
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						urlParts := strings.SplitN(url, ",", 2)
+						if len(urlParts) == 2 {
+							mimeType := strings.TrimPrefix(strings.Split(urlParts[0], ";")[0], "data:")
+							parts = append(parts, map[string]interface{}{
+								"inlineData": map[string]interface{}{"mimeType": mimeType, "data": urlParts[1]},
+							})
+						}
+					} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+						logger.Warn("URL image source not supported for Gemini conversion, image dropped (url=%s)", url)
 					}
 				}
 			}
