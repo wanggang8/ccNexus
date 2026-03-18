@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { notifications } from '../utils/notifications.js';
-import { formatNumber, formatTokens } from '../utils/formatters.js';
+import { formatNumber, formatTokens, escapeHtml } from '../utils/formatters.js';
 import { getIcon } from '../icons.js';
 
 class Stats {
@@ -143,7 +143,7 @@ class Stats {
                             const rowClass = highError ? 'stats-endpoint-row-high-error' : '';
                             return `
                                 <tr class="${rowClass}">
-                                    <td><strong>${this.escapeHtml(name)}</strong></td>
+                                    <td><strong>${escapeHtml(name)}</strong></td>
                                     <td>${formatNumber(requests)}</td>
                                     <td>${formatNumber(errors)}</td>
                                     <td>${formatTokens(ep.inputTokens || 0)}</td>
@@ -157,11 +157,6 @@ class Stats {
         `;
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
 }
 
 export const stats = new Stats();

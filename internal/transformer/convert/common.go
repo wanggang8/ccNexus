@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
 // toolCallCounter is used to generate unique tool call IDs
@@ -17,28 +19,35 @@ func GenerateToolCallID(name string) string {
 	return fmt.Sprintf("toolu_%s_%d", name, counter)
 }
 
-// cleanSchemaForGemini removes fields not supported by Gemini API
+// cleanSchemaForGemini returns a copy of the schema with fields not supported by Gemini API removed.
+// The original map is NOT modified.
 func cleanSchemaForGemini(schema interface{}) interface{} {
 	m, ok := schema.(map[string]interface{})
 	if !ok {
 		return schema
 	}
-	// Remove unsupported fields
-	delete(m, "additionalProperties")
-	delete(m, "$schema")
-	if props, ok := m["properties"].(map[string]interface{}); ok {
-		for k, v := range props {
-			props[k] = cleanSchemaForGemini(v)
+	cleaned := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if k == "additionalProperties" || k == "$schema" {
+			continue
 		}
+		cleaned[k] = v
 	}
-	if items, ok := m["items"]; ok {
-		m["items"] = cleanSchemaForGemini(items)
+	if props, ok := cleaned["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{}, len(props))
+		for k, v := range props {
+			newProps[k] = cleanSchemaForGemini(v)
+		}
+		cleaned["properties"] = newProps
 	}
-	return m
+	if items, ok := cleaned["items"]; ok {
+		cleaned["items"] = cleanSchemaForGemini(items)
+	}
+	return cleaned
 }
 
-// parseSSE parses SSE event data
-func parseSSE(data []byte) (eventType, jsonData string) {
+// ParseSSE parses SSE event data, returning the event type and JSON data payload.
+func ParseSSE(data []byte) (eventType, jsonData string) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "event: ") {
@@ -57,8 +66,13 @@ func buildClaudeEvent(eventType string, data map[string]interface{}) []byte {
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, jsonData))
 }
 
-// buildOpenAIChunk builds an OpenAI streaming chunk
+// buildOpenAIChunk builds an OpenAI streaming chunk without usage.
 func buildOpenAIChunk(id, model, content string, toolCalls []map[string]interface{}, finish string) ([]byte, error) {
+	return buildOpenAIChunkWithUsage(id, model, content, toolCalls, finish, nil)
+}
+
+// buildOpenAIChunkWithUsage builds an OpenAI streaming chunk with optional usage.
+func buildOpenAIChunkWithUsage(id, model, content string, toolCalls []map[string]interface{}, finish string, usage map[string]interface{}) ([]byte, error) {
 	delta := map[string]interface{}{}
 	if content != "" {
 		delta["content"] = content
@@ -75,6 +89,9 @@ func buildOpenAIChunk(id, model, content string, toolCalls []map[string]interfac
 	chunk := map[string]interface{}{
 		"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
 		"choices": []map[string]interface{}{{"index": 0, "delta": delta, "finish_reason": finishReason}},
+	}
+	if usage != nil {
+		chunk["usage"] = usage
 	}
 	data, _ := json.Marshal(chunk)
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
@@ -109,6 +126,40 @@ func buildOpenAIUsageChunk(id, model string, promptTokens, completionTokens int)
 	}
 	data, _ := json.Marshal(chunk)
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
+}
+
+// syncGeminiUsageMetadata stores Gemini usage metadata in stream context for later usage emission.
+func syncGeminiUsageMetadata(resp *transformer.GeminiResponse, ctx *transformer.StreamContext) {
+	if resp == nil || resp.UsageMetadata == nil || ctx == nil {
+		return
+	}
+	if resp.UsageMetadata.PromptTokenCount > 0 {
+		ctx.InputTokens = resp.UsageMetadata.PromptTokenCount
+	}
+	if resp.UsageMetadata.CandidatesTokenCount > 0 {
+		ctx.OutputTokens = resp.UsageMetadata.CandidatesTokenCount
+	}
+}
+
+func currentOpenAIUsage(ctx *transformer.StreamContext) map[string]interface{} {
+	if ctx == nil || (ctx.InputTokens == 0 && ctx.OutputTokens == 0) {
+		return nil
+	}
+	return map[string]interface{}{
+		"prompt_tokens":     ctx.InputTokens,
+		"completion_tokens": ctx.OutputTokens,
+		"total_tokens":      ctx.InputTokens + ctx.OutputTokens,
+	}
+}
+
+func currentClaudeUsage(ctx *transformer.StreamContext) map[string]interface{} {
+	if ctx == nil {
+		return map[string]interface{}{"input_tokens": 0, "output_tokens": 0}
+	}
+	return map[string]interface{}{
+		"input_tokens":  ctx.InputTokens,
+		"output_tokens": ctx.OutputTokens,
+	}
 }
 
 // extractSystemText extracts text from Claude system prompt

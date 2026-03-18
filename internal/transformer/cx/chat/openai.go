@@ -45,22 +45,46 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 				continue
 			}
 
-			// Check if message has Claude-format content blocks
+			// Check if message has Claude-format content blocks with tool_result
 			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
-				// Check if it's a tool_result block
-				if len(content) == 1 {
-					if block, ok := content[0].(map[string]interface{}); ok {
+				hasToolResult := false
+				var otherBlocks []interface{}
+				for _, item := range content {
+					if block, ok := item.(map[string]interface{}); ok {
 						if block["type"] == "tool_result" {
-							// Convert to OpenAI tool message format
-							openaiMsg := map[string]interface{}{
+							hasToolResult = true
+							fixedMessages = append(fixedMessages, map[string]interface{}{
 								"role":         "tool",
 								"tool_call_id": block["tool_use_id"],
 								"content":      block["content"],
-							}
-							fixedMessages = append(fixedMessages, openaiMsg)
-							continue
+							})
+						} else {
+							otherBlocks = append(otherBlocks, item)
 						}
+					} else {
+						otherBlocks = append(otherBlocks, item)
 					}
+				}
+				if hasToolResult {
+					// H4: Preserve non-tool_result content blocks (text, images) as a separate message
+					if len(otherBlocks) > 0 {
+						preservedMsg := map[string]interface{}{"role": msg["role"]}
+						if len(otherBlocks) == 1 {
+							if tb, ok := otherBlocks[0].(map[string]interface{}); ok {
+								if text, ok := tb["text"].(string); ok && tb["type"] == "text" {
+									preservedMsg["content"] = text
+								} else {
+									preservedMsg["content"] = otherBlocks
+								}
+							} else {
+								preservedMsg["content"] = otherBlocks
+							}
+						} else {
+							preservedMsg["content"] = otherBlocks
+						}
+						fixedMessages = append(fixedMessages, preservedMsg)
+					}
+					continue
 				}
 			}
 
@@ -114,6 +138,33 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 
 		data["tools"] = fixedTools
 	}
+
+	// Strip cache_control from all messages (Anthropic-specific)
+	if messages, ok := data["messages"].([]interface{}); ok {
+		for _, msgInterface := range messages {
+			if msg, ok := msgInterface.(map[string]interface{}); ok {
+				delete(msg, "cache_control")
+			}
+		}
+	}
+
+	// Strip cache_control from tool definitions
+	if tools, ok := data["tools"].([]interface{}); ok {
+		for _, toolInterface := range tools {
+			if tool, ok := toolInterface.(map[string]interface{}); ok {
+				delete(tool, "cache_control")
+				if fn, ok := tool["function"].(map[string]interface{}); ok {
+					delete(fn, "cache_control")
+				}
+			}
+		}
+	}
+
+	// Strip Anthropic-specific top-level fields
+	delete(data, "thinking")
+	delete(data, "budget_tokens")
+	delete(data, "reasoning_effort")
+	delete(data, "metadata")
 
 	return json.Marshal(data)
 }
@@ -181,8 +232,8 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 		return resp, nil
 	}
 
-	eventType, payload := parseOpenAISSE(resp)
-	if eventType != "data" {
+	_, payload := convert.ParseSSE(resp)
+	if payload == "" {
 		return resp, nil
 	}
 
@@ -245,20 +296,6 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 		return nil, err
 	}
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
-}
-
-func parseOpenAISSE(resp []byte) (eventType, payload string) {
-	for _, line := range strings.Split(string(resp), "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "event: "):
-			eventType = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			eventType = "data"
-			payload = strings.TrimPrefix(line, "data: ")
-		}
-	}
-	return eventType, payload
 }
 
 func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamContext) ([]interface{}, bool) {

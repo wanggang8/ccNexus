@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { notifications } from '../utils/notifications.js';
 import { getIcon } from '../icons.js';
+import { escapeHtml, formatJSON, copyText } from '../utils/formatters.js';
 
 class Traffic {
     constructor() {
@@ -11,12 +12,6 @@ class Traffic {
         this.filter = {};
         this.autoRefresh = false;
         this.refreshInterval = null;
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     async render() {
@@ -351,7 +346,7 @@ class Traffic {
                 ${log.error ? `
                     <div class="traffic-log-error">
                         <span class="icon" style="font-size: 0.875rem;">${getIcon('alert-circle')}</span>
-                        ${this.escapeHtml(log.error)}
+                        ${escapeHtml(log.error)}
                     </div>
                 ` : ''}
             </div>
@@ -408,7 +403,7 @@ class Traffic {
                                     <tr><td>Transformer:</td><td>${detail.transformerName || '-'}</td></tr>
                                     <tr><td>Request:</td><td>
                                         <span id="traffic-request-line">${detail.method} ${detail.path}</span>
-                                        <button class="btn btn-sm btn-secondary traffic-copy-btn" data-copy="${this.escapeHtml(`${detail.method} ${detail.path}`)}" style="margin-left: 0.5rem;">
+                                        <button class="btn btn-sm btn-secondary traffic-copy-btn" data-copy="${escapeHtml(`${detail.method} ${detail.path}`)}" style="margin-left: 0.5rem;">
                                             <span class="icon">${getIcon('clipboard')}</span>
                                         </button>
                                     </td></tr>
@@ -424,7 +419,7 @@ class Traffic {
                             ${detail.error ? `
                                 <div class="traffic-detail-section">
                                     <h3>Error</h3>
-                                    <pre class="code-block error-block">${this.escapeHtml(detail.error)}</pre>
+                                    <pre class="code-block error-block">${escapeHtml(detail.error)}</pre>
                                 </div>
                             ` : ''}
 
@@ -456,7 +451,7 @@ class Traffic {
                                                         Copy
                                                     </button>
                                                 </div>
-                                                <pre class="code-block traffic-detail-code-block">${this.formatJSON(tab.content)}</pre>
+                                                <pre class="code-block traffic-detail-code-block">${formatJSON(tab.content)}</pre>
                                             </div>
                                         `).join('')}
                                     </div>
@@ -507,7 +502,7 @@ class Traffic {
             btn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const text = btn.dataset.copy || '';
-                this.copyText(text);
+                this.copyTextWithNotify(text);
             });
         });
 
@@ -516,67 +511,19 @@ class Traffic {
             btn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const tabId = btn.getAttribute('data-tab-id');
-                this.copyText(tabContentMap.get(tabId) || '');
+                this.copyTextWithNotify(tabContentMap.get(tabId) || '');
             });
         });
     }
 
-    copyText(text) {
+    copyTextWithNotify(text) {
         if (!text) {
             notifications.error('Nothing to copy');
             return;
         }
-
-        try {
-            if (typeof navigator !== 'undefined' &&
-                navigator.clipboard &&
-                typeof navigator.clipboard.writeText === 'function') {
-                navigator.clipboard.writeText(text).then(() => {
-                    notifications.success('Copied to clipboard');
-                }).catch(() => {
-                    notifications.error('Failed to copy to clipboard');
-                });
-                return;
-            }
-        } catch {
-            // fall through
-        }
-
-        try {
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            textarea.style.position = 'fixed';
-            textarea.style.top = '-1000px';
-            textarea.style.left = '-1000px';
-            document.body.appendChild(textarea);
-            textarea.focus();
-            textarea.select();
-            const ok = document.execCommand && document.execCommand('copy');
-            document.body.removeChild(textarea);
-            if (ok) {
-                notifications.success('Copied to clipboard');
-            } else {
-                notifications.error('Failed to copy to clipboard');
-            }
-        } catch {
-            notifications.error('Failed to copy to clipboard');
-        }
-    }
-
-    formatJSON(str) {
-        if (!str) return '<span class="text-muted">Empty</span>';
-        try {
-            const obj = JSON.parse(str);
-            return this.escapeHtml(JSON.stringify(obj, null, 2));
-        } catch {
-            return this.escapeHtml(str);
-        }
-    }
-
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        copyText(text)
+            .then(() => notifications.success('Copied to clipboard'))
+            .catch(() => notifications.error('Failed to copy to clipboard'));
     }
 
     async toggleRecording() {

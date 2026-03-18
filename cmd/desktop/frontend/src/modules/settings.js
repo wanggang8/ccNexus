@@ -222,6 +222,31 @@ async function loadCurrentSettings() {
         if (notificationTypeSelect) {
             notificationTypeSelect.value = claudeNotificationType;
         }
+
+        // Load Augment config
+        try {
+            const augmentConfigStr = await window.go.main.App.GetAugmentConfig();
+            const augmentConfig = JSON.parse(augmentConfigStr);
+            if (augmentConfig.success && augmentConfig.data) {
+                const augmentEnabled = document.getElementById('settingsAugmentEnabled');
+                const augmentPort = document.getElementById('settingsAugmentPort');
+                const augmentEnabledLabel = document.getElementById('settingsAugmentEnabledLabel');
+                if (augmentEnabled) augmentEnabled.checked = augmentConfig.data.enabled;
+                if (augmentPort) augmentPort.value = augmentConfig.data.port || 8888;
+                if (augmentEnabledLabel) {
+                    augmentEnabledLabel.textContent = augmentConfig.data.enabled ? t('settings.augmentEnabledOn') : t('settings.augmentEnabledOff');
+                }
+                if (augmentEnabled) {
+                    augmentEnabled.addEventListener('change', () => {
+                        if (augmentEnabledLabel) {
+                            augmentEnabledLabel.textContent = augmentEnabled.checked ? t('settings.augmentEnabledOn') : t('settings.augmentEnabledOff');
+                        }
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to load Augment config:', e);
+        }
     } catch (error) {
         console.error('Failed to load settings:', error);
     }
@@ -328,6 +353,21 @@ export async function saveSettings() {
             claudeNotificationType: claudeNotificationType
         };
         await window.go.main.App.SaveSettings(JSON.stringify(settings));
+
+        // Save Augment config separately
+        try {
+            const augmentEnabledEl = document.getElementById('settingsAugmentEnabled');
+            const augmentPortEl = document.getElementById('settingsAugmentPort');
+            if (augmentEnabledEl && augmentPortEl) {
+                const augmentSettings = {
+                    enabled: augmentEnabledEl.checked,
+                    port: parseInt(augmentPortEl.value) || 8888
+                };
+                await window.go.main.App.SaveAugmentConfig(JSON.stringify(augmentSettings));
+            }
+        } catch (e) {
+            console.warn('Failed to save Augment config:', e);
+        }
 
         // Apply theme based on final settings
         stopAutoThemeCheck();

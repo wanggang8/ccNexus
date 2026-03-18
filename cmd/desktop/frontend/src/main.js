@@ -25,8 +25,10 @@ import {
     showAddEndpointModal,
     editEndpoint,
     saveEndpoint,
+    openEndpointTokenPoolFromModal,
     deleteEndpoint,
     closeModal,
+    handleAuthModeChange,
     handleTransformerChange,
     fetchModels,
     initModelInputEvents,
@@ -49,7 +51,10 @@ import {
     cancelConfirm,
     showCloseActionDialog,
     quitApplication,
-    minimizeToTray
+    minimizeToTray,
+    toggleJsonMergeSection,
+    applyJsonMerge,
+    clearJsonMerge
 } from './modules/modal.js'
 
 // Handle real-time stats update events from backend (4-period data)
@@ -183,8 +188,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     //     }
     // }, 30000); // 降低频率到 30 秒
 
-    // Refresh logs every 2 seconds
-    setInterval(loadLogs, 2000);
+    // Refresh logs every 2 seconds, but only when logs tab is visible
+    setInterval(() => {
+        const logsTab = document.getElementById('logs');
+        if (logsTab && logsTab.classList.contains('active')) {
+            loadLogs();
+        }
+    }, 2000);
 
     // Show welcome modal on first launch
     showWelcomeModalIfFirstTime();
@@ -240,8 +250,10 @@ window.loadConfig = loadConfigAndRender;
 window.showAddEndpointModal = showAddEndpointModal;
 window.editEndpoint = editEndpoint;
 window.saveEndpoint = saveEndpoint;
+window.openEndpointTokenPoolFromModal = openEndpointTokenPoolFromModal;
 window.deleteEndpoint = deleteEndpoint;
 window.closeModal = closeModal;
+window.handleAuthModeChange = handleAuthModeChange;
 window.handleTransformerChange = handleTransformerChange;
 window.fetchModels = fetchModels;
 window.toggleModelDropdown = toggleModelDropdown;
@@ -271,6 +283,9 @@ window.showDataSyncDialog = showDataSyncDialog;
 window.switchStatsPeriod = switchStatsPeriod;
 window.switchEndpointViewMode = switchEndpointViewMode;
 window.exportEndpoints = exportEndpoints;
+window.toggleJsonMergeSection = toggleJsonMergeSection;
+window.applyJsonMerge = applyJsonMerge;
+window.clearJsonMerge = clearJsonMerge;
 window.importEndpoints = async (e) => {
     const file = e?.target?.files?.[0];
     if (file) await importEndpoints(file);

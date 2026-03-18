@@ -54,7 +54,10 @@ func ClaudeReqToGemini(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		genConfig["maxOutputTokens"] = req.MaxTokens
 	}
-	if req.Temperature > 0 {
+	// Use raw map to detect explicit temperature (including 0)
+	var rawReq map[string]interface{}
+	json.Unmarshal(claudeReq, &rawReq)
+	if _, hasTemp := rawReq["temperature"]; hasTemp {
 		genConfig["temperature"] = req.Temperature
 	}
 	if len(genConfig) > 0 {
@@ -72,12 +75,7 @@ func ClaudeReqToGemini(claudeReq []byte, model string) ([]byte, error) {
 			})
 		}
 		geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-		// Add toolConfig to enable function calling
-		geminiReq["toolConfig"] = map[string]interface{}{
-			"functionCallingConfig": map[string]interface{}{
-				"mode": "AUTO",
-			},
-		}
+		geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 	}
 
 	return json.Marshal(geminiReq)
@@ -133,9 +131,12 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 				contentBlocks = append(contentBlocks, map[string]interface{}{"type": "text", "text": part.Text})
 			}
 			if part.FunctionCall != nil {
-				// Generate unique ID for each function call
+				// Generate unique ID for each function call (always unique, even for same function name)
 				toolID := GenerateToolCallID(part.FunctionCall.Name)
-				toolNameToID[part.FunctionCall.Name] = toolID // Store latest ID for this function name
+				// M4: Use indexed key to avoid overwriting parallel calls to the same function
+				toolMapKey := fmt.Sprintf("%s_%d", part.FunctionCall.Name, len(contentBlocks))
+				toolNameToID[toolMapKey] = toolID
+				toolNameToID[part.FunctionCall.Name] = toolID // Keep last-wins as fallback for functionResponse lookup
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    toolID,
@@ -231,10 +232,7 @@ func ClaudeRespToGemini(claudeResp []byte) ([]byte, error) {
 		}
 	}
 
-	finishReason := "STOP"
-	if resp.StopReason == "tool_use" {
-		finishReason = "TOOL_CODE"
-	}
+	finishReason := mapClaudeStopToGeminiFinish(resp.StopReason, len(parts) > 0 && parts[len(parts)-1]["functionCall"] != nil)
 
 	geminiResp := map[string]interface{}{
 		"candidates": []map[string]interface{}{
@@ -262,9 +260,11 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
+	hasToolCall := false
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
+		stopReason = mapGeminiFinishToClaude(candidate.FinishReason, false)
 		for _, part := range candidate.Content.Parts {
 			if part.Thought && part.Text != "" {
 				// Convert Gemini thought to Claude thinking format
@@ -288,8 +288,12 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 					"name":  part.FunctionCall.Name,
 					"input": part.FunctionCall.Args,
 				})
+				hasToolCall = true
 				stopReason = "tool_use"
 			}
+		}
+		if hasToolCall {
+			stopReason = "tool_use"
 		}
 	}
 
@@ -316,7 +320,7 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 // ClaudeStreamToGemini converts Claude SSE event to Gemini stream format
 func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -371,6 +375,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
 				args = map[string]interface{}{}
 			}
+			// L7: Don't emit finishReason on individual tool block stop — stream may continue
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{
@@ -378,7 +383,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 						"parts": []map[string]interface{}{
 							{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
 						},
-					}, "finishReason": "TOOL_CODE"},
+					}},
 				},
 			}
 			d, _ := json.Marshal(chunk)
@@ -406,7 +411,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 
 // GeminiStreamToClaude converts Gemini stream chunk to Claude SSE event
 func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte
@@ -417,7 +422,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			if !ctx.FinishReasonSent {
 				result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 					"delta": map[string]interface{}{"stop_reason": "end_turn", "stop_sequence": nil},
-					"usage": map[string]interface{}{"output_tokens": 0},
+					"usage": currentClaudeUsage(ctx),
 				})...)
 			}
 			result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
@@ -431,6 +436,9 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 		logger.Debug("GeminiStreamToClaude: failed to parse chunk: %v", err)
 		return nil, nil
 	}
+
+	// Sync Gemini usage metadata to context
+	syncGeminiUsageMetadata(&resp, ctx)
 
 	var result []byte
 
@@ -454,7 +462,32 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 	candidate := resp.Candidates[0]
 	hasFunctionCall := false
 	for _, part := range candidate.Content.Parts {
+		if part.Thought && part.Text != "" {
+			// Gemini thought part → Claude thinking block (D15)
+			if ctx.ContentBlockStarted {
+				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ContentIndex})...)
+				ctx.ContentBlockStarted = false
+				ctx.ContentIndex++
+			}
+			if !ctx.ThinkingBlockStarted {
+				ctx.ThinkingBlockStarted = true
+				ctx.ThinkingIndex = ctx.ContentIndex
+				result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
+					"index": ctx.ThinkingIndex, "content_block": map[string]interface{}{"type": "thinking", "thinking": ""},
+				})...)
+			}
+			result = append(result, buildClaudeEvent("content_block_delta", map[string]interface{}{
+				"index": ctx.ThinkingIndex, "delta": map[string]interface{}{"type": "thinking_delta", "thinking": part.Text},
+			})...)
+			continue
+		}
 		if part.Text != "" {
+			// Close thinking block if open
+			if ctx.ThinkingBlockStarted {
+				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ThinkingIndex})...)
+				ctx.ThinkingBlockStarted = false
+				ctx.ContentIndex = ctx.ThinkingIndex + 1
+			}
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
@@ -496,13 +529,10 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ContentIndex})...)
 			ctx.ContentBlockStarted = false
 		}
-		stopReason := "end_turn"
-		if hasFunctionCall || candidate.FinishReason == "TOOL_CODE" {
-			stopReason = "tool_use"
-		}
+		stopReason := mapGeminiFinishToClaude(candidate.FinishReason, hasFunctionCall)
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
-			"usage": map[string]interface{}{"output_tokens": 0},
+			"usage": currentClaudeUsage(ctx),
 		})...)
 		result = append(result, buildClaudeEvent("message_stop", map[string]interface{}{})...)
 		ctx.FinishReasonSent = true
@@ -559,9 +589,26 @@ func convertClaudeContentToGeminiParts(content []interface{}, toolUseIDToName ma
 							"data":     source["data"],
 						},
 					})
+				} else if source["type"] == "url" {
+					logger.Warn("URL image source not supported for Gemini conversion, image dropped (url=%v)", source["url"])
 				}
 			}
 		}
 	}
 	return parts
+}
+
+// mapClaudeStopToGeminiFinish maps Claude stop_reason to Gemini finishReason.
+func mapClaudeStopToGeminiFinish(stopReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "STOP" // Gemini uses STOP even for tool calls; tool presence is implied by functionCall parts
+	}
+	switch stopReason {
+	case "max_tokens":
+		return "MAX_TOKENS"
+	case "end_turn", "stop_sequence":
+		return "STOP"
+	default:
+		return "STOP"
+	}
 }

@@ -88,7 +88,6 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		input = append(input, item)
 	}
 	openai2Req["input"] = input
-
 	// TODO: max_output_tokens is standard OpenAI Responses API param but some
 	// third-party endpoints (e.g. SiliconFlow) don't support it. Skipping for compatibility.
 
@@ -105,6 +104,15 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 			}
 		}
 		openai2Req["tools"] = tools
+
+		// Preserve explicit tool routing semantics when moving to Responses API.
+		if mapped := mapOpenAIToolChoiceToOpenAI2(req.ToolChoice); mapped != nil {
+			openai2Req["tool_choice"] = mapped
+		} else {
+			// Keep explicit default for compatibility with providers that do not
+			// treat omitted tool_choice as "auto".
+			openai2Req["tool_choice"] = "auto"
+		}
 	}
 
 	return json.Marshal(openai2Req)
@@ -187,6 +195,9 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 	if req.MaxOutputTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxOutputTokens
 	}
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
+	}
 
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
@@ -222,7 +233,66 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 		}
 	}
 
+	if req.ToolChoice != nil {
+		openaiReq.ToolChoice = mapOpenAI2ToolChoiceToOpenAI(req.ToolChoice)
+	}
+
 	return json.Marshal(openaiReq)
+}
+
+func mapOpenAIToolChoiceToOpenAI2(toolChoice interface{}) interface{} {
+	if toolChoice == nil {
+		return nil
+	}
+
+	switch tc := toolChoice.(type) {
+	case string:
+		return tc
+	case map[string]interface{}:
+		choiceType, _ := tc["type"].(string)
+		if choiceType != "function" {
+			return nil
+		}
+
+		// Chat Completions shape: {"type":"function","function":{"name":"..."}}
+		if fn, ok := tc["function"].(map[string]interface{}); ok {
+			if name, ok := fn["name"].(string); ok && name != "" {
+				return map[string]interface{}{"type": "function", "name": name}
+			}
+		}
+
+		// Responses-compatible shape already.
+		if name, ok := tc["name"].(string); ok && name != "" {
+			return map[string]interface{}{"type": "function", "name": name}
+		}
+	}
+
+	return nil
+}
+
+func mapOpenAI2ToolChoiceToOpenAI(toolChoice interface{}) interface{} {
+	if toolChoice == nil {
+		return nil
+	}
+
+	switch tc := toolChoice.(type) {
+	case string:
+		return tc
+	case map[string]interface{}:
+		choiceType, _ := tc["type"].(string)
+		if choiceType == "function" {
+			if name, ok := tc["name"].(string); ok && name != "" {
+				return map[string]interface{}{
+					"type": "function",
+					"function": map[string]string{
+						"name": name,
+					},
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // OpenAIRespToOpenAI2 converts OpenAI Chat response to OpenAI Responses response
@@ -318,8 +388,11 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 		"usage": map[string]interface{}{
 			"prompt_tokens":     resp.Usage.InputTokens,
 			"completion_tokens": resp.Usage.OutputTokens,
-			"total_tokens":      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			"total_tokens":      resp.Usage.TotalTokens,
 		},
+	}
+	if resp.Usage.TotalTokens == 0 {
+		openaiResp["usage"].(map[string]interface{})["total_tokens"] = resp.Usage.InputTokens + resp.Usage.OutputTokens
 	}
 
 	return json.Marshal(openaiResp)
@@ -327,7 +400,7 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 
 // OpenAIStreamToOpenAI2 converts OpenAI Chat stream chunk to OpenAI Responses stream event
 func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" && !ctx.FinishReasonSent {
 			// Handle [DONE] if finish_reason wasn't received
@@ -372,6 +445,15 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		return nil, nil
 	}
 
+	if chunk.Usage != nil {
+		if chunk.Usage.PromptTokens > 0 {
+			ctx.InputTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			ctx.OutputTokens = chunk.Usage.CompletionTokens
+		}
+	}
+
 	var result strings.Builder
 	writeEvent := func(evt map[string]interface{}) {
 		d, _ := json.Marshal(evt)
@@ -414,22 +496,43 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
+			// M1: output_index starts after the text message (if any)
+			textOffset := 0
+			if ctx.ContentBlockStarted {
+				textOffset = 1
+			}
+			outputIndex := idx + textOffset
+
 			// New tool call (has ID)
 			if tc.ID != "" {
 				ctx.ToolCallCounter++
 				ctx.CurrentToolID = tc.ID
 				ctx.CurrentToolName = tc.Function.Name
 				ctx.ToolArguments = ""
+				// Track this tool call for multi-tool-call completion
+				ctx.ActiveToolCalls = append(ctx.ActiveToolCalls, transformer.ActiveToolCall{
+					ID:          tc.ID,
+					Name:        tc.Function.Name,
+					Arguments:   "",
+					OutputIndex: outputIndex,
+				})
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": idx + 1,
+					"type": "response.output_item.added", "output_index": outputIndex,
 					"item": map[string]interface{}{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": "", "status": "in_progress"},
 				})
 			}
 			// Accumulate arguments
 			if tc.Function.Arguments != "" {
 				ctx.ToolArguments += tc.Function.Arguments
+				// Update the matching active tool call
+				for i := range ctx.ActiveToolCalls {
+					if ctx.ActiveToolCalls[i].ID == ctx.CurrentToolID {
+						ctx.ActiveToolCalls[i].Arguments += tc.Function.Arguments
+						break
+					}
+				}
 				writeEvent(map[string]interface{}{
-					"type": "response.function_call_arguments.delta", "output_index": idx + 1, "delta": tc.Function.Arguments,
+					"type": "response.function_call_arguments.delta", "output_index": outputIndex, "delta": tc.Function.Arguments,
 				})
 			}
 		}
@@ -444,12 +547,15 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 				ctx.ContentBlockStarted = false
 			}
-			if *finishReason == "tool_calls" && ctx.CurrentToolID != "" {
-				writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": 1, "arguments": ctx.ToolArguments})
-				writeEvent(map[string]interface{}{
-					"type": "response.output_item.done", "output_index": 1,
-					"item": map[string]interface{}{"type": "function_call", "call_id": ctx.CurrentToolID, "name": ctx.CurrentToolName, "arguments": ctx.ToolArguments, "status": "completed"},
-				})
+			// Complete ALL active tool calls, not just the last one
+			if *finishReason == "tool_calls" && len(ctx.ActiveToolCalls) > 0 {
+				for _, atc := range ctx.ActiveToolCalls {
+					writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": atc.OutputIndex, "arguments": atc.Arguments})
+					writeEvent(map[string]interface{}{
+						"type": "response.output_item.done", "output_index": atc.OutputIndex,
+						"item": map[string]interface{}{"type": "function_call", "call_id": atc.ID, "name": atc.Name, "arguments": atc.Arguments, "status": "completed"},
+					})
+				}
 			}
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
@@ -471,7 +577,7 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 // OpenAI2StreamToOpenAI converts OpenAI Responses stream event to OpenAI Chat stream chunk
 func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil
@@ -500,6 +606,7 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 			ctx.CurrentToolID = evt.Item.CallID
 			ctx.CurrentToolName = evt.Item.Name
 			ctx.ToolArguments = ""
+			ctx.ToolIndex++
 		}
 		return nil, nil
 
@@ -520,11 +627,27 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 		return nil, nil
 
 	case "response.completed":
+		if evt.Response != nil {
+			if evt.Response.Usage.InputTokens > 0 {
+				ctx.InputTokens = evt.Response.Usage.InputTokens
+			}
+			if evt.Response.Usage.OutputTokens > 0 {
+				ctx.OutputTokens = evt.Response.Usage.OutputTokens
+			}
+		}
 		finishReason := "stop"
 		if ctx.CurrentToolID != "" {
 			finishReason = "tool_calls"
 		}
-		return buildOpenAIChunk(ctx.MessageID, model, "", nil, finishReason)
+		usage := map[string]interface{}{
+			"prompt_tokens":     ctx.InputTokens,
+			"completion_tokens": ctx.OutputTokens,
+			"total_tokens":      ctx.InputTokens + ctx.OutputTokens,
+		}
+		if evt.Response != nil && evt.Response.Usage.TotalTokens > 0 {
+			usage["total_tokens"] = evt.Response.Usage.TotalTokens
+		}
+		return buildOpenAIChunkWithUsage(ctx.MessageID, model, "", nil, finishReason, usage)
 	}
 
 	return nil, nil

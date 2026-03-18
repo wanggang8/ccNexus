@@ -59,17 +59,33 @@ export async function changeLogLevel() {
     }
 }
 
-export function copyLogs() {
+export function copyLogs(event) {
     const textarea = document.getElementById('logContent');
-    textarea.select();
-    document.execCommand('copy');
+    const text = textarea.value;
 
-    const btn = event.target.closest('button');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '<span class="icon">' + getIcon('check') + '</span> Copied!';
-    setTimeout(() => {
-        btn.innerHTML = originalText;
-    }, 1500);
+    if (!text) return;
+
+    const showSuccess = (btn) => {
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="icon">' + getIcon('check') + '</span> Copied!';
+        setTimeout(() => { btn.innerHTML = originalText; }, 1500);
+    };
+
+    const btn = event?.target?.closest('button');
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(text).then(() => {
+            if (btn) showSuccess(btn);
+        }).catch(() => {
+            textarea.select();
+            try { document.execCommand('copy'); } catch {}
+            if (btn) showSuccess(btn);
+        });
+    } else {
+        textarea.select();
+        try { document.execCommand('copy'); } catch {}
+        if (btn) showSuccess(btn);
+    }
 }
 
 export async function clearLogs() {

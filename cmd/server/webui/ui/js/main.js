@@ -33,6 +33,9 @@ function initTheme() {
 
 // Initialize real-time updates (close old connection before reconnect)
 let eventSourceInstance = null;
+let sseRetryCount = 0;
+const SSE_MAX_RETRIES = 10;
+const SSE_BASE_DELAY = 2000;
 
 function initRealtime() {
     if (eventSourceInstance) {
@@ -43,6 +46,10 @@ function initRealtime() {
     const url = token ? `/api/events?token=${encodeURIComponent(token)}` : '/api/events';
     eventSourceInstance = new EventSource(url);
 
+    eventSourceInstance.onopen = () => {
+        sseRetryCount = 0;
+    };
+
     eventSourceInstance.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
@@ -50,22 +57,25 @@ function initRealtime() {
             if (data.type === 'stats') {
                 state.update('stats', data.stats);
                 state.update('currentEndpoint', data.currentEndpoint);
-
-                // Update dashboard if it's the current view
-                if (state.get('currentView') === 'dashboard') {
-                    // Dashboard will handle its own updates via state subscription
-                }
             }
         } catch (error) {
             console.error('Failed to parse SSE event:', error);
         }
     };
 
-    eventSourceInstance.onerror = (error) => {
-        console.error('SSE connection error:', error);
+    eventSourceInstance.onerror = () => {
         eventSourceInstance.close();
         eventSourceInstance = null;
-        setTimeout(initRealtime, 5000);
+
+        if (sseRetryCount >= SSE_MAX_RETRIES) {
+            console.warn('SSE: max retries reached, stopping reconnection');
+            return;
+        }
+
+        const delay = Math.min(SSE_BASE_DELAY * Math.pow(2, sseRetryCount), 60000);
+        sseRetryCount++;
+        console.warn(`SSE: reconnecting in ${delay}ms (attempt ${sseRetryCount}/${SSE_MAX_RETRIES})`);
+        setTimeout(initRealtime, delay);
     };
 }
 

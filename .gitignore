@@ -33,6 +33,10 @@ go.sum
 # Config
 config.json
 
+# Private keys
+*.pem
+*.key
+
 # IDE
 .vscode/
 .idea/

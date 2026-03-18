@@ -84,7 +84,10 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		// Handle tool_calls
 		for _, tc := range msg.ToolCalls {
 			var args map[string]interface{}
-			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				logger.Warn("Failed to parse tool call arguments for %s: %v", tc.Function.Name, err)
+				args = map[string]interface{}{"raw": tc.Function.Arguments}
+			}
 			parts = append(parts, map[string]interface{}{
 				"functionCall": map[string]interface{}{"name": tc.Function.Name, "args": args},
 			})
@@ -130,12 +133,7 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
+			geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 		}
 	}
 
@@ -155,6 +153,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
+		finishReason = mapGeminiFinishToOpenAI(candidate.FinishReason, false)
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
 				textContent += part.Text
@@ -203,7 +202,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 
 // GeminiStreamToOpenAI converts Gemini stream chunk to OpenAI Chat stream chunk
 func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil
@@ -217,6 +216,9 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		return nil, nil
 	}
 
+	// Sync Gemini usage metadata to context
+	syncGeminiUsageMetadata(&resp, ctx)
+
 	if len(resp.Candidates) == 0 {
 		return nil, nil
 	}
@@ -226,6 +228,12 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	hasToolCall := false
 
 	for _, part := range candidate.Content.Parts {
+		if part.Thought && part.Text != "" {
+			// T2: Gemini thought part → OpenAI reasoning_content
+			chunk, _ := buildOpenAIChunkWithReasoning("gemini-chunk", model, part.Text)
+			result.Write(chunk)
+			continue
+		}
 		if part.Text != "" {
 			chunk, _ := buildOpenAIChunk("gemini-chunk", model, part.Text, nil, "")
 			result.Write(chunk)
@@ -252,11 +260,9 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	// Check for finish
 	if candidate.FinishReason != "" {
-		finishReason := "stop"
-		if hasToolCall || candidate.FinishReason == "TOOL_CODE" {
-			finishReason = "tool_calls"
-		}
-		chunk, _ := buildOpenAIChunk("gemini-chunk", model, "", nil, finishReason)
+		finishReason := mapGeminiFinishToOpenAI(candidate.FinishReason, hasToolCall)
+		usage := currentOpenAIUsage(ctx)
+		chunk, _ := buildOpenAIChunkWithUsage("gemini-chunk", model, "", nil, finishReason, usage)
 		result.Write(chunk)
 		result.WriteString("data: [DONE]\n\n")
 	}
@@ -266,7 +272,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 // OpenAIStreamToGemini converts OpenAI Chat stream chunk to Gemini stream format
 func OpenAIStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil
@@ -285,10 +291,57 @@ func OpenAIStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 	}
 
 	delta := chunk.Choices[0].Delta
+	var parts []map[string]interface{}
+
 	if delta.Content != "" {
+		parts = append(parts, map[string]interface{}{"text": delta.Content})
+	}
+
+	// H2: Track ALL tool calls by index (not just the last one)
+	for _, tc := range delta.ToolCalls {
+		idx := 0
+		if tc.Index != nil {
+			idx = *tc.Index
+		}
+		if ctx.OpenAIToolCalls == nil {
+			ctx.OpenAIToolCalls = make(map[int]*transformer.OpenAIToolCall)
+		}
+		state := ctx.OpenAIToolCalls[idx]
+		if state == nil {
+			state = &transformer.OpenAIToolCall{}
+			ctx.OpenAIToolCalls[idx] = state
+		}
+		if tc.ID != "" {
+			state.ID = tc.ID
+		}
+		if tc.Function.Name != "" {
+			state.Function.Name = tc.Function.Name
+		}
+		if tc.Function.Arguments != "" {
+			state.Function.Arguments += tc.Function.Arguments
+		}
+	}
+
+	finishReason := chunk.Choices[0].FinishReason
+	if finishReason != nil && *finishReason == "tool_calls" && len(ctx.OpenAIToolCalls) > 0 {
+		for _, tc := range ctx.OpenAIToolCalls {
+			if tc.Function.Name == "" {
+				continue
+			}
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				args = map[string]interface{}{}
+			}
+			parts = append(parts, map[string]interface{}{
+				"functionCall": map[string]interface{}{"name": tc.Function.Name, "args": args},
+			})
+		}
+	}
+
+	if len(parts) > 0 {
 		geminiChunk := map[string]interface{}{
 			"candidates": []map[string]interface{}{
-				{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{{"text": delta.Content}}}},
+				{"content": map[string]interface{}{"role": "model", "parts": parts}},
 			},
 		}
 		d, _ := json.Marshal(geminiChunk)
@@ -311,17 +364,97 @@ func convertOpenAIContentToGeminiParts(content []interface{}) []map[string]inter
 			parts = append(parts, map[string]interface{}{"text": m["text"]})
 		case "image_url":
 			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := urlObj["url"].(string); ok && strings.HasPrefix(url, "data:") {
-					urlParts := strings.SplitN(url, ",", 2)
-					if len(urlParts) == 2 {
-						mimeType := strings.TrimPrefix(strings.Split(urlParts[0], ";")[0], "data:")
-						parts = append(parts, map[string]interface{}{
-							"inlineData": map[string]interface{}{"mimeType": mimeType, "data": urlParts[1]},
-						})
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						urlParts := strings.SplitN(url, ",", 2)
+						if len(urlParts) == 2 {
+							mimeType := strings.TrimPrefix(strings.Split(urlParts[0], ";")[0], "data:")
+							parts = append(parts, map[string]interface{}{
+								"inlineData": map[string]interface{}{"mimeType": mimeType, "data": urlParts[1]},
+							})
+						}
+					} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+						logger.Warn("URL image source not supported for Gemini conversion, image dropped (url=%s)", url)
 					}
 				}
 			}
 		}
 	}
 	return parts
+}
+
+// mapToolChoiceToGeminiConfig converts OpenAI/Claude tool_choice to Gemini toolConfig.
+func mapToolChoiceToGeminiConfig(toolChoice interface{}) map[string]interface{} {
+	config := map[string]interface{}{"mode": "AUTO"}
+	if toolChoice == nil {
+		return map[string]interface{}{"functionCallingConfig": config}
+	}
+	switch v := toolChoice.(type) {
+	case string:
+		switch v {
+		case "required", "any":
+			config["mode"] = "ANY"
+		case "none":
+			config["mode"] = "NONE"
+		case "auto":
+			config["mode"] = "AUTO"
+		}
+	case map[string]interface{}:
+		// OpenAI: {type:"function", function:{name:"X"}} or Claude: {type:"tool", name:"X"}
+		if name, _ := v["name"].(string); name != "" {
+			config["mode"] = "ANY"
+			config["allowedFunctionNames"] = []string{name}
+		} else if fn, ok := v["function"].(map[string]interface{}); ok {
+			if name, ok := fn["name"].(string); ok && name != "" {
+				config["mode"] = "ANY"
+				config["allowedFunctionNames"] = []string{name}
+			}
+		}
+		if t, _ := v["type"].(string); t == "any" {
+			config["mode"] = "ANY"
+		}
+	}
+	return map[string]interface{}{"functionCallingConfig": config}
+}
+
+// mapGeminiFinishToOpenAI maps Gemini finishReason to OpenAI finish_reason.
+func mapGeminiFinishToOpenAI(geminiReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "tool_calls"
+	}
+	switch geminiReason {
+	case "STOP":
+		return "stop"
+	case "MAX_TOKENS":
+		return "length"
+	case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+		return "content_filter"
+	case "RECITATION":
+		return "stop"
+	case "MALFORMED_FUNCTION_CALL":
+		return "stop"
+	default:
+		return "stop"
+	}
+}
+
+// mapGeminiFinishToClaude maps Gemini finishReason to Claude stop_reason.
+func mapGeminiFinishToClaude(geminiReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "tool_use"
+	}
+	switch geminiReason {
+	case "STOP":
+		return "end_turn"
+	case "MAX_TOKENS":
+		return "max_tokens"
+	case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+		return "end_turn"
+	case "RECITATION":
+		return "end_turn"
+	case "MALFORMED_FUNCTION_CALL":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
 }

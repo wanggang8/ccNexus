@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
@@ -341,6 +342,26 @@ func (h *Handler) testMinimalRequest(client *http.Client, apiUrl, apiKey, transf
 		return resp.StatusCode, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return resp.StatusCode, nil
+}
+
+func (h *Handler) resolveEndpointAPIKey(endpoint *storage.Endpoint) (string, error) {
+	authMode := config.NormalizeAuthMode(endpoint.AuthMode)
+	if config.IsTokenPoolAuthMode(authMode) {
+		cred, err := h.storage.GetUsableEndpointCredential(endpoint.Name, time.Now().UTC())
+		if err != nil {
+			return "", fmt.Errorf("failed to get token from pool: %w", err)
+		}
+		if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+			return "", fmt.Errorf("no usable token in token pool")
+		}
+		return strings.TrimSpace(cred.AccessToken), nil
+	}
+
+	apiKey := strings.TrimSpace(endpoint.APIKey)
+	if apiKey == "" {
+		return "", fmt.Errorf("apiKey is empty")
+	}
+	return apiKey, nil
 }
 
 // handleFetchModels fetches available models from a provider

@@ -17,6 +17,11 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		return nil, err
 	}
 
+	// Parse raw map to detect explicit temperature (including 0)
+	var rawReq map[string]interface{}
+	json.Unmarshal(claudeReq, &rawReq)
+	_, hasTemperature := rawReq["temperature"]
+
 	var messages []transformer.OpenAIMessage
 
 	// Convert system prompt
@@ -151,7 +156,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxTokens
 	}
-	if req.Temperature > 0 {
+	if hasTemperature {
 		openaiReq.Temperature = &req.Temperature
 	}
 
@@ -367,6 +372,29 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 
 		if len(tools) > 0 {
 			claudeReq["tools"] = tools
+
+			// D5: Convert OpenAI tool_choice to Claude format
+			if tc, ok := reqMap["tool_choice"]; ok && tc != nil {
+				switch v := tc.(type) {
+				case string:
+					switch v {
+					case "required":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "any"}
+					case "auto":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "auto"}
+					case "none":
+						delete(claudeReq, "tools")
+					}
+				case map[string]interface{}:
+					if v["type"] == "function" {
+						if fn, ok := v["function"].(map[string]interface{}); ok {
+							if name, ok := fn["name"].(string); ok && name != "" {
+								claudeReq["tool_choice"] = map[string]interface{}{"type": "tool", "name": name}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -416,10 +444,7 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		message["tool_calls"] = toolCalls
 	}
 
-	finishReason := "stop"
-	if resp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
-	}
+	finishReason := mapClaudeStopToOpenAIFinish(resp.StopReason)
 
 	openaiResp := map[string]interface{}{
 		"id":      resp.ID,
@@ -443,11 +468,33 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// T3: Parse raw JSON to extract reasoning_content (not in typed struct)
+	var rawResp map[string]interface{}
+	json.Unmarshal(openaiResp, &rawResp)
+
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		if choice.FinishReason != "" {
+			stopReason = mapOpenAIFinishToClaudeStop(choice.FinishReason)
+		}
+
+		// T3: Extract reasoning_content as thinking block
+		if rawChoices, ok := rawResp["choices"].([]interface{}); ok && len(rawChoices) > 0 {
+			if rawChoice, ok := rawChoices[0].(map[string]interface{}); ok {
+				if rawMsg, ok := rawChoice["message"].(map[string]interface{}); ok {
+					if reasoning, ok := rawMsg["reasoning_content"].(string); ok && reasoning != "" {
+						content = append(content, map[string]interface{}{
+							"type":     "thinking",
+							"thinking": reasoning,
+						})
+					}
+				}
+			}
+		}
+
 		if choice.Message.Content != "" {
 			content = append(content, splitThinkTaggedText(choice.Message.Content)...)
 		}
@@ -485,7 +532,7 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 
 // ClaudeStreamToOpenAI converts Claude SSE event to OpenAI Chat stream chunk
 func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -579,10 +626,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 		if delta, ok := data["delta"].(map[string]interface{}); ok {
 			if stopReason, ok := delta["stop_reason"].(string); ok && stopReason != "" {
-				finish := "stop"
-				if stopReason == "tool_use" {
-					finish = "tool_calls"
-				}
+				finish := mapClaudeStopToOpenAIFinish(stopReason)
 				finishChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
 				if err != nil {
 					return nil, err
@@ -625,7 +669,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 // OpenAIStreamToClaude converts OpenAI Chat stream chunk to Claude SSE event
 func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte
@@ -809,10 +853,7 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
 			ctx.ToolBlockStarted = false
 		}
-		stopReason := "end_turn"
-		if *choice.FinishReason == "tool_calls" {
-			stopReason = "tool_use"
-		}
+		stopReason := mapOpenAIFinishToClaudeStop(*choice.FinishReason)
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
 			"usage": map[string]interface{}{"output_tokens": 0},
@@ -943,4 +984,34 @@ func normalizeToolResultContent(content interface{}) interface{} {
 		return convertOpenAIContentToClaude(arr)
 	}
 	return extractToolResultContent(content)
+}
+
+// mapClaudeStopToOpenAIFinish maps Claude stop_reason to OpenAI finish_reason.
+func mapClaudeStopToOpenAIFinish(stopReason string) string {
+	switch stopReason {
+	case "tool_use":
+		return "tool_calls"
+	case "max_tokens":
+		return "length"
+	case "end_turn", "stop_sequence":
+		return "stop"
+	default:
+		return "stop"
+	}
+}
+
+// mapOpenAIFinishToClaudeStop maps OpenAI finish_reason to Claude stop_reason.
+func mapOpenAIFinishToClaudeStop(finishReason string) string {
+	switch finishReason {
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	case "content_filter":
+		return "end_turn"
+	case "stop":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
 }

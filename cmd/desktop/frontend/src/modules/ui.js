@@ -407,15 +407,30 @@ export function initUI() {
                     <button class="modal-close" onclick="window.closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <input type="hidden" id="requestOverrides" value="">
                     <div class="form-group">
                         <label><span class="required">*</span>${t('modal.name')}</label>
                         <input type="text" id="endpointName" placeholder="${t('modal.namePlaceholder')}">
                     </div>
                     <div class="form-group">
-                        <label><span class="required">*</span>${t('modal.apiUrl')}</label>
-                        <input type="text" id="endpointUrl" placeholder="${t('modal.apiUrlPlaceholder')}">
+                        <label><span class="required">*</span>${t('modal.authMode')}</label>
+                        <select id="endpointAuthMode" onchange="window.handleAuthModeChange()">
+                            <option value="api_key">${t('modal.authModeApiKey')}</option>
+                            <option value="token_pool">${t('modal.authModeTokenPool')}</option>
+                            <option value="codex_token_pool">${t('modal.authModeCodexTokenPool')}</option>
+                        </select>
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('modal.authModeHelp')}
+                        </p>
                     </div>
                     <div class="form-group">
+                        <label><span class="required">*</span>${t('modal.apiUrl')}</label>
+                        <input type="text" id="endpointUrl" placeholder="${t('modal.apiUrlPlaceholder')}">
+                        <p id="endpointUrlHelp" style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('modal.apiUrlHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group" id="endpointKeyGroup">
                         <label><span class="required">*</span>${t('modal.apiKey')}</label>
                         <div class="password-input-wrapper">
                             <input type="password" id="endpointKey" placeholder="${t('modal.apiKeyPlaceholder')}">
@@ -464,8 +479,25 @@ export function initUI() {
                         <label>${t('modal.remark')}</label>
                         <input type="text" id="endpointRemark" placeholder="${t('modal.remarkHelp')}">
                     </div>
+                    
+                    <!-- JSON Merge Section -->
+                    <div class="form-group json-merge-section">
+                        <div class="json-merge-header" onclick="window.toggleJsonMergeSection()">
+                            <span class="json-merge-toggle-icon" id="jsonMergeToggleIcon">▶</span>
+                            <label style="cursor: pointer; margin: 0;">${t('modal.jsonMerge')}</label>
+                        </div>
+                        <div class="json-merge-body" id="jsonMergeBody" style="display: none;">
+                            <textarea id="jsonMergeInput" class="json-merge-textarea" placeholder="${t('modal.jsonMergePlaceholder')}"></textarea>
+                            <div class="json-merge-actions">
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="window.applyJsonMerge()">${t('modal.jsonMergeApply')}</button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="window.clearJsonMerge()">${t('modal.jsonMergeClear')}</button>
+                            </div>
+                            <p class="json-merge-help">${t('modal.jsonMergeHelp')}</p>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
+                    <button class="btn btn-secondary" id="manageTokenPoolBtn" style="display: none;" onclick="window.openEndpointTokenPoolFromModal()">🪪 ${t('modal.manageTokenPool')}</button>
                     <button class="btn btn-secondary" onclick="window.closeModal()">${t('modal.cancel')}</button>
                     <button class="btn btn-primary" onclick="window.saveEndpoint()">${t('modal.save')}</button>
                 </div>
@@ -679,14 +711,14 @@ export function initUI() {
                         </svg>
                     </div>
                     <div class="confirm-content">
-                        <h4 class="confirm-title">关闭窗口</h4>
-                        <p class="confirm-message">您希望如何处理？</p>
+                        <h4 class="confirm-title">${t('settings.closeDialogTitle')}</h4>
+                        <p class="confirm-message">${t('settings.closeDialogMessage')}</p>
                     </div>
                 </div>
                 <div class="confirm-divider"></div>
                 <div class="confirm-footer">
-                    <button class="btn-confirm-delete" onclick="window.quitApplication()">退出程序</button>
-                    <button class="btn-confirm-cancel" onclick="window.minimizeToTray()">最小化到托盘</button>
+                    <button class="btn-confirm-delete" onclick="window.quitApplication()">${t('settings.closeDialogQuit')}</button>
+                    <button class="btn-confirm-cancel" onclick="window.minimizeToTray()">${t('settings.closeDialogMinimize')}</button>
                 </div>
             </div>
         </div>
@@ -765,6 +797,29 @@ export function initUI() {
                         <input type="text" id="settingsProxyUrl" placeholder="${t('settings.proxyUrlPlaceholder')}">
                         <p style="color: #666; font-size: 12px; margin-top: 5px;">
                             ${t('settings.proxyHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 14px; margin-top: 8px;">
+                        <label style="font-weight: 600; font-size: 13px; color: var(--text-secondary);">${t('settings.augmentSection')}</label>
+                    </div>
+                    <div class="form-group">
+                        <label>${t('settings.augmentEnabled')}</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label class="toggle-switch" style="width: 40px; height: 20px;">
+                                <input type="checkbox" id="settingsAugmentEnabled">
+                                <span class="toggle-slider" style="border-radius: 20px;"></span>
+                            </label>
+                            <span style="font-size: 13px; color: var(--text-secondary);" id="settingsAugmentEnabledLabel"></span>
+                        </div>
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('settings.augmentEnabledHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group">
+                        <label>${t('settings.augmentPort')}</label>
+                        <input type="number" id="settingsAugmentPort" min="1" max="65535" placeholder="8888">
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('settings.augmentPortHelp')}
                         </p>
                     </div>
                     <div class="form-group">

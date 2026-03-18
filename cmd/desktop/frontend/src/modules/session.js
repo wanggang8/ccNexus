@@ -3,6 +3,7 @@ import { t } from '../i18n/index.js';
 import { showNotification } from './modal.js';
 import { parseMarkdown } from '../utils/markdown.js';
 import { getCurrentCliType } from './terminal.js';
+import { escapeHtml } from '../utils/format.js';
 import { getIcon } from '../icons.js';
 
 let currentProjectDir = '';
@@ -83,12 +84,6 @@ async function loadSessions() {
         console.error('Failed to load sessions:', err);
         listContainer.innerHTML = `<div class="session-empty">${t('session.loadError')}</div>`;
     }
-}
-
-// HTML 转义函数
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function renderSessionList() {

@@ -29,9 +29,9 @@ type EndpointStats struct {
 
 // StatsStorage defines the interface for stats persistence
 type StatsStorage interface {
-	RecordDailyStat(stat *StatRecord) error
-	GetTotalStats() (int, map[string]*StatsData, error)
-	GetDailyStats(endpointName, startDate, endDate string) ([]*DailyRecord, error)
+	RecordDailyStat(stat interface{}) error
+	GetTotalStats() (int, map[string]interface{}, error)
+	GetDailyStats(endpointName, startDate, endDate string) ([]interface{}, error)
 	GetPeriodStatsAggregated(startDate, endDate string) (map[string]interface{}, error)
 }
 
@@ -236,13 +236,17 @@ func (s *Stats) GetStats() (int, map[string]*EndpointStats) {
 	// Convert to EndpointStats format
 	result := make(map[string]*EndpointStats)
 	for name, data := range statsData {
-		result[name] = &EndpointStats{
-			Requests:     data.Requests,
-			Errors:       data.Errors,
-			InputTokens:  int(data.InputTokens),
-			OutputTokens: int(data.OutputTokens),
-			LastUsed:     time.Now(),
-			DailyHistory: make(map[string]*DailyStats),
+		// Use type assertion instead of reflection for better performance and type safety
+		stats := extractStatsData(data)
+		if stats != nil {
+			result[name] = &EndpointStats{
+				Requests:     stats.Requests,
+				Errors:       stats.Errors,
+				InputTokens:  int(stats.InputTokens),
+				OutputTokens: int(stats.OutputTokens),
+				LastUsed:     time.Now(),
+				DailyHistory: make(map[string]*DailyStats),
+			}
 		}
 	}
 
@@ -381,6 +385,7 @@ func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats
 
 	result := make(map[string]*DailyStats)
 	for endpointName, statsInterface := range endpointStats {
+		// Use type assertion instead of reflection
 		stats := extractStatsData(statsInterface)
 		if stats != nil {
 			result[endpointName] = &DailyStats{
@@ -396,27 +401,35 @@ func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats
 	return result
 }
 
-// GetDailyStats returns statistics for a specific date (single aggregated query, no N+1)
+// GetDailyStats returns statistics for a specific date
 func (s *Stats) GetDailyStats(date string) map[string]*DailyStats {
-	aggregated, err := s.storage.GetPeriodStatsAggregated(date, date)
+	// Get all endpoints from storage
+	totalRequests, statsData, err := s.storage.GetTotalStats()
 	if err != nil {
-		logger.Error("Failed to get daily stats: %v", err)
+		logger.Error("Failed to get stats: %v", err)
 		return make(map[string]*DailyStats)
 	}
 
+	_ = totalRequests // unused
 	result := make(map[string]*DailyStats)
-	for endpointName, statsInterface := range aggregated {
-		stats := extractStatsData(statsInterface)
-		if stats != nil && (stats.Requests > 0 || stats.Errors > 0) {
-			result[endpointName] = &DailyStats{
-				Date:         date,
-				Requests:     stats.Requests,
-				Errors:       stats.Errors,
-				InputTokens:  int(stats.InputTokens),
-				OutputTokens: int(stats.OutputTokens),
+
+	// For each endpoint, get stats for the specific date
+	for endpointName := range statsData {
+		dailyRecords, err := s.storage.GetDailyStats(endpointName, date, date)
+		if err != nil {
+			logger.Error("Failed to get daily stats for %s: %v", endpointName, err)
+			continue
+		}
+
+		if len(dailyRecords) > 0 {
+			// Use type assertion for the first daily record
+			record := extractDailyRecord(dailyRecords[0])
+			if record != nil {
+				result[endpointName] = record
 			}
 		}
 	}
+
 	return result
 }
 
@@ -437,16 +450,6 @@ func extractDailyRecord(record interface{}) *DailyStats {
 	}
 
 	switch v := record.(type) {
-	case *DailyRecord:
-		if v != nil {
-			return &DailyStats{
-				Date:         v.Date,
-				Requests:     v.Requests,
-				Errors:       v.Errors,
-				InputTokens:  v.InputTokens,
-				OutputTokens: v.OutputTokens,
-			}
-		}
 	case DailyRecordLike:
 		return &DailyStats{
 			Date:         v.Date,
@@ -553,16 +556,16 @@ func getPeriodDates() (today, yesterday, weekStart, monthStart string) {
 }
 
 // aggregateDailyStats aggregates daily statistics for a single endpoint across multiple days
-func aggregateDailyStats(stats []*DailyRecord) map[string]interface{} {
+func aggregateDailyStats(stats []interface{}) map[string]interface{} {
 	var totalRequests, totalErrors int
 	var totalInputTokens, totalOutputTokens int64
 
 	for _, stat := range stats {
-		if stat != nil {
-			totalRequests += stat.Requests
-			totalErrors += stat.Errors
-			totalInputTokens += int64(stat.InputTokens)
-			totalOutputTokens += int64(stat.OutputTokens)
+		if dailyStat := extractDailyRecord(stat); dailyStat != nil {
+			totalRequests += dailyStat.Requests
+			totalErrors += dailyStat.Errors
+			totalInputTokens += int64(dailyStat.InputTokens)
+			totalOutputTokens += int64(dailyStat.OutputTokens)
 		}
 	}
 

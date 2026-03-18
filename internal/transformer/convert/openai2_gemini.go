@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -67,12 +68,7 @@ func OpenAI2ReqToGemini(openai2Req []byte, model string) ([]byte, error) {
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
+			geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 		}
 	}
 
@@ -100,10 +96,11 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 			}
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
+				callID := GenerateToolCallID(part.FunctionCall.Name)
 				functionCalls = append(functionCalls, map[string]interface{}{
 					"type":      "function_call",
-					"id":        fmt.Sprintf("call_%d", len(functionCalls)),
-					"call_id":   fmt.Sprintf("call_%d", len(functionCalls)),
+					"id":        callID,
+					"call_id":   callID,
 					"name":      part.FunctionCall.Name,
 					"arguments": string(args),
 				})
@@ -145,7 +142,7 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 
 // GeminiStreamToOpenAI2 converts Gemini stream chunk to OpenAI Responses stream event
 func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result strings.Builder
@@ -160,11 +157,12 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
+			totalTokens := ctx.InputTokens + ctx.OutputTokens
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
+					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -188,6 +186,9 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
 		return nil, nil
 	}
+
+	// Sync Gemini usage metadata to context
+	syncGeminiUsageMetadata(&resp, ctx)
 
 	if len(resp.Candidates) == 0 {
 		return nil, nil
@@ -254,11 +255,15 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			ctx.ContentBlockStarted = false
 		}
+		totalTokens := ctx.InputTokens + ctx.OutputTokens
+		if resp.UsageMetadata != nil && resp.UsageMetadata.TotalTokenCount > 0 {
+			totalTokens = resp.UsageMetadata.TotalTokenCount
+		}
 		writeEvent(map[string]interface{}{
 			"type": "response.completed",
 			"response": map[string]interface{}{
 				"id": ctx.MessageID, "object": "response", "status": "completed",
-				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
+				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
 			},
 		})
 		result.WriteString("data: [DONE]\n\n")
@@ -269,7 +274,7 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 // OpenAI2StreamToGemini converts OpenAI Responses stream event to Gemini stream format
 func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			return []byte("data: [DONE]\n\n"), nil
@@ -311,7 +316,10 @@ func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte
 		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
 			var args map[string]interface{}
-			json.Unmarshal([]byte(ctx.ToolArguments), &args)
+			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
+				logger.Warn("Failed to parse tool arguments: %v", err)
+				args = map[string]interface{}{"raw": ctx.ToolArguments}
+			}
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{

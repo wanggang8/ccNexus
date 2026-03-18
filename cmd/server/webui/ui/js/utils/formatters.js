@@ -59,3 +59,41 @@ export function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+export function formatJSON(str) {
+    if (!str) return escapeHtml('(empty)');
+    try {
+        const obj = JSON.parse(str);
+        return escapeHtml(JSON.stringify(obj, null, 2));
+    } catch {
+        return escapeHtml(str);
+    }
+}
+
+export function copyText(text) {
+    if (!text) return Promise.reject(new Error('Nothing to copy'));
+
+    if (typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function') {
+        return navigator.clipboard.writeText(text);
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.left = '-1000px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const ok = document.execCommand && document.execCommand('copy');
+            document.body.removeChild(textarea);
+            ok ? resolve() : reject(new Error('execCommand failed'));
+        } catch (e) {
+            reject(e);
+        }
+    });
+}

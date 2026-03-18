@@ -15,7 +15,7 @@ import (
 func TestTrafficAPIs(t *testing.T) {
 	// Create test proxy with traffic recorder
 	cfg := &config.Config{}
-	p := proxy.New(cfg, nil, "test-device")
+	p := proxy.New(cfg, nil, nil, "test-device")
 	recorder := p.GetTrafficRecorder()
 
 	// Create handler
