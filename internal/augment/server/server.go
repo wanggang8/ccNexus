@@ -20,6 +20,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer/augment"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // Server is the standalone Augment HTTP server.
@@ -301,13 +302,27 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, body []
 	}
 
 	// Set headers.
-	req.Header.Set("Content-Type", "application/json")
-	authHeaders := augment.BuildAuthHeaders(targetType, endpoint.APIKey)
-	for k, v := range authHeaders {
-		req.Header.Set(k, v)
-	}
 	if targetType == "cli" {
-		req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+		// CLI mode: use full CLI headers (includes auth, beta, user-agent, stainless-*)
+		var tools []map[string]interface{}
+		var reqBody struct {
+			Stream bool                     `json:"stream"`
+			Tools  []map[string]interface{} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &reqBody); err == nil {
+			tools = reqBody.Tools
+		}
+		betas := convert.BuildClaudeCliBetas(tools)
+		cliHeaders := convert.BuildClaudeCliHeaders(endpoint.APIKey, betas, reqBody.Stream)
+		for k, v := range cliHeaders {
+			req.Header.Set(k, v)
+		}
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		authHeaders := augment.BuildAuthHeaders(targetType, endpoint.APIKey)
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	// Execute request.
