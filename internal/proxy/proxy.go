@@ -1066,42 +1066,53 @@ func isTransientNetworkError(err error) bool {
 	return false
 }
 
-// applyRequestOverrides applies JSON overrides to the request body
-// Supports adding, replacing, and deleting fields (null values delete fields)
+// applyRequestOverrides applies JSON overrides to the request body.
+// Supports adding, replacing, and deleting fields (null values delete fields).
+// Nested objects are deep-merged recursively.
 func applyRequestOverrides(requestBody []byte, overridesJSON string) ([]byte, error) {
 	overridesJSON = strings.TrimSpace(overridesJSON)
 	if overridesJSON == "" {
 		return requestBody, nil
 	}
 
-	// Parse the request body
 	var requestMap map[string]interface{}
 	if err := json.Unmarshal(requestBody, &requestMap); err != nil {
 		return nil, fmt.Errorf("failed to parse request body: %w", err)
 	}
 
-	// Parse the overrides
 	var overrides map[string]interface{}
 	if err := json.Unmarshal([]byte(overridesJSON), &overrides); err != nil {
 		return nil, fmt.Errorf("failed to parse overrides JSON: %w", err)
 	}
 
-	// Apply overrides
-	for key, value := range overrides {
-		if value == nil {
-			// Delete field if value is null
-			delete(requestMap, key)
-		} else {
-			// Add or replace field
-			requestMap[key] = value
-		}
-	}
+	deepMerge(requestMap, overrides)
 
-	// Marshal back to JSON
 	modifiedBody, err := json.Marshal(requestMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal modified request: %w", err)
 	}
 
 	return modifiedBody, nil
+}
+
+// deepMerge recursively merges src into dst.
+// - null values in src delete the corresponding key in dst
+// - nested objects are merged recursively
+// - all other values in src overwrite dst
+func deepMerge(dst, src map[string]interface{}) {
+	for key, srcVal := range src {
+		if srcVal == nil {
+			delete(dst, key)
+			continue
+		}
+		srcMap, srcIsMap := srcVal.(map[string]interface{})
+		dstVal, dstExists := dst[key]
+		if srcIsMap && dstExists {
+			if dstMap, dstIsMap := dstVal.(map[string]interface{}); dstIsMap {
+				deepMerge(dstMap, srcMap)
+				continue
+			}
+		}
+		dst[key] = srcVal
+	}
 }

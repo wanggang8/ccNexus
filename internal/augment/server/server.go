@@ -276,6 +276,11 @@ func mapEndpointTransformerToTargetType(transformerName string) (string, bool) {
 		return "openai", true
 	case "openai2":
 		return "openai2", true
+	case "gemini":
+		// Gemini endpoints use OpenAI-compatible format for Augment integration.
+		// The Augment request is converted to OpenAI Chat format, which most
+		// Gemini-compatible providers accept at /v1/chat/completions.
+		return "openai", true
 	default:
 		return "", false
 	}

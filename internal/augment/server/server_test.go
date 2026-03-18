@@ -94,7 +94,7 @@ func TestMapEndpointTransformerToTargetType(t *testing.T) {
 		{"cc_cli", "cli", true},
 		{"openai", "openai", true},
 		{"openai2", "openai2", true},
-		{"gemini", "", false},
+		{"gemini", "openai", true},
 	}
 	for _, tc := range cases {
 		got, ok := mapEndpointTransformerToTargetType(tc.in)

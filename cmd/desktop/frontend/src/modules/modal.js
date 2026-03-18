@@ -768,21 +768,23 @@ export function applyJsonMerge() {
         return;
     }
     
-    // Validate JSON
+    // Validate JSON and count fields
+    let parsed;
     try {
-        JSON.parse(jsonText);
+        parsed = JSON.parse(jsonText);
     } catch (error) {
         showError(t('modal.jsonMergeInvalid') + ': ' + error.message);
         return;
     }
-    
+    const fieldCount = Object.keys(parsed).length;
+
     // Store in hidden field (will be saved to requestOverrides)
     const hiddenField = document.getElementById('requestOverrides');
     if (hiddenField) {
         hiddenField.value = jsonText;
     }
     
-    showNotification(t('modal.jsonMergeSuccess'), 'success');
+    showNotification(t('modal.jsonMergeSuccess').replace('{count}', fieldCount), 'success');
 }
 
 // Clear JSON merge input

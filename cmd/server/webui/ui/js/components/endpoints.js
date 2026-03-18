@@ -432,7 +432,6 @@ class Endpoints {
                                     Enabled
                                 </label>
                             </div>
-                            ${isEdit ? `
                             <div class="json-merge-section">
                                 <div class="json-merge-header" id="json-merge-toggle">
                                     <span class="json-merge-toggle-icon">▶</span>
@@ -443,10 +442,9 @@ class Endpoints {
                                     <div class="json-merge-actions">
                                         <button type="button" class="btn btn-secondary btn-sm" id="json-merge-clear">Clear</button>
                                     </div>
-                                    <p class="json-merge-help">Enter JSON to override request parameters when proxying. These values will be merged into the outgoing request.</p>
+                                    <p class="json-merge-help">Enter JSON to override request parameters when proxying. Nested objects are deep-merged; null values delete fields.</p>
                                 </div>
                             </div>
-                            ` : ''}
                         </form>
                     </div>
                     <div class="modal-footer">
@@ -462,16 +460,18 @@ class Endpoints {
         document.getElementById('save-btn').addEventListener('click', () => this.saveEndpoint(isEdit, endpoint?.name));
         document.getElementById('fetch-models-btn').addEventListener('click', () => this.fetchModels());
         
-        // JSON merge toggle
-        if (isEdit) {
-            const toggleBtn = document.getElementById('json-merge-toggle');
+        // JSON merge toggle (available in both create and edit modes)
+        const toggleBtn = document.getElementById('json-merge-toggle');
+        if (toggleBtn) {
             const mergeBody = toggleBtn.nextElementSibling;
             const toggleIcon = toggleBtn.querySelector('.json-merge-toggle-icon');
             
-            // Load requestOverrides
-            const jsonInput = document.getElementById('json-merge-input');
-            if (jsonInput && endpoint.requestOverrides) {
-                jsonInput.value = endpoint.requestOverrides;
+            // Load requestOverrides when editing
+            if (isEdit) {
+                const jsonInput = document.getElementById('json-merge-input');
+                if (jsonInput && endpoint.requestOverrides) {
+                    jsonInput.value = endpoint.requestOverrides;
+                }
             }
             
             toggleBtn.addEventListener('click', () => {
@@ -599,23 +599,20 @@ class Endpoints {
             enabled: formData.get('enabled') === 'on'
         };
 
-        // Get requestOverrides from JSON input (only in edit mode)
-        if (isEdit) {
-            const jsonInput = document.getElementById('json-merge-input');
-            if (jsonInput) {
-                const jsonText = jsonInput.value.trim();
-                if (jsonText) {
-                    try {
-                        // Validate JSON
-                        JSON.parse(jsonText);
-                        data.requestOverrides = jsonText;
-                    } catch (error) {
-                        notifications.error('Invalid JSON format: ' + error.message);
-                        return;
-                    }
-                } else {
-                    data.requestOverrides = '';
+        // Get requestOverrides from JSON input
+        const jsonInput = document.getElementById('json-merge-input');
+        if (jsonInput) {
+            const jsonText = jsonInput.value.trim();
+            if (jsonText) {
+                try {
+                    JSON.parse(jsonText);
+                    data.requestOverrides = jsonText;
+                } catch (error) {
+                    notifications.error('Invalid JSON format: ' + error.message);
+                    return;
                 }
+            } else {
+                data.requestOverrides = '';
             }
         }
 
