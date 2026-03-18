@@ -431,12 +431,19 @@ func TestStreamConvertClaude_ThinkingDelta(t *testing.T) {
 	}
 	lines := readNDJSONLines(t, b.String())
 
-	// Should have thinking text chunks
+	// Should have THINKING node(s) with thinking summary
 	foundThinking := false
 	for _, obj := range lines {
-		if text, ok := obj["text"].(string); ok && strings.Contains(text, "Let me think") {
-			foundThinking = true
-			break
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, n := range nodes {
+			node, _ := n.(map[string]interface{})
+			if node["type"] == float64(augmentNodeTypeThinking) {
+				if thinking, ok := node["thinking"].(map[string]interface{}); ok {
+					if summary, ok := thinking["summary"].(string); ok && strings.Contains(summary, "Let me think") {
+						foundThinking = true
+					}
+				}
+			}
 		}
 	}
 
