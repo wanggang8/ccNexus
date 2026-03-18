@@ -369,6 +369,22 @@ func emitTokenUsageNode(w io.Writer, usage map[string]interface{}, nextNodeID *i
 	writeChunkLine(w, chunk)
 }
 
+func emitThinkingChunk(w io.Writer, text string, nextNodeID *int) {
+	if text == "" {
+		return
+	}
+	node := map[string]interface{}{
+		"id":       *nextNodeID,
+		"type":     augmentNodeTypeThinking,
+		"content":  "",
+		"thinking": map[string]interface{}{"summary": text},
+	}
+	*nextNodeID++
+	chunk := newBaseChunk("")
+	chunk["nodes"] = []interface{}{node}
+	writeChunkLine(w, chunk)
+}
+
 type openAIToolCallAccum struct {
 	id      string
 	name    string
@@ -382,6 +398,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 	// index -> accumulated tool call
 	acc := map[int]*openAIToolCallAccum{}
+	inThinkTag := false // T6: track <think> tag state
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -404,8 +421,53 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		choice, _ := choices[0].(map[string]interface{})
 		delta, _ := choice["delta"].(map[string]interface{})
 
+		// T1: Handle reasoning_content (DeepSeek, OpenAI reasoning models)
+		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+			thinkNode := map[string]interface{}{
+				"id":       nextNodeID,
+				"type":     augmentNodeTypeThinking,
+				"content":  "",
+				"thinking": map[string]interface{}{"summary": reasoning},
+			}
+			nextNodeID++
+			chunk := newBaseChunk("")
+			chunk["nodes"] = []interface{}{thinkNode}
+			writeChunkLine(w, chunk)
+			continue
+		}
+
+		// T6: Handle <think> tags in content as THINKING nodes
 		if content, ok := delta["content"].(string); ok && content != "" {
-			writeChunkLine(w, newBaseChunk(content))
+			remaining := content
+			for len(remaining) > 0 {
+				if inThinkTag {
+					closeIdx := strings.Index(remaining, "</think>")
+					if closeIdx == -1 {
+						// All remaining is thinking content
+						emitThinkingChunk(w, remaining, &nextNodeID)
+						remaining = ""
+					} else {
+						if closeIdx > 0 {
+							emitThinkingChunk(w, remaining[:closeIdx], &nextNodeID)
+						}
+						inThinkTag = false
+						remaining = remaining[closeIdx+len("</think>"):]
+					}
+				} else {
+					openIdx := strings.Index(remaining, "<think>")
+					if openIdx == -1 {
+						// All remaining is normal text
+						writeChunkLine(w, newBaseChunk(remaining))
+						remaining = ""
+					} else {
+						if openIdx > 0 {
+							writeChunkLine(w, newBaseChunk(remaining[:openIdx]))
+						}
+						inThinkTag = true
+						remaining = remaining[openIdx+len("<think>"):]
+					}
+				}
+			}
 			continue
 		}
 

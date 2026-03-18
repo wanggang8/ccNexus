@@ -228,6 +228,12 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	hasToolCall := false
 
 	for _, part := range candidate.Content.Parts {
+		if part.Thought && part.Text != "" {
+			// T2: Gemini thought part → OpenAI reasoning_content
+			chunk, _ := buildOpenAIChunkWithReasoning("gemini-chunk", model, part.Text)
+			result.Write(chunk)
+			continue
+		}
 		if part.Text != "" {
 			chunk, _ := buildOpenAIChunk("gemini-chunk", model, part.Text, nil, "")
 			result.Write(chunk)

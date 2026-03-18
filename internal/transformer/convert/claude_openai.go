@@ -468,6 +468,10 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// T3: Parse raw JSON to extract reasoning_content (not in typed struct)
+	var rawResp map[string]interface{}
+	json.Unmarshal(openaiResp, &rawResp)
+
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
 
@@ -476,6 +480,21 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 		if choice.FinishReason != "" {
 			stopReason = mapOpenAIFinishToClaudeStop(choice.FinishReason)
 		}
+
+		// T3: Extract reasoning_content as thinking block
+		if rawChoices, ok := rawResp["choices"].([]interface{}); ok && len(rawChoices) > 0 {
+			if rawChoice, ok := rawChoices[0].(map[string]interface{}); ok {
+				if rawMsg, ok := rawChoice["message"].(map[string]interface{}); ok {
+					if reasoning, ok := rawMsg["reasoning_content"].(string); ok && reasoning != "" {
+						content = append(content, map[string]interface{}{
+							"type":     "thinking",
+							"thinking": reasoning,
+						})
+					}
+				}
+			}
+		}
+
 		if choice.Message.Content != "" {
 			content = append(content, splitThinkTaggedText(choice.Message.Content)...)
 		}

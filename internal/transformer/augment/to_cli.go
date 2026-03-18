@@ -86,6 +86,12 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 		req["system"] = system
 	}
 
+	// T4: Enable interleaved thinking for CLI mode (supported via anthropic-beta header)
+	req["thinking"] = map[string]interface{}{
+		"type":          "enabled",
+		"budget_tokens": 10000,
+	}
+
 	return json.Marshal(req)
 }
 
