@@ -471,3 +471,91 @@ func TestOpenAITransformer_TransformResponseWithContext_PartialClaudeDetection(t
 		ctx = transformer.NewStreamContext()
 	}
 }
+
+func TestOpenAITransformer_TransformResponseWithContext_NormalizeMalformedToolCallChunk(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+	ctx := transformer.NewStreamContext()
+
+	first := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","type":"function","index":0,"function":{"name":"Read","arguments":""}}]},"finish_reason":null}]}`
+	second := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"id":"call_2","type":"function","index":0,"function":{"name":null,"arguments":"{\"path\":\"/tmp/a\"}"}}]},"finish_reason":null}]}`
+
+	firstResult, err := trans.TransformResponseWithContext([]byte(first), true, ctx)
+	if err != nil {
+		t.Fatalf("first TransformResponseWithContext failed: %v", err)
+	}
+	if string(firstResult) != first {
+		t.Fatalf("expected first chunk passthrough, got %s", string(firstResult))
+	}
+
+	secondResult, err := trans.TransformResponseWithContext([]byte(second), true, ctx)
+	if err != nil {
+		t.Fatalf("second TransformResponseWithContext failed: %v", err)
+	}
+
+	var wrapper map[string]interface{}
+	line := strings.TrimPrefix(strings.TrimSpace(string(secondResult)), "data: ")
+	if err := json.Unmarshal([]byte(line), &wrapper); err != nil {
+		t.Fatalf("failed to unmarshal normalized chunk: %v", err)
+	}
+
+	choices := wrapper["choices"].([]interface{})
+	choice := choices[0].(map[string]interface{})
+	delta := choice["delta"].(map[string]interface{})
+
+	if _, exists := delta["role"]; !exists {
+		t.Fatalf("expected non-tool fields to remain untouched")
+	}
+	if _, exists := delta["reasoning_content"]; !exists {
+		t.Fatalf("expected reasoning fields to remain untouched")
+	}
+
+	toolCalls := delta["tool_calls"].([]interface{})
+	tc := toolCalls[0].(map[string]interface{})
+	if tc["id"] != "call_1" {
+		t.Fatalf("expected tool call id to stay call_1, got %v", tc["id"])
+	}
+	function := tc["function"].(map[string]interface{})
+	if function["name"] != "Read" {
+		t.Fatalf("expected repaired function name Read, got %v", function["name"])
+	}
+	if function["arguments"] != "{\"path\":\"/tmp/a\"}" {
+		t.Fatalf("expected argument fragment to be preserved, got %v", function["arguments"])
+	}
+}
+
+func TestOpenAITransformer_TransformResponseWithContext_PreserveReasoningChunks(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+	ctx := transformer.NewStreamContext()
+
+	reasoningChunk := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null},"finish_reason":null}]}`
+
+	result, err := trans.TransformResponseWithContext([]byte(reasoningChunk), true, ctx)
+	if err != nil {
+		t.Fatalf("TransformResponseWithContext failed: %v", err)
+	}
+	if string(result) != reasoningChunk {
+		t.Fatalf("expected reasoning chunk passthrough, got %s", string(result))
+	}
+}
+
+func TestOpenAITransformer_TransformResponseWithContext_DropPostDoneChunks(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+	ctx := transformer.NewStreamContext()
+
+	doneResult, err := trans.TransformResponseWithContext([]byte("data: [DONE]\n\n"), true, ctx)
+	if err != nil {
+		t.Fatalf("done TransformResponseWithContext failed: %v", err)
+	}
+	if string(doneResult) != "data: [DONE]\n\n" {
+		t.Fatalf("expected done passthrough, got %q", string(doneResult))
+	}
+
+	postDone := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"late"},"finish_reason":null}]}`
+	postDoneResult, err := trans.TransformResponseWithContext([]byte(postDone), true, ctx)
+	if err != nil {
+		t.Fatalf("post-done TransformResponseWithContext failed: %v", err)
+	}
+	if postDoneResult != nil {
+		t.Fatalf("expected post-done chunks to be dropped, got %s", string(postDoneResult))
+	}
+}

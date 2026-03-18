@@ -171,6 +171,14 @@ type ClaudeStreamEvent struct {
 	} `json:"usage,omitempty"`
 }
 
+// ActiveToolCall tracks a single tool call being streamed
+type ActiveToolCall struct {
+	ID          string
+	Name        string
+	Arguments   string
+	OutputIndex int
+}
+
 // StreamContext holds the state for a single streaming response
 // This allows multiple concurrent streams to be processed independently
 type StreamContext struct {
@@ -198,10 +206,17 @@ type StreamContext struct {
 	CurrentToolID   string // Current tool call ID being processed
 	CurrentToolName string // Current tool call name being processed
 	ToolArguments   string // Accumulated tool arguments
+	// Track all active tool calls for multi-tool-call streaming (OpenAI→OpenAI2)
+	ActiveToolCalls []ActiveToolCall // All tool calls accumulated during streaming
+	IncludeUsage    bool   // Whether OpenAI-compatible streaming should emit usage chunk
 	// <think> tag handling for streaming text
 	InThinkingTag       bool   // Track if we are inside a <think> tag
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
 	PendingThinkingText string // Buffered thinking text until closing tag arrives
+	ContentText         string // Accumulated text content for output_text.done event
+	// OpenAI SSE normalization for cx_chat_openai
+	OpenAIStreamDone bool                    // Track whether a DONE event has been observed
+	OpenAIToolCalls  map[int]*OpenAIToolCall // Track in-progress OpenAI tool calls by index
 }
 
 // NewStreamContext creates a new stream context with default values
@@ -226,9 +241,13 @@ func NewStreamContext() *StreamContext {
 		ToolCallBuffer:       "",
 		ToolCallIDMap:        make(map[string]string),
 		ToolCallCounter:      0,
+		IncludeUsage:         false,
 		InThinkingTag:        false,
 		ThinkingBuffer:       "",
 		PendingThinkingText:  "",
+		ContentText:          "",
+		OpenAIStreamDone:     false,
+		OpenAIToolCalls:      make(map[int]*OpenAIToolCall),
 	}
 }
 
@@ -358,6 +377,7 @@ type OpenAI2Request struct {
 	Input           interface{}   `json:"input"`                  // string or []OpenAI2InputItem
 	Instructions    string        `json:"instructions,omitempty"` // system prompt
 	Tools           []OpenAI2Tool `json:"tools,omitempty"`
+	ToolChoice      interface{}   `json:"tool_choice,omitempty"`
 	Stream          bool          `json:"stream,omitempty"`
 	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
 	Temperature     *float64      `json:"temperature,omitempty"`

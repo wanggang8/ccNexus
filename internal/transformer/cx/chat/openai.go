@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/logger"
@@ -44,22 +45,46 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 				continue
 			}
 
-			// Check if message has Claude-format content blocks
+			// Check if message has Claude-format content blocks with tool_result
 			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
-				// Check if it's a tool_result block
-				if len(content) == 1 {
-					if block, ok := content[0].(map[string]interface{}); ok {
+				hasToolResult := false
+				var otherBlocks []interface{}
+				for _, item := range content {
+					if block, ok := item.(map[string]interface{}); ok {
 						if block["type"] == "tool_result" {
-							// Convert to OpenAI tool message format
-							openaiMsg := map[string]interface{}{
+							hasToolResult = true
+							fixedMessages = append(fixedMessages, map[string]interface{}{
 								"role":         "tool",
 								"tool_call_id": block["tool_use_id"],
 								"content":      block["content"],
-							}
-							fixedMessages = append(fixedMessages, openaiMsg)
-							continue
+							})
+						} else {
+							otherBlocks = append(otherBlocks, item)
 						}
+					} else {
+						otherBlocks = append(otherBlocks, item)
 					}
+				}
+				if hasToolResult {
+					// H4: Preserve non-tool_result content blocks (text, images) as a separate message
+					if len(otherBlocks) > 0 {
+						preservedMsg := map[string]interface{}{"role": msg["role"]}
+						if len(otherBlocks) == 1 {
+							if tb, ok := otherBlocks[0].(map[string]interface{}); ok {
+								if text, ok := tb["text"].(string); ok && tb["type"] == "text" {
+									preservedMsg["content"] = text
+								} else {
+									preservedMsg["content"] = otherBlocks
+								}
+							} else {
+								preservedMsg["content"] = otherBlocks
+							}
+						} else {
+							preservedMsg["content"] = otherBlocks
+						}
+						fixedMessages = append(fixedMessages, preservedMsg)
+					}
+					continue
 				}
 			}
 
@@ -113,6 +138,33 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 
 		data["tools"] = fixedTools
 	}
+
+	// Strip cache_control from all messages (Anthropic-specific)
+	if messages, ok := data["messages"].([]interface{}); ok {
+		for _, msgInterface := range messages {
+			if msg, ok := msgInterface.(map[string]interface{}); ok {
+				delete(msg, "cache_control")
+			}
+		}
+	}
+
+	// Strip cache_control from tool definitions
+	if tools, ok := data["tools"].([]interface{}); ok {
+		for _, toolInterface := range tools {
+			if tool, ok := toolInterface.(map[string]interface{}); ok {
+				delete(tool, "cache_control")
+				if fn, ok := tool["function"].(map[string]interface{}); ok {
+					delete(fn, "cache_control")
+				}
+			}
+		}
+	}
+
+	// Strip Anthropic-specific top-level fields
+	delete(data, "thinking")
+	delete(data, "budget_tokens")
+	delete(data, "reasoning_effort")
+	delete(data, "metadata")
 
 	return json.Marshal(data)
 }
@@ -171,6 +223,190 @@ func (t *OpenAITransformer) TransformResponseWithContext(resp []byte, isStreamin
 		}
 	}
 
-	// OpenAI format or unknown, passthrough
-	return resp, nil
+	// OpenAI format or unknown: keep normal chunks as-is, repair malformed OpenAI SSE when needed.
+	return normalizeOpenAISSE(resp, ctx)
+}
+
+func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, error) {
+	if ctx == nil {
+		return resp, nil
+	}
+
+	_, payload := convert.ParseSSE(resp)
+	if payload == "" {
+		return resp, nil
+	}
+
+	if payload == "[DONE]" {
+		if ctx.OpenAIStreamDone {
+			return nil, nil
+		}
+		ctx.OpenAIStreamDone = true
+		return []byte("data: [DONE]\n\n"), nil
+	}
+
+	if ctx.OpenAIStreamDone {
+		return nil, nil
+	}
+
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return resp, nil
+	}
+
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return resp, nil
+	}
+
+	changed := false
+	for _, choiceAny := range choices {
+		choice, ok := choiceAny.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		toolCalls, ok := delta["tool_calls"].([]interface{})
+		if !ok || len(toolCalls) == 0 {
+			continue
+		}
+
+		normalizedToolCalls, toolChanged := normalizeToolCallDeltas(toolCalls, ctx)
+		if toolChanged {
+			changed = true
+		}
+		if len(normalizedToolCalls) == 0 {
+			delete(delta, "tool_calls")
+			continue
+		}
+		delta["tool_calls"] = normalizedToolCalls
+	}
+
+	if !changed {
+		return resp, nil
+	}
+
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
+}
+
+func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamContext) ([]interface{}, bool) {
+	if ctx.OpenAIToolCalls == nil {
+		ctx.OpenAIToolCalls = make(map[int]*transformer.OpenAIToolCall)
+	}
+
+	normalized := make([]interface{}, 0, len(toolCalls))
+	changed := false
+
+	for _, rawToolCall := range toolCalls {
+		tcMap, ok := rawToolCall.(map[string]interface{})
+		if !ok {
+			normalized = append(normalized, rawToolCall)
+			continue
+		}
+
+		idx := 0
+		if idxValue, ok := tcMap["index"].(float64); ok {
+			idx = int(idxValue)
+		}
+
+		state, exists := ctx.OpenAIToolCalls[idx]
+		if !exists {
+			state = &transformer.OpenAIToolCall{}
+			indexCopy := idx
+			state.Index = &indexCopy
+			ctx.OpenAIToolCalls[idx] = state
+		}
+
+		currentID, _ := tcMap["id"].(string)
+		if currentID != "" {
+			if state.ID == "" {
+				state.ID = currentID
+			} else if state.ID != currentID {
+				changed = true
+			}
+		}
+
+		currentType, _ := tcMap["type"].(string)
+		if currentType != "" {
+			if state.Type == "" {
+				state.Type = currentType
+			} else if state.Type != currentType {
+				changed = true
+			}
+		}
+		if state.Type == "" {
+			state.Type = "function"
+		}
+
+		var argumentFragment string
+		if functionMap, ok := tcMap["function"].(map[string]interface{}); ok {
+			if name, ok := functionMap["name"].(string); ok && name != "" {
+				if state.Function.Name == "" {
+					state.Function.Name = name
+				} else if state.Function.Name != name {
+					changed = true
+				}
+			} else if functionMap["name"] == nil && state.Function.Name != "" {
+				changed = true
+			}
+
+			if args, ok := functionMap["arguments"].(string); ok {
+				argumentFragment = args
+				state.Function.Arguments += args
+			}
+		}
+
+		functionOut := map[string]interface{}{}
+		if state.Function.Name != "" {
+			functionOut["name"] = state.Function.Name
+		}
+		if argumentFragment != "" || hasFunctionArguments(tcMap) {
+			functionOut["arguments"] = argumentFragment
+		}
+
+		out := map[string]interface{}{
+			"index": idx,
+			"type":  state.Type,
+		}
+		if state.ID != "" {
+			out["id"] = state.ID
+		}
+		if len(functionOut) > 0 {
+			out["function"] = functionOut
+		}
+
+		if !deepEqualToolCallShape(tcMap, out) {
+			changed = true
+		}
+		normalized = append(normalized, out)
+	}
+
+	return normalized, changed
+}
+
+func hasFunctionArguments(tcMap map[string]interface{}) bool {
+	functionMap, ok := tcMap["function"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, exists := functionMap["arguments"]
+	return exists
+}
+
+func deepEqualToolCallShape(a, b map[string]interface{}) bool {
+	aJSON, aErr := json.Marshal(a)
+	bJSON, bErr := json.Marshal(b)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	return string(aJSON) == string(bJSON)
 }

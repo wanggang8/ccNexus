@@ -1,0 +1,522 @@
+/**
+ * 端点筛选器样式 - 统一筛选面板
+ */
+
+/* ============================================
+   统一筛选按钮和徽章
+   ============================================ */
+
+.filter-unified-btn {
+    position: relative;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.filter-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
+    margin-left: 8px;
+    background: var(--primary-color);
+    color: white;
+    border-radius: 11px;
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+    animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.1);
+    }
+}
+
+.filter-badge.hidden {
+    display: none;
+}
+
+.filter-unified-btn.active {
+    background: var(--primary-color) !important;
+    color: white;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+    transform: translateY(-1px);
+}
+
+/* ============================================
+   统一筛选面板
+   ============================================ */
+
+.unified-filter-panel {
+    position: fixed;
+    width: 420px;
+    max-height: 550px;
+    background: var(--card-bg);
+    border: 2px solid rgba(139, 92, 246, 0.3);
+    border-radius: 16px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 
+                0 0 0 1px rgba(139, 92, 246, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    z-index: 1000;
+    overflow: hidden;
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+.unified-filter-panel.hidden {
+    display: none;
+    opacity: 0;
+    transform: translateY(-12px) scale(0.95);
+}
+
+.unified-filter-panel:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+/* 面板头部 */
+.filter-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, transparent 100%);
+}
+
+.filter-panel-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.btn-close {
+    background: transparent;
+    border: none;
+    font-size: 24px;
+    line-height: 1;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 8px;
+}
+
+.btn-close:hover {
+    color: var(--primary-color);
+    background: rgba(139, 92, 246, 0.1);
+    transform: rotate(90deg);
+}
+
+/* 面板主体 */
+.filter-panel-body {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.filter-section {
+    margin-bottom: 24px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid rgba(139, 92, 246, 0.15);
+}
+
+.filter-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.filter-section h4 {
+    margin: 0 0 14px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--primary-color);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.filter-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.filter-options label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    padding: 12px 14px;
+    color: var(--text-primary);
+    border-radius: 10px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    font-size: 14px;
+    border: 2px solid transparent;
+}
+
+.filter-options label:hover {
+    color: var(--primary-color);
+    background: rgba(139, 92, 246, 0.08);
+    border-color: rgba(139, 92, 246, 0.2);
+    transform: translateX(4px);
+}
+
+/* 自定义复选框 */
+.filter-options input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    background: var(--card-bg);
+    flex-shrink: 0;
+}
+
+.filter-options input[type="checkbox"]:hover {
+    border-color: var(--primary-color);
+    background: rgba(139, 92, 246, 0.05);
+}
+
+.filter-options input[type="checkbox"]:checked {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+
+.filter-options input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 2px;
+    width: 5px;
+    height: 10px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+/* 面板底部 */
+.filter-panel-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 20px;
+    border-top: 1px solid rgba(139, 92, 246, 0.2);
+    background: linear-gradient(0deg, rgba(139, 92, 246, 0.03) 0%, transparent 100%);
+}
+
+.filter-panel-footer .btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    border-radius: 8px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.filter-panel-footer .btn-secondary {
+    background: transparent;
+    border: 2px solid var(--border-color);
+    color: var(--text-primary);
+}
+
+.filter-panel-footer .btn-secondary:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: rgba(139, 92, 246, 0.05);
+    transform: translateY(-2px);
+}
+
+.filter-panel-footer .btn-primary {
+    background: var(--primary-color);
+    border: 2px solid var(--primary-color);
+    color: white;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+}
+
+.filter-panel-footer .btn-primary:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+}
+
+/* ============================================
+   旧版筛选样式（保留用于兼容）
+   ============================================ */
+
+/* 筛选下拉按钮组：与 toolbar-group--data 同样的分组样式，间距由 .tab-actions gap 提供 */
+.filter-dropdowns {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    border-left: 1px solid var(--border-color, #e0e0e0);
+    padding-left: 12px;
+}
+
+/* 单个下拉容器 */
+.filter-dropdown {
+    position: relative;
+}
+
+/* 下拉按钮：与「启动器/导出/导入」统一为 secondary 风格 */
+.filter-dropdown-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: var(--text-secondary, #6c757d);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 14px;
+    position: relative;
+}
+
+.filter-dropdown-btn:hover {
+    background: var(--text-tertiary, #5a6268);
+    transform: translateY(-1px);
+}
+
+/* 激活状态（有筛选时）：使用主题色高亮，与主按钮风格一致 */
+.filter-dropdown-btn.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.filter-dropdown-btn.active .filter-arrow {
+    color: white;
+}
+
+/* 与工具栏统一的 SVG 图标尺寸 */
+.filter-dropdown-btn .icon {
+    width: 1em;
+    height: 1em;
+    flex-shrink: 0;
+}
+
+/* 徽章（已选数量） */
+.filter-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    background: #e74c3c;
+    color: white;
+    font-size: 10px;
+    font-weight: bold;
+    padding: 2px 5px;
+    border-radius: 10px;
+    min-width: 16px;
+    text-align: center;
+}
+
+.filter-badge.hidden {
+    display: none;
+}
+
+/* 箭头（SVG，与图标统一） */
+.filter-arrow {
+    width: 1em;
+    height: 1em;
+    display: inline-flex;
+    align-items: center;
+    color: rgba(255, 255, 255, 0.9);
+    transition: transform 0.2s ease;
+}
+
+.filter-arrow svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* 下拉面板 */
+.filter-dropdown-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 160px;
+    background: var(--card-bg, #ffffff);
+    border: 2px solid var(--border-color, #e0e0e0);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.filter-dropdown-panel.hidden {
+    display: none;
+}
+
+/* 选项区域 */
+.panel-options {
+    padding: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.panel-options label {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+    font-size: 13px;
+    color: var(--text-primary, #333);
+}
+
+.panel-options label:hover {
+    background: var(--bg-secondary, #f8f9fa);
+}
+
+.panel-options input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+/* 底部按钮 */
+.panel-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px;
+    border-top: 1px solid var(--border-light, #e0e0e0);
+    gap: 6px;
+}
+
+.panel-footer button {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+.btn-clear-dimension {
+    background: transparent;
+    color: var(--text-secondary, #666);
+    border: 1px solid var(--border-color, #ddd) !important;
+}
+
+.btn-clear-dimension:hover {
+    background: var(--bg-secondary, #f8f9fa);
+}
+
+.btn-apply {
+    background: var(--primary-color, #667eea);
+    color: white;
+}
+
+.btn-apply:hover {
+    background: #764ba2;
+    transform: translateY(-1px);
+}
+
+/* 保留警告条样式 */
+.filter-active-banner {
+    background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
+    border-left: 4px solid #e17055;
+    padding: 10px 15px;
+    border-radius: 6px;
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 500;
+    color: #2d3436;
+    animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.filter-active-banner.hidden {
+    display: none;
+}
+
+.banner-btn {
+    background: #2d3436;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.banner-btn:hover {
+    background: #636e72;
+    transform: translateY(-1px);
+}
+
+/* 清除筛选按钮：与三个筛选下拉同高，与工具栏统一 */
+.btn-filter-bar {
+    padding: 8px 14px;
+    font-size: 14px;
+}
+
+.btn-filter-bar .icon {
+    width: 1em;
+    height: 1em;
+}
+
+/* 筛选模式下禁用拖拽的视觉提示（保留） */
+.endpoint-item[draggable="false"],
+.endpoint-item-compact[draggable="false"] {
+    cursor: default !important;
+}
+
+.endpoint-item[draggable="false"]::after,
+.endpoint-item-compact[draggable="false"]::after {
+    content: '🔒';
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+}
+
+.endpoint-item[draggable="false"]:hover::after,
+.endpoint-item-compact[draggable="false"]:hover::after {
+    opacity: 0.3;
+}

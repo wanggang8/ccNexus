@@ -17,7 +17,10 @@
 
 - **Multi-Endpoint Rotation**: Automatic failover, switches to next endpoint on failure
 - **API Format Conversion**: Supports Claude, OpenAI, Gemini format conversion
-- **Real-time Statistics**: Request count, error count, token usage monitoring
+- **Codex Token Pool**: Bulk import `access_token/refresh_token` credentials with auto-rotation, auto-refresh, invalid-token isolation, and status management
+- **Token Pool Usage Insights**: Per-credential requests/errors/token counts with quick view
+- **Real-time Statistics**: Event-driven zero-latency stats updates with instant switching between 4 periods (daily/yesterday/weekly/monthly)
+- **Endpoint Filtering**: Multi-select filtering by type, availability, and status for quick endpoint location
 - **WebDAV Sync**: Sync configuration and data across devices
 - **Cross-Platform**: Windows, macOS, Linux
 
@@ -40,7 +43,12 @@
 
 ### 2. Add Endpoints
 
-Click "Add Endpoint", fill in API URL, key, and select transformer (claude/openai/gemini).
+Click "Add Endpoint", fill in API URL, key, and select transformer (claude/openai/gemini/openai2).
+
+For Codex Token Pool mode:
+- Set auth mode to `Codex Token Pool`
+- Import token JSON records in the Token Pool page (`access_token` + `refresh_token`)
+- ccNexus will handle token rotation, 401-triggered refresh, and lifecycle statuses (active/expiring/need_refresh/invalid, etc.)
 
 ### 3. Configure CC
 

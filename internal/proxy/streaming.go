@@ -16,9 +16,23 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
+func parseOpenAIIncludeUsage(bodyBytes []byte) bool {
+	var req struct {
+		StreamOptions *struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return false
+	}
+
+	return req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+}
+
 // handleStreamingResponse processes streaming SSE responses
 // Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse
-func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte) (int, int, string, []byte, []byte) {
+func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string, []byte, []byte) {
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -27,6 +41,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
+	}
+	if strings.TrimSpace(w.Header().Get("Content-Type")) == "" {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	}
 	w.WriteHeader(resp.StatusCode)
 
@@ -53,12 +70,16 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	// Create stream context for all transformers except pure passthrough
 	var streamCtx *transformer.StreamContext
 	switch transformerName {
-	case "cx_chat_openai", "cx_resp_openai2":
+	case "cx_resp_openai2":
 		// Pure passthrough - no context needed
 	default:
 		// cc_claude needs context for input_tokens fallback
 		streamCtx = transformer.NewStreamContext()
 		streamCtx.ModelName = modelName
+		streamCtx.EnableThinking = thinkingEnabled
+		if transformerName == "cx_chat_claude" {
+			streamCtx.IncludeUsage = parseOpenAIIncludeUsage(bodyBytes)
+		}
 		// Pre-estimate input tokens for fallback
 		if bodyBytes != nil {
 			streamCtx.InputTokens = p.estimateInputTokens(bodyBytes)
@@ -101,10 +122,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
-					flusher.Flush()
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
+				if shouldInjectUsageFallback {
+					// Inject message_delta event with usage
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+						flusher.Flush()
+					}
 				}
 			}
 
@@ -140,6 +164,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				originalRespBuffer.Write(eventData)
 			}
 
+			p.captureCodexRateLimitsFromEvent(endpoint, credentialID, eventData)
+
+			// Extract usage from original upstream events first. Some transformers may
+			// not preserve usage fields in transformed events.
+			p.extractTokensFromEvent(eventData, &inputTokens, &outputTokens)
+
 			// Check if this is a message_stop event (Token Usage Fallback)
 			isMessageStop := p.isMessageStopEvent(eventData)
 			if isMessageStop && outputTokens == 0 && outputText.Len() > 0 {
@@ -151,10 +181,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage before message_stop
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
-					flusher.Flush()
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
+				if shouldInjectUsageFallback {
+					// Inject message_delta event with usage before message_stop
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+						flusher.Flush()
+					}
 				}
 			}
 
@@ -207,10 +240,120 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		} else {
 			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
 		}
+
+		// Send termination event to prevent client from hanging indefinitely
+		if !streamDone {
+			if _, writeErr := w.Write([]byte("data: [DONE]\n\n")); writeErr == nil {
+				flusher.Flush()
+			}
+		}
 	}
 
 	resp.Body.Close()
 	return inputTokens, outputTokens, outputText.String(), originalRespBuffer.Bytes(), transformedRespBuffer.Bytes()
+}
+
+// handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.
+// This is used for Codex endpoints that require stream=true upstream while client requested non-stream.
+func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, credentialID int64) (int, int, string, error) {
+	var reader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gzipReader, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			resp.Body.Close()
+			return 0, 0, "", err
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 0, 128*1024)
+	scanner.Buffer(buf, 2*1024*1024)
+
+	var completedPayload []byte
+	var lastJSONPayload []byte
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, []byte("data: "+jsonData+"\n\n"))
+		lastJSONPayload = []byte(jsonData)
+
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+		if eventType, _ := event["type"].(string); eventType != "response.completed" {
+			continue
+		}
+
+		if responseObj, ok := event["response"]; ok {
+			payload, err := json.Marshal(responseObj)
+			if err != nil {
+				return 0, 0, "", err
+			}
+			completedPayload = payload
+		} else {
+			completedPayload = []byte(jsonData)
+		}
+		break
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, 0, "", err
+	}
+	if len(completedPayload) == 0 {
+		if len(lastJSONPayload) == 0 {
+			return 0, 0, "", fmt.Errorf("stream closed before response.completed")
+		}
+		// Fallback for providers that don't emit type=response.completed but still
+		// provide final JSON payload in the stream.
+		completedPayload = lastJSONPayload
+	}
+
+	transformedResp, err := trans.TransformResponse(completedPayload, false)
+	if err != nil {
+		return 0, 0, "", err
+	}
+
+	for key, values := range resp.Header {
+		if key == "Content-Length" || key == "Content-Encoding" || key == "Content-Type" {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(transformedResp)
+
+	inputTokens, outputTokens := extractTokenUsage(transformedResp)
+	transformedInputTokens, transformedOutputTokens := inputTokens, outputTokens
+	upstreamInputTokens, upstreamOutputTokens := extractTokenUsage(completedPayload)
+	if inputTokens == 0 && upstreamInputTokens > 0 {
+		inputTokens = upstreamInputTokens
+	}
+	if outputTokens == 0 && upstreamOutputTokens > 0 {
+		outputTokens = upstreamOutputTokens
+	}
+	outputText := extractResponseOutputText(transformedResp)
+
+	logger.Debug(
+		"[%s] Aggregated usage transformed(in=%d,out=%d) upstream(in=%d,out=%d) outputTextLen=%d",
+		endpoint.Name,
+		transformedInputTokens, transformedOutputTokens,
+		upstreamInputTokens, upstreamOutputTokens,
+		len(outputText),
+	)
+
+	return inputTokens, outputTokens, outputText, nil
 }
 
 // formatRequestSize formats byte size into human-readable string
@@ -245,44 +388,54 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 		}
 
 		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
 		var event map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
 			continue
 		}
 
-		// Claude format: message_start contains input_tokens, message_delta contains output_tokens
+		applyUsage := func(usage map[string]interface{}) {
+			in, out := extractInputOutputTokens(usage)
+			if in > 0 {
+				*inputTokens = in
+			}
+			if out > 0 {
+				*outputTokens = out
+			}
+		}
+
+		// Claude-style events
 		eventType, _ := event["type"].(string)
 		if eventType == "message_start" {
 			if message, ok := event["message"].(map[string]interface{}); ok {
 				if usage, ok := message["usage"].(map[string]interface{}); ok {
-					if input, ok := usage["input_tokens"].(float64); ok {
-						*inputTokens = int(input)
-					}
+					applyUsage(usage)
 				}
 			}
 		} else if eventType == "message_delta" {
 			if usage, ok := event["usage"].(map[string]interface{}); ok {
-				if output, ok := usage["output_tokens"].(float64); ok {
-					*outputTokens = int(output)
-				}
+				applyUsage(usage)
 			}
 		}
 
-		// OpenAI format: usage in final chunk (prompt_tokens/completion_tokens or input_tokens/output_tokens)
+		// OpenAI Responses-style events
+		if response, ok := event["response"].(map[string]interface{}); ok {
+			if usage, ok := response["usage"].(map[string]interface{}); ok {
+				applyUsage(usage)
+			}
+		}
+
+		// OpenAI Chat chunk-style usage (top-level)
 		if usage, ok := event["usage"].(map[string]interface{}); ok {
-			// OpenAI naming: prompt_tokens / completion_tokens
-			if input, ok := usage["prompt_tokens"].(float64); ok && int(input) > 0 {
-				*inputTokens = int(input)
-			}
-			if output, ok := usage["completion_tokens"].(float64); ok && int(output) > 0 {
-				*outputTokens = int(output)
-			}
-			// Alternative naming: input_tokens / output_tokens (some providers use this)
-			if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
-				*inputTokens = int(input)
-			}
-			if output, ok := usage["output_tokens"].(float64); ok && int(output) > 0 {
-				*outputTokens = int(output)
+			applyUsage(usage)
+		}
+
+		// Some providers wrap payloads with object=...
+		if obj, ok := event["object"].(string); ok && strings.Contains(obj, "chat.completion") {
+			if usage, ok := event["usage"].(map[string]interface{}); ok {
+				applyUsage(usage)
 			}
 		}
 	}
@@ -309,16 +462,7 @@ func (p *Proxy) extractTextFromEvent(eventData []byte, outputText *strings.Build
 
 		eventType, _ := event["type"].(string)
 
-		// Handle content_block_delta format (from some third-party APIs)
-		if eventType == "content_block_delta" {
-			if delta, ok := event["delta"].(map[string]interface{}); ok {
-				if text, ok := delta["text"].(string); ok {
-					outputText.WriteString(text)
-				}
-			}
-		}
-
-		// Handle standard delta.text format
+		// Handle delta.text format (Claude content_block_delta, third-party APIs, etc.)
 		if delta, ok := event["delta"].(map[string]interface{}); ok {
 			// Check for text_delta type (Claude original format)
 			if deltaType, ok := delta["type"].(string); ok && deltaType == "text_delta" {
@@ -334,13 +478,26 @@ func (p *Proxy) extractTextFromEvent(eventData []byte, outputText *strings.Build
 			}
 		}
 
-		// OpenAI format: choices[0].delta.content
-		if choices, ok := event["choices"].([]interface{}); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]interface{}); ok {
-				if delta, ok := choice["delta"].(map[string]interface{}); ok {
-					if content, ok := delta["content"].(string); ok {
-						outputText.WriteString(content)
-					}
+		// Handle OpenAI Responses stream text delta format
+		if eventType == "response.output_text.delta" {
+			if delta, ok := event["delta"].(string); ok {
+				outputText.WriteString(delta)
+			}
+		}
+
+		// Handle OpenAI Chat stream chunk format (choices[].delta.content)
+		if choices, ok := event["choices"].([]interface{}); ok {
+			for _, choice := range choices {
+				choiceMap, ok := choice.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				delta, ok := choiceMap["delta"].(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if text, ok := delta["content"].(string); ok {
+					outputText.WriteString(text)
 				}
 			}
 		}

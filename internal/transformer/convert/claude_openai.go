@@ -17,6 +17,11 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		return nil, err
 	}
 
+	// Parse raw map to detect explicit temperature (including 0)
+	var rawReq map[string]interface{}
+	json.Unmarshal(claudeReq, &rawReq)
+	_, hasTemperature := rawReq["temperature"]
+
 	var messages []transformer.OpenAIMessage
 
 	// Convert system prompt
@@ -38,6 +43,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		case []interface{}:
 			// Check for tool_result blocks
 			var textParts []string
+			var imageParts []map[string]interface{}
 			var toolCalls []transformer.OpenAIToolCall
 			var toolResults []transformer.OpenAIMessage
 			hasThinking := false
@@ -57,6 +63,29 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 					// and should not be forwarded to other APIs
 					hasThinking = true
 					continue
+				case "image":
+					// Convert Claude image format to OpenAI image_url format
+					if source, ok := m["source"].(map[string]interface{}); ok {
+						srcType, _ := source["type"].(string)
+						switch srcType {
+						case "base64":
+							mediaType, _ := source["media_type"].(string)
+							data, _ := source["data"].(string)
+							if mediaType != "" && data != "" {
+								imageParts = append(imageParts, map[string]interface{}{
+									"type":      "image_url",
+									"image_url": map[string]interface{}{"url": fmt.Sprintf("data:%s;base64,%s", mediaType, data)},
+								})
+							}
+						case "url":
+							if url, ok := source["url"].(string); ok && url != "" {
+								imageParts = append(imageParts, map[string]interface{}{
+									"type":      "image_url",
+									"image_url": map[string]interface{}{"url": url},
+								})
+							}
+						}
+					}
 				case "tool_use":
 					args, _ := json.Marshal(m["input"])
 					id, ok := m["id"].(string)
@@ -88,10 +117,18 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 				}
 			}
 
-			// Add main message if has text or tool_calls
-			if len(textParts) > 0 || len(toolCalls) > 0 {
+			// Add main message if has text, images, or tool_calls
+			if len(textParts) > 0 || len(imageParts) > 0 || len(toolCalls) > 0 {
 				openaiMsg := transformer.OpenAIMessage{Role: msg.Role}
-				if len(textParts) > 0 {
+				if len(imageParts) > 0 {
+					// Use array content format when images are present
+					var parts []map[string]interface{}
+					if len(textParts) > 0 {
+						parts = append(parts, map[string]interface{}{"type": "text", "text": strings.Join(textParts, "")})
+					}
+					parts = append(parts, imageParts...)
+					openaiMsg.Content = parts
+				} else if len(textParts) > 0 {
 					openaiMsg.Content = strings.Join(textParts, "")
 				}
 				if len(toolCalls) > 0 {
@@ -119,7 +156,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxTokens
 	}
-	if req.Temperature > 0 {
+	if hasTemperature {
 		openaiReq.Temperature = &req.Temperature
 	}
 
@@ -199,9 +236,12 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	var messages []map[string]interface{}
 
 	if reqMessages, ok := reqMap["messages"].([]interface{}); ok {
-		for _, msgInterface := range reqMessages {
+		idx := 0
+		for idx < len(reqMessages) {
+			msgInterface := reqMessages[idx]
 			msg, ok := msgInterface.(map[string]interface{})
 			if !ok {
+				idx++
 				continue
 			}
 
@@ -210,6 +250,32 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 				if content, ok := msg["content"].(string); ok {
 					systemPrompt += content + "\n"
 				}
+				idx++
+				continue
+			}
+
+			// 合并连续的 tool 消息（并行工具调用的结果）到同一 user 消息中
+			// Claude API 要求：多个并行工具调用的结果必须在同一条 user 消息内
+			if role == "tool" {
+				var toolResults []map[string]interface{}
+				for idx < len(reqMessages) {
+					tm, ok := reqMessages[idx].(map[string]interface{})
+					if !ok {
+						break
+					}
+					if r, _ := tm["role"].(string); r != "tool" {
+						break
+					}
+					toolCallID, _ := tm["tool_call_id"].(string)
+					toolResults = append(toolResults, map[string]interface{}{
+						"type": "tool_result", "tool_use_id": toolCallID, "content": normalizeToolResultContent(tm["content"]),
+					})
+					idx++
+				}
+				messages = append(messages, map[string]interface{}{
+					"role":    "user",
+					"content": toolResults,
+				})
 				continue
 			}
 
@@ -228,8 +294,13 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 			// Handle tool_calls
 			if toolCalls, ok := msg["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
 				var blocks []map[string]interface{}
-				if text, ok := claudeMsg["content"].(string); ok && text != "" {
-					blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+				switch existing := claudeMsg["content"].(type) {
+				case string:
+					if existing != "" {
+						blocks = append(blocks, map[string]interface{}{"type": "text", "text": existing})
+					}
+				case []map[string]interface{}:
+					blocks = append(blocks, existing...)
 				}
 				for _, tcInterface := range toolCalls {
 					tc, ok := tcInterface.(map[string]interface{})
@@ -253,17 +324,8 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 				claudeMsg["content"] = blocks
 			}
 
-			// Handle tool message
-			if role == "tool" {
-				claudeMsg["role"] = "user"
-				toolCallID, _ := msg["tool_call_id"].(string)
-				content, _ := msg["content"].(string)
-				claudeMsg["content"] = []map[string]interface{}{
-					{"type": "tool_result", "tool_use_id": toolCallID, "content": content},
-				}
-			}
-
 			messages = append(messages, claudeMsg)
+			idx++
 		}
 	}
 
@@ -310,6 +372,29 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 
 		if len(tools) > 0 {
 			claudeReq["tools"] = tools
+
+			// D5: Convert OpenAI tool_choice to Claude format
+			if tc, ok := reqMap["tool_choice"]; ok && tc != nil {
+				switch v := tc.(type) {
+				case string:
+					switch v {
+					case "required":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "any"}
+					case "auto":
+						claudeReq["tool_choice"] = map[string]interface{}{"type": "auto"}
+					case "none":
+						delete(claudeReq, "tools")
+					}
+				case map[string]interface{}:
+					if v["type"] == "function" {
+						if fn, ok := v["function"].(map[string]interface{}); ok {
+							if name, ok := fn["name"].(string); ok && name != "" {
+								claudeReq["tool_choice"] = map[string]interface{}{"type": "tool", "name": name}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -359,10 +444,7 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		message["tool_calls"] = toolCalls
 	}
 
-	finishReason := "stop"
-	if resp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
-	}
+	finishReason := mapClaudeStopToOpenAIFinish(resp.StopReason)
 
 	openaiResp := map[string]interface{}{
 		"id":      resp.ID,
@@ -386,11 +468,33 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// T3: Parse raw JSON to extract reasoning_content (not in typed struct)
+	var rawResp map[string]interface{}
+	json.Unmarshal(openaiResp, &rawResp)
+
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		if choice.FinishReason != "" {
+			stopReason = mapOpenAIFinishToClaudeStop(choice.FinishReason)
+		}
+
+		// T3: Extract reasoning_content as thinking block
+		if rawChoices, ok := rawResp["choices"].([]interface{}); ok && len(rawChoices) > 0 {
+			if rawChoice, ok := rawChoices[0].(map[string]interface{}); ok {
+				if rawMsg, ok := rawChoice["message"].(map[string]interface{}); ok {
+					if reasoning, ok := rawMsg["reasoning_content"].(string); ok && reasoning != "" {
+						content = append(content, map[string]interface{}{
+							"type":     "thinking",
+							"thinking": reasoning,
+						})
+					}
+				}
+			}
+		}
+
 		if choice.Message.Content != "" {
 			content = append(content, splitThinkTaggedText(choice.Message.Content)...)
 		}
@@ -428,7 +532,7 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 
 // ClaudeStreamToOpenAI converts Claude SSE event to OpenAI Chat stream chunk
 func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model string) ([]byte, error) {
-	eventType, jsonData := parseSSE(event)
+	eventType, jsonData := ParseSSE(event)
 	if jsonData == "" {
 		return nil, nil
 	}
@@ -450,6 +554,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	case "message_start":
 		if msg, ok := data["message"].(map[string]interface{}); ok {
 			ctx.MessageID, _ = msg["id"].(string)
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
+					ctx.InputTokens = int(input)
+				}
+			}
 		}
 		// Send initial role chunk per OpenAI streaming spec
 		chunk := map[string]interface{}{
@@ -461,7 +570,8 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	case "content_block_start":
 		if block, ok := data["content_block"].(map[string]interface{}); ok {
-			if block["type"] == "tool_use" {
+			switch block["type"] {
+			case "tool_use":
 				ctx.ToolBlockStarted = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
@@ -470,6 +580,8 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
 						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
 				}, "")
+			case "thinking":
+				ctx.ThinkingBlockStarted = true
 			}
 		}
 		return nil, nil
@@ -483,6 +595,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		case "text_delta":
 			text, _ := delta["text"].(string)
 			return buildOpenAIChunk(ctx.MessageID, model, text, nil, "")
+		case "thinking_delta":
+			thinking, _ := delta["thinking"].(string)
+			if thinking != "" {
+				return buildOpenAIChunkWithReasoning(ctx.MessageID, model, thinking)
+			}
 		case "input_json_delta":
 			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
@@ -494,6 +611,9 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		return nil, nil
 
 	case "content_block_stop":
+		if ctx.ThinkingBlockStarted {
+			ctx.ThinkingBlockStarted = false
+		}
 		if ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
@@ -502,13 +622,41 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		return nil, nil
 
 	case "message_delta":
+		var result []byte
+
 		if delta, ok := data["delta"].(map[string]interface{}); ok {
-			stopReason, _ := delta["stop_reason"].(string)
-			finish := "stop"
-			if stopReason == "tool_use" {
-				finish = "tool_calls"
+			if stopReason, ok := delta["stop_reason"].(string); ok && stopReason != "" {
+				finish := mapClaudeStopToOpenAIFinish(stopReason)
+				finishChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, finishChunk...)
 			}
-			return buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
+		}
+
+		if ctx != nil && ctx.IncludeUsage {
+			if usage, ok := data["usage"].(map[string]interface{}); ok {
+				promptTokens := ctx.InputTokens
+				completionTokens := ctx.OutputTokens
+				if input, ok := usage["input_tokens"].(float64); ok && int(input) > 0 {
+					promptTokens = int(input)
+					ctx.InputTokens = int(input)
+				}
+				if output, ok := usage["output_tokens"].(float64); ok && int(output) >= 0 {
+					completionTokens = int(output)
+					ctx.OutputTokens = int(output)
+				}
+				usageChunk, err := buildOpenAIUsageChunk(ctx.MessageID, model, promptTokens, completionTokens)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, usageChunk...)
+			}
+		}
+
+		if len(result) > 0 {
+			return result, nil
 		}
 		return nil, nil
 
@@ -521,7 +669,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 // OpenAIStreamToClaude converts OpenAI Chat stream chunk to Claude SSE event
 func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte, error) {
-	_, jsonData := parseSSE(event)
+	_, jsonData := ParseSSE(event)
 	if jsonData == "" || jsonData == "[DONE]" {
 		if jsonData == "[DONE]" {
 			var result []byte
@@ -705,10 +853,7 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
 			ctx.ToolBlockStarted = false
 		}
-		stopReason := "end_turn"
-		if *choice.FinishReason == "tool_calls" {
-			stopReason = "tool_use"
-		}
+		stopReason := mapOpenAIFinishToClaudeStop(*choice.FinishReason)
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
 			"usage": map[string]interface{}{"output_tokens": 0},
@@ -774,13 +919,20 @@ func convertOpenAIContentToClaude(content []interface{}) []map[string]interface{
 			result = append(result, map[string]interface{}{"type": "text", "text": m["text"]})
 		case "image_url":
 			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := urlObj["url"].(string); ok && strings.HasPrefix(url, "data:") {
-					parts := strings.SplitN(url, ",", 2)
-					if len(parts) == 2 {
-						mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						parts := strings.SplitN(url, ",", 2)
+						if len(parts) == 2 {
+							mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+							result = append(result, map[string]interface{}{
+								"type":   "image",
+								"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							})
+						}
+					} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
 						result = append(result, map[string]interface{}{
 							"type":   "image",
-							"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							"source": map[string]interface{}{"type": "url", "url": url},
 						})
 					}
 				}
@@ -819,4 +971,47 @@ func extractToolResultContent(content interface{}) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+func normalizeToolResultContent(content interface{}) interface{} {
+	if content == nil {
+		return ""
+	}
+	if str, ok := content.(string); ok {
+		return str
+	}
+	if arr, ok := content.([]interface{}); ok {
+		return convertOpenAIContentToClaude(arr)
+	}
+	return extractToolResultContent(content)
+}
+
+// mapClaudeStopToOpenAIFinish maps Claude stop_reason to OpenAI finish_reason.
+func mapClaudeStopToOpenAIFinish(stopReason string) string {
+	switch stopReason {
+	case "tool_use":
+		return "tool_calls"
+	case "max_tokens":
+		return "length"
+	case "end_turn", "stop_sequence":
+		return "stop"
+	default:
+		return "stop"
+	}
+}
+
+// mapOpenAIFinishToClaudeStop maps OpenAI finish_reason to Claude stop_reason.
+func mapOpenAIFinishToClaudeStop(finishReason string) string {
+	switch finishReason {
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	case "content_filter":
+		return "end_turn"
+	case "stop":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
 }

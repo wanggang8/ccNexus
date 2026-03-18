@@ -381,14 +381,19 @@ a:focus-visible {
     transition: all var(--transition-fast);
 }
 
-/* Smooth Color Transitions */
-* {
+/* Smooth Color Transitions for theme switching (scoped to interactive elements) */
+.btn, .card, .nav-link, .badge, .stat-card, .toast, .modal,
+.form-input, .form-select, .form-textarea,
+#sidebar, #content, body {
     transition-property: color, background-color, border-color;
     transition-duration: var(--transition-fast);
     transition-timing-function: ease;
 }
 
 /* Prevent transition on page load */
-.preload * {
+.preload .btn, .preload .card, .preload .nav-link, .preload .badge,
+.preload .stat-card, .preload .toast, .preload .modal,
+.preload .form-input, .preload .form-select, .preload .form-textarea,
+.preload #sidebar, .preload #content, .preload body {
     transition: none !important;
 }

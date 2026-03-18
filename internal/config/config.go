@@ -3,20 +3,106 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"sync"
 )
 
+const (
+	AuthModeAPIKey         = "api_key"
+	AuthModeTokenPool      = "token_pool"
+	AuthModeCodexTokenPool = "codex_token_pool"
+
+	CodexTokenPoolAPIURL      = "https://chatgpt.com/backend-api/codex"
+	CodexTokenPoolTransformer = "openai2"
+)
+
+func NormalizeAuthMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case AuthModeTokenPool:
+		return AuthModeTokenPool
+	case AuthModeCodexTokenPool:
+		return AuthModeCodexTokenPool
+	default:
+		return AuthModeAPIKey
+	}
+}
+
+func IsTokenPoolAuthMode(mode string) bool {
+	normalized := NormalizeAuthMode(mode)
+	return normalized == AuthModeTokenPool || normalized == AuthModeCodexTokenPool
+}
+
+func ApplyEndpointAuthModeRules(ep *Endpoint) {
+	if ep == nil {
+		return
+	}
+
+	ep.AuthMode = NormalizeAuthMode(ep.AuthMode)
+	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
+	ep.Transformer = strings.TrimSpace(ep.Transformer)
+
+	// Compatibility migration:
+	// legacy token_pool + openai2 + codex backend URL => codex_token_pool.
+	if ep.AuthMode == AuthModeTokenPool &&
+		strings.EqualFold(ep.Transformer, CodexTokenPoolTransformer) &&
+		isCodexBackendAPIURL(ep.APIUrl) {
+		ep.AuthMode = AuthModeCodexTokenPool
+	}
+
+	if ep.AuthMode == AuthModeCodexTokenPool {
+		ep.APIUrl = CodexTokenPoolAPIURL
+		ep.Transformer = CodexTokenPoolTransformer
+		if strings.TrimSpace(ep.Model) == "" {
+			ep.Model = "gpt-5-codex"
+		}
+		ep.APIKey = ""
+		return
+	}
+
+	if ep.AuthMode == AuthModeTokenPool {
+		ep.APIKey = ""
+	}
+}
+
+func isCodexBackendAPIURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+
+	normalized := trimmed
+	if !strings.HasPrefix(normalized, "http://") && !strings.HasPrefix(normalized, "https://") {
+		normalized = "https://" + normalized
+	}
+
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed == nil {
+		return strings.HasSuffix(strings.ToLower(strings.TrimSuffix(trimmed, "/")), "chatgpt.com/backend-api/codex")
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsed.Host))
+	cleanPath := path.Clean(strings.TrimSpace(parsed.Path))
+	if host != "chatgpt.com" {
+		return false
+	}
+	return strings.HasSuffix(cleanPath, "/backend-api/codex") || strings.HasSuffix(cleanPath, "/backend-api/codex/v1")
+}
+
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
-	ID          int64  `json:"id,omitempty"`          // Storage ID, 0 when new (supports rename)
-	Name        string `json:"name"`
-	APIUrl      string `json:"apiUrl"`
-	APIKey      string `json:"apiKey"`
-	Enabled     bool   `json:"enabled"`
-	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, gemini, deepseek
-	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
-	Remark      string `json:"remark,omitempty"`      // Optional remark for the endpoint
+	ID               int64  `json:"id,omitempty"`               // Storage ID, 0 when new (supports rename)
+	Name             string `json:"name"`
+	APIUrl           string `json:"apiUrl"`
+	APIKey           string `json:"apiKey"`
+	AuthMode         string `json:"authMode,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Transformer      string `json:"transformer,omitempty"`      // Transformer type: claude, openai, gemini, deepseek
+	Model            string `json:"model,omitempty"`            // Target model name for non-Claude APIs
+	Remark           string `json:"remark,omitempty"`           // Optional remark for the endpoint
+	RequestOverrides string `json:"requestOverrides,omitempty"` // JSON string to override/delete request body fields
 }
 
 // WebDAVConfig represents WebDAV synchronization configuration
@@ -75,25 +161,29 @@ type ProxyConfig struct {
 
 // Config represents the application configuration
 type Config struct {
-	Port                int             `json:"port"`
-	Endpoints           []Endpoint      `json:"endpoints"`
-	LogLevel            int             `json:"logLevel"`                      // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
-	Language            string          `json:"language"`                      // UI language: en, zh-CN
-	Theme               string          `json:"theme"`                         // UI theme: light, dark
-	ThemeAuto           bool            `json:"themeAuto"`                     // Auto switch theme based on time
-	AutoLightTheme      string          `json:"autoLightTheme,omitempty"`      // Theme to use in daytime when auto mode is on
-	AutoDarkTheme       string          `json:"autoDarkTheme,omitempty"`       // Theme to use in nighttime when auto mode is on
-	WindowWidth         int             `json:"windowWidth"`                   // Window width in pixels
-	WindowHeight        int             `json:"windowHeight"`                  // Window height in pixels
+	Port                      int             `json:"port"`
+	Endpoints                 []Endpoint      `json:"endpoints"`
+	LogLevel                  int             `json:"logLevel"`                      // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+	Language                  string          `json:"language"`                      // UI language: en, zh-CN
+	Theme                     string          `json:"theme"`                         // UI theme: light, dark
+	ThemeAuto                 bool            `json:"themeAuto"`                     // Auto switch theme based on time
+	AutoLightTheme            string          `json:"autoLightTheme,omitempty"`      // Theme to use in daytime when auto mode is on
+	AutoDarkTheme             string          `json:"autoDarkTheme,omitempty"`       // Theme to use in nighttime when auto mode is on
+	WindowWidth               int             `json:"windowWidth"`                   // Window width in pixels
+	WindowHeight              int             `json:"windowHeight"`                  // Window height in pixels
 	CloseWindowBehavior       string          `json:"closeWindowBehavior,omitempty"` // "quit", "minimize", "ask"
 	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`     // Enable Claude Code task completion notification
 	ClaudeNotificationType    string          `json:"claudeNotificationType"`        // Notification type: toast, dialog, disabled
+	AugmentEnabled            bool            `json:"augmentEnabled"`                // Enable Augment plugin integration
+	AugmentPort               int             `json:"augmentPort"`                   // Augment server port (default 8888)
+	AugmentKeyPath            string          `json:"augmentKeyPath,omitempty"`      // Path to Augment private key (optional, auto-initialized)
 	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`              // WebDAV synchronization config
-	Backup              *BackupConfig   `json:"backup,omitempty"`              // Backup/sync configuration
-	Update              *UpdateConfig   `json:"update,omitempty"`              // Update configuration
-	Terminal            *TerminalConfig `json:"terminal,omitempty"`            // Terminal launcher config
-	Proxy               *ProxyConfig    `json:"proxy,omitempty"`               // HTTP proxy config
-	mu                  sync.RWMutex
+	Backup                    *BackupConfig   `json:"backup,omitempty"`              // Backup/sync configuration
+	Update                    *UpdateConfig   `json:"update,omitempty"`              // Update configuration
+	Terminal                  *TerminalConfig `json:"terminal,omitempty"`            // Terminal launcher config
+	Proxy                     *ProxyConfig    `json:"proxy,omitempty"`               // HTTP proxy config
+	CodexProxy                *ProxyConfig    `json:"codexProxy,omitempty"`          // Codex dedicated proxy config
+	mu                        sync.RWMutex
 }
 
 // DefaultConfig returns a default configuration
@@ -109,6 +199,7 @@ func DefaultConfig() *Config {
 				Name:        "Claude Official",
 				APIUrl:      "api.anthropic.com",
 				APIKey:      "your-api-key-here",
+				AuthMode:    AuthModeAPIKey,
 				Enabled:     true,
 				Transformer: "claude",
 			},
@@ -133,22 +224,27 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no endpoints configured")
 	}
 
-	for i, ep := range c.Endpoints {
-		if ep.APIUrl == "" {
+	for i := range c.Endpoints {
+		if c.Endpoints[i].Transformer == "" {
+			c.Endpoints[i].Transformer = "claude"
+		}
+		ApplyEndpointAuthModeRules(&c.Endpoints[i])
+
+		if c.Endpoints[i].APIUrl == "" {
 			return fmt.Errorf("endpoint %d: apiUrl is required", i+1)
 		}
-		if ep.APIKey == "" {
+		if c.Endpoints[i].AuthMode == AuthModeAPIKey && strings.TrimSpace(c.Endpoints[i].APIKey) == "" {
 			return fmt.Errorf("endpoint %d: apiKey is required", i+1)
 		}
 
-		// Default to claude transformer if not specified
-		if ep.Transformer == "" {
-			c.Endpoints[i].Transformer = "claude"
-		}
-
 		// Non-Claude transformers require model field
-		if ep.Transformer != "claude" && ep.Model == "" {
-			return fmt.Errorf("endpoint %d (%s): model is required for transformer '%s'", i+1, ep.Name, ep.Transformer)
+		if c.Endpoints[i].Transformer != "claude" && c.Endpoints[i].Model == "" {
+			return fmt.Errorf(
+				"endpoint %d (%s): model is required for transformer '%s'",
+				i+1,
+				c.Endpoints[i].Name,
+				c.Endpoints[i].Transformer,
+			)
 		}
 	}
 
@@ -386,6 +482,20 @@ func (c *Config) UpdateProxy(proxy *ProxyConfig) {
 	c.Proxy = proxy
 }
 
+// GetCodexProxy returns the Codex dedicated proxy configuration (thread-safe)
+func (c *Config) GetCodexProxy() *ProxyConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.CodexProxy
+}
+
+// UpdateCodexProxy updates the Codex dedicated proxy configuration (thread-safe)
+func (c *Config) UpdateCodexProxy(proxy *ProxyConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.CodexProxy = proxy
+}
+
 // GetClaudeNotification returns the Claude notification settings (thread-safe)
 func (c *Config) GetClaudeNotification() (enabled bool, notifType string) {
 	c.mu.RLock()
@@ -401,6 +511,52 @@ func (c *Config) UpdateClaudeNotification(enabled bool, notifType string) {
 	c.ClaudeNotificationType = notifType
 }
 
+// GetAugmentConfig returns the Augment integration settings (thread-safe)
+func (c *Config) GetAugmentConfig() (enabled bool, port int, keyPath string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	p := c.AugmentPort
+	if p == 0 {
+		p = 8888
+	}
+	return c.AugmentEnabled, p, c.AugmentKeyPath
+}
+
+// GetAugmentEnabled returns whether Augment integration is enabled (thread-safe)
+func (c *Config) GetAugmentEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentEnabled
+}
+
+// GetAugmentPort returns the Augment server port (thread-safe)
+func (c *Config) GetAugmentPort() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.AugmentPort == 0 {
+		return 8888
+	}
+	return c.AugmentPort
+}
+
+// GetAugmentKeyPath returns the Augment private key path (thread-safe)
+func (c *Config) GetAugmentKeyPath() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentKeyPath
+}
+
+// UpdateAugmentConfig updates the Augment integration settings (thread-safe)
+func (c *Config) UpdateAugmentConfig(enabled bool, port int, keyPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AugmentEnabled = enabled
+	if port > 0 {
+		c.AugmentPort = port
+	}
+	c.AugmentKeyPath = keyPath
+}
+
 // StorageAdapter defines the interface needed for loading/saving config
 type StorageAdapter interface {
 	GetEndpoints() ([]StorageEndpoint, error)
@@ -413,15 +569,17 @@ type StorageAdapter interface {
 
 // StorageEndpoint represents an endpoint in storage
 type StorageEndpoint struct {
-	ID          int64  // 0 when unknown (adapter path); required for rename support
-	Name        string
-	APIUrl      string
-	APIKey      string
-	Enabled     bool
-	Transformer string
-	Model       string
-	Remark      string
-	SortOrder   int
+	ID               int64  // 0 when unknown (adapter path); required for rename support
+	Name             string
+	APIUrl           string
+	APIKey           string
+	AuthMode         string
+	Enabled          bool
+	Transformer      string
+	Model            string
+	Remark           string
+	RequestOverrides string
+	SortOrder        int
 }
 
 // LoadFromStorage loads configuration from SQLite storage
@@ -438,18 +596,21 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 
 	for _, ep := range endpoints {
 		endpoint := Endpoint{
-			ID:          ep.ID,
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Remark:      ep.Remark,
+			ID:               ep.ID,
+			Name:             ep.Name,
+			APIUrl:           ep.APIUrl,
+			APIKey:           ep.APIKey,
+			AuthMode:         NormalizeAuthMode(ep.AuthMode),
+			Enabled:          ep.Enabled,
+			Transformer:      ep.Transformer,
+			Model:            ep.Model,
+			Remark:           ep.Remark,
+			RequestOverrides: ep.RequestOverrides,
 		}
 		if endpoint.Transformer == "" {
 			endpoint.Transformer = "claude"
 		}
+		ApplyEndpointAuthModeRules(&endpoint)
 		config.Endpoints = append(config.Endpoints, endpoint)
 	}
 
@@ -624,6 +785,9 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	if proxyURL, err := storage.GetConfig("proxy_url"); err == nil && proxyURL != "" {
 		config.Proxy = &ProxyConfig{URL: proxyURL}
 	}
+	if codexProxyURL, err := storage.GetConfig("codex_proxy_url"); err == nil && codexProxyURL != "" {
+		config.CodexProxy = &ProxyConfig{URL: codexProxyURL}
+	}
 
 	// Load Claude notification config
 	if enabledStr, err := storage.GetConfig("claude_notification_enabled"); err == nil && enabledStr != "" {
@@ -635,6 +799,22 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	// Default to "toast" if not set
 	if config.ClaudeNotificationType == "" {
 		config.ClaudeNotificationType = "toast"
+	}
+
+	// Load Augment config
+	if augmentEnabledStr, err := storage.GetConfig("augment_enabled"); err == nil && augmentEnabledStr != "" {
+		config.AugmentEnabled = augmentEnabledStr == "true"
+	}
+	if augmentPortStr, err := storage.GetConfig("augment_port"); err == nil && augmentPortStr != "" {
+		if port, err := strconv.Atoi(augmentPortStr); err == nil {
+			config.AugmentPort = port
+		}
+	}
+	if config.AugmentPort == 0 {
+		config.AugmentPort = 8888
+	}
+	if augmentKeyPath, err := storage.GetConfig("augment_key_path"); err == nil {
+		config.AugmentKeyPath = augmentKeyPath
 	}
 
 	return config, nil
@@ -665,15 +845,34 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	// Save/update endpoints (supports rename via ID)
 	for i, ep := range c.Endpoints {
 		endpoint := &StorageEndpoint{
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Remark:      ep.Remark,
-			SortOrder:   i, // Use array index as sort order
+			Name:      ep.Name,
+			SortOrder: i, // Use array index as sort order
 		}
+		normalizedEndpoint := Endpoint{
+			Name:             ep.Name,
+			APIUrl:           ep.APIUrl,
+			APIKey:           ep.APIKey,
+			AuthMode:         ep.AuthMode,
+			Enabled:          ep.Enabled,
+			Transformer:      ep.Transformer,
+			Model:            ep.Model,
+			Remark:           ep.Remark,
+			RequestOverrides: ep.RequestOverrides,
+		}
+		if normalizedEndpoint.Transformer == "" {
+			normalizedEndpoint.Transformer = "claude"
+		}
+		ApplyEndpointAuthModeRules(&normalizedEndpoint)
+		endpoint.APIUrl = normalizedEndpoint.APIUrl
+		endpoint.APIKey = normalizedEndpoint.APIKey
+		endpoint.AuthMode = normalizedEndpoint.AuthMode
+		endpoint.Enabled = normalizedEndpoint.Enabled
+		endpoint.Transformer = normalizedEndpoint.Transformer
+		endpoint.Model = normalizedEndpoint.Model
+		endpoint.Remark = normalizedEndpoint.Remark
+		endpoint.RequestOverrides = normalizedEndpoint.RequestOverrides
+		endpoint.SortOrder = i
+
 		// Prefer ID for update (handles rename: ep.ID from old name, ep.Name is new)
 		if ep.ID > 0 {
 			endpoint.ID = ep.ID
@@ -839,6 +1038,13 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	if err := storage.SetConfig("proxy_url", proxyURL); err != nil {
 		return fmt.Errorf("failed to save proxy_url config: %w", err)
 	}
+	codexProxyURL := ""
+	if c.CodexProxy != nil {
+		codexProxyURL = c.CodexProxy.URL
+	}
+	if err := storage.SetConfig("codex_proxy_url", codexProxyURL); err != nil {
+		return fmt.Errorf("failed to save codex_proxy_url config: %w", err)
+	}
 
 	// Save Claude notification config
 	if err := storage.SetConfig("claude_notification_enabled", strconv.FormatBool(c.ClaudeNotificationEnabled)); err != nil {
@@ -846,6 +1052,21 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	if err := storage.SetConfig("claude_notification_type", c.ClaudeNotificationType); err != nil {
 		return fmt.Errorf("failed to save claude_notification_type config: %w", err)
+	}
+
+	// Save Augment config
+	if err := storage.SetConfig("augment_enabled", strconv.FormatBool(c.AugmentEnabled)); err != nil {
+		return fmt.Errorf("failed to save augment_enabled config: %w", err)
+	}
+	augmentPort := c.AugmentPort
+	if augmentPort == 0 {
+		augmentPort = 8888
+	}
+	if err := storage.SetConfig("augment_port", strconv.Itoa(augmentPort)); err != nil {
+		return fmt.Errorf("failed to save augment_port config: %w", err)
+	}
+	if err := storage.SetConfig("augment_key_path", c.AugmentKeyPath); err != nil {
+		return fmt.Errorf("failed to save augment_key_path config: %w", err)
 	}
 
 	return nil

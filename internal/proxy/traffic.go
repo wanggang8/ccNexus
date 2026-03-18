@@ -10,7 +10,7 @@ import (
 
 const (
 	// MaxTrafficLogs is the maximum number of traffic logs to keep in memory
-	MaxTrafficLogs = 500
+	MaxTrafficLogs = 10
 	// MaxBodySize is the maximum size of request/response body to store (512KB)
 	MaxBodySize = 512 * 1024
 )

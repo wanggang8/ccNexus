@@ -370,8 +370,8 @@ func TestClaudeRespToGemini_WithToolUse(t *testing.T) {
 	candidate := candidates[0].(map[string]interface{})
 
 	// Check finishReason
-	if candidate["finishReason"] != "TOOL_CODE" {
-		t.Errorf("Expected finishReason 'TOOL_CODE', got '%v'", candidate["finishReason"])
+	if candidate["finishReason"] != "STOP" {
+		t.Errorf("Expected finishReason 'STOP', got '%v'", candidate["finishReason"])
 	}
 
 	// Check functionCall
@@ -475,7 +475,7 @@ func TestGeminiRespToClaude_Basic(t *testing.T) {
 
 func TestGeminiRespToClaude_WithFunctionCall(t *testing.T) {
 	geminiResp := `{
-		"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "/tmp/a"}}}]}, "finishReason": "TOOL_CODE"}],
+		"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "/tmp/a"}}}]}, "finishReason": "STOP"}],
 		"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 15, "totalTokenCount": 25}
 	}`
 
@@ -650,7 +650,7 @@ func TestGeminiStreamToClaude_WithFunctionCall(t *testing.T) {
 	ctx.ModelName = "claude-sonnet-4-20250514"
 	ctx.MessageStartSent = true
 
-	geminiSSE := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"/tmp/a"}}}]},"finishReason":"TOOL_CODE"}]}`
+	geminiSSE := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"/tmp/a"}}}]},"finishReason":"STOP"}]}`
 
 	result, err := GeminiStreamToClaude([]byte(geminiSSE), ctx)
 	if err != nil {

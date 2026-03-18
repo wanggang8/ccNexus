@@ -212,14 +212,30 @@ span.compact-badge-btn:hover {
     cursor: default !important;
 }
 
+/* 地址与复制按钮同一行，复制按钮紧贴地址 */
+.compact-url-wrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.compact-url-wrap .compact-url {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.compact-url-wrap .compact-url-copy-btn {
+    flex-shrink: 0;
+}
+
 .compact-url {
     color: var(--text-secondary, #666);
     font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 1;
-    min-width: 0;
 }
 
 .compact-url-icon {

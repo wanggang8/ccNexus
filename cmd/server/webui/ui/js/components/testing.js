@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { notifications } from '../utils/notifications.js';
+import { escapeHtml, formatJSON, copyText } from '../utils/formatters.js';
 
 class Testing {
     constructor() {
@@ -50,7 +51,7 @@ class Testing {
             }
 
             select.innerHTML = enabledEndpoints.map(ep =>
-                `<option value="${this.escapeHtml(ep.name)}">${this.escapeHtml(ep.name)}</option>`
+                `<option value="${escapeHtml(ep.name)}">${escapeHtml(ep.name)}</option>`
             ).join('');
         } catch (error) {
             notifications.error('Failed to load endpoints: ' + error.message);
@@ -82,20 +83,19 @@ class Testing {
                                 <span class="badge badge-success">Success</span>
                                 <span class="text-muted ml-2">Latency: ${result.latency}ms</span>
                             </div>
-                            <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(responseText)}">
+                            <button class="btn btn-sm btn-secondary testing-copy-btn">
                                 Copy response
                             </button>
                         </div>
                         <div>
-                            <pre class="code-block testing-result-code-block">${this.formatJSON(responseText)}</pre>
+                            <pre class="code-block testing-result-code-block">${formatJSON(responseText)}</pre>
                         </div>
                     </div>
                 `;
                 const copyBtn = document.querySelector('.testing-copy-btn');
                 if (copyBtn) {
                     copyBtn.addEventListener('click', () => {
-                        const text = copyBtn.dataset.copy || '';
-                        this.copyText(text);
+                        this.copyTextWithNotify(responseText);
                     });
                 }
                 notifications.success('Test completed successfully');
@@ -107,20 +107,19 @@ class Testing {
                             <div>
                                 <span class="badge badge-danger">Failed</span>
                             </div>
-                            <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(errorText)}">
+                            <button class="btn btn-sm btn-secondary testing-copy-btn">
                                 Copy error
                             </button>
                         </div>
                         <div>
-                            <pre class="code-block testing-result-code-block">${this.formatJSON(errorText)}</pre>
+                            <pre class="code-block testing-result-code-block">${formatJSON(errorText)}</pre>
                         </div>
                     </div>
                 `;
                 const copyBtn = document.querySelector('.testing-copy-btn');
                 if (copyBtn) {
                     copyBtn.addEventListener('click', () => {
-                        const text = copyBtn.dataset.copy || '';
-                        this.copyText(text);
+                        this.copyTextWithNotify(errorText);
                     });
                 }
                 notifications.error('Test failed');
@@ -133,81 +132,33 @@ class Testing {
                         <div>
                             <span class="badge badge-danger">Error</span>
                         </div>
-                        <button class="btn btn-sm btn-secondary testing-copy-btn" data-copy="${this.escapeHtml(errorText)}">
+                        <button class="btn btn-sm btn-secondary testing-copy-btn">
                             Copy error
                         </button>
                     </div>
                     <div>
-                        <pre class="code-block testing-result-code-block">${this.formatJSON(errorText)}</pre>
+                        <pre class="code-block testing-result-code-block">${formatJSON(errorText)}</pre>
                     </div>
                 </div>
             `;
             const copyBtn = document.querySelector('.testing-copy-btn');
             if (copyBtn) {
                 copyBtn.addEventListener('click', () => {
-                    const text = copyBtn.dataset.copy || '';
-                    this.copyText(text);
+                    this.copyTextWithNotify(errorText);
                 });
             }
             notifications.error('Test failed: ' + error.message);
         }
     }
 
-    formatJSON(str) {
-        if (!str) return this.escapeHtml('No response');
-        try {
-            const obj = JSON.parse(str);
-            return this.escapeHtml(JSON.stringify(obj, null, 2));
-        } catch {
-            return this.escapeHtml(str);
-        }
-    }
-
-    copyText(text) {
+    copyTextWithNotify(text) {
         if (!text) {
             notifications.error('Nothing to copy');
             return;
         }
-
-        try {
-            if (typeof navigator !== 'undefined' &&
-                navigator.clipboard &&
-                typeof navigator.clipboard.writeText === 'function') {
-                navigator.clipboard.writeText(text).then(() => {
-                    notifications.success('Copied to clipboard');
-                }).catch(() => {
-                    notifications.error('Failed to copy to clipboard');
-                });
-                return;
-            }
-        } catch {
-            // fall through
-        }
-
-        try {
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            textarea.style.position = 'fixed';
-            textarea.style.top = '-1000px';
-            textarea.style.left = '-1000px';
-            document.body.appendChild(textarea);
-            textarea.focus();
-            textarea.select();
-            const ok = document.execCommand && document.execCommand('copy');
-            document.body.removeChild(textarea);
-            if (ok) {
-                notifications.success('Copied to clipboard');
-            } else {
-                notifications.error('Failed to copy to clipboard');
-            }
-        } catch {
-            notifications.error('Failed to copy to clipboard');
-        }
-    }
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        copyText(text)
+            .then(() => notifications.success('Copied to clipboard'))
+            .catch(() => notifications.error('Failed to copy to clipboard'));
     }
 }
 
