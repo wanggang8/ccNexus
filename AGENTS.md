@@ -2,29 +2,57 @@
 
 ## Cursor Cloud specific instructions
 
-**ccNexus** is a smart API endpoint rotation proxy for Claude Code and Codex CLI. It has two build targets sharing the same `internal/` packages:
+### Project overview
 
-- **Headless server** (`cmd/server/`) — HTTP API on port 3000 with an embedded Web UI at `/ui/`
-- **Desktop app** (`cmd/desktop/`) — Wails v2 GUI (requires GTK3 + WebKit2GTK on Linux)
+ccNexus is a Go-based API endpoint rotation proxy with two deployment modes:
+- **Server mode** (`cmd/server/`): headless HTTP service (port 3000 by default). This is the primary mode for Cloud Agent development.
+- **Desktop mode** (`cmd/desktop/`): Wails v2 GUI app. Requires a `augment-private-key.pem` file embedded at build time and Wails CLI; will not compile without it.
 
-### Building and running
+### Running tests
 
-| Task | Command |
-|---|---|
-| Run all tests | `go test ./...` |
-| Lint (built-in) | `go vet ./...` |
-| Build headless server | `go build -o build/bin/ccnexus-server ./cmd/server` |
-| Run headless server | `CCNEXUS_PORT=3000 CCNEXUS_DATA_DIR=/tmp/ccnexus-dev ./build/bin/ccnexus-server` |
-| Build desktop frontend | `cd cmd/desktop/frontend && npm run build` |
-| Health check | `curl http://localhost:3000/health` |
-| Web UI | `http://localhost:3000/ui/` |
+```bash
+# All tests (desktop package will fail with "pattern augment-private-key.pem: no matching files found" — this is expected)
+go test ./...
 
-See `docs/development.md` for the full development guide.
+# Skip the desktop package (recommended for CI/cloud)
+go test $(go list ./... | grep -v cmd/desktop)
 
-### Non-obvious caveats
+# Augment-specific tests
+go test -v ./internal/transformer/augment/...
+```
 
-- **Desktop `go:embed` requirement**: `cmd/desktop/` embeds `frontend/dist` via `go:embed`. You must run `cd cmd/desktop/frontend && npm install && npm run build` before `go test ./...` or `go build ./cmd/desktop` will fail. The headless server (`cmd/server/`) does not depend on this.
-- **No `go.sum` in git**: The repo does not check in `go.sum`. Running `go mod tidy` generates it. This is handled automatically by the update script.
-- **SQLite is embedded**: No external database server is needed. The DB file is created automatically at `$CCNEXUS_DB_PATH` or `~/.ccNexus/ccnexus.db`.
-- **`go vet` warnings**: There are pre-existing `go vet` warnings about lock value copies in `internal/service/`. These are not blocking and exist in the upstream code.
-- **Environment variables**: `CCNEXUS_PORT` (default 3000), `CCNEXUS_DATA_DIR`, `CCNEXUS_DB_PATH`, `CCNEXUS_UI_TOKEN` (optional auth for Web UI), `CCNEXUS_LOG_LEVEL`.
+### Linting
+
+```bash
+go vet $(go list ./... | grep -v cmd/desktop)
+```
+
+The `cmd/desktop` package always fails `go vet` because it uses `//go:embed` on a file (`augment-private-key.pem`) that only exists in release builds. Filter it out.
+
+### Building and running the server
+
+```bash
+cd cmd/server && go build -o ccnexus-server .
+./ccnexus-server
+# Health check: curl http://localhost:3000/health
+```
+
+Data directory: `~/.ccNexus/ccnexus.db` (auto-created on first run).
+
+### Frontend dependencies
+
+The frontend lives at `cmd/desktop/frontend/` and uses npm + Vite (vanilla JS, no framework). Install with:
+
+```bash
+cd cmd/desktop/frontend && npm install
+```
+
+This is only needed for desktop mode development, not for server mode.
+
+### Key caveats
+
+- The Go module requires **Go 1.24+** (toolchain `go1.24.3`). The `go.mod` declares `go 1.24.0`.
+- `cmd/desktop/app.go` embeds `augment-private-key.pem` via `//go:embed`. This file is not in the repo. Desktop compilation will fail without it. Server mode is unaffected.
+- SQLite is used via pure-Go `modernc.org/sqlite` — no CGO or system SQLite required.
+- The proxy listens on port 3000. The Augment server (when enabled) listens on port 8888.
+- See `CLAUDE.md` for architecture details, transformer registration patterns, and development workflow.
