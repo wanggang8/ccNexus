@@ -135,14 +135,15 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 // createEndpoint creates a new endpoint
 func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		AuthMode    string `json:"authMode"`
-		Enabled     bool   `json:"enabled"`
-		Transformer string `json:"transformer"`
-		Model       string `json:"model"`
-		Remark      string `json:"remark"`
+		Name             string `json:"name"`
+		APIUrl           string `json:"apiUrl"`
+		APIKey           string `json:"apiKey"`
+		AuthMode         string `json:"authMode"`
+		Enabled          bool   `json:"enabled"`
+		Transformer      string `json:"transformer"`
+		Model            string `json:"model"`
+		Remark           string `json:"remark"`
+		RequestOverrides string `json:"requestOverrides"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -199,17 +200,18 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Create new endpoint
 	endpoint := &storage.Endpoint{
-		Name:        req.Name,
-		APIUrl:      normalizeAPIUrl(req.APIUrl),
-		APIKey:      req.APIKey,
-		AuthMode:    authMode,
-		Enabled:     req.Enabled,
-		Transformer: req.Transformer,
-		Model:       req.Model,
-		Remark:      req.Remark,
-		SortOrder:   len(endpoints),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		Name:             req.Name,
+		APIUrl:           normalizeAPIUrl(req.APIUrl),
+		APIKey:           req.APIKey,
+		AuthMode:         authMode,
+		Enabled:          req.Enabled,
+		Transformer:      req.Transformer,
+		Model:            req.Model,
+		Remark:           req.Remark,
+		RequestOverrides: req.RequestOverrides,
+		SortOrder:        len(endpoints),
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
 	if err := h.storage.SaveEndpoint(endpoint); err != nil {
@@ -232,14 +234,15 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 // updateEndpoint updates an existing endpoint
 func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name string) {
 	var req struct {
-		Name        string `json:"name"`
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		AuthMode    string `json:"authMode"`
-		Enabled     bool   `json:"enabled"`
-		Transformer string `json:"transformer"`
-		Model       string `json:"model"`
-		Remark      string `json:"remark"`
+		Name             string `json:"name"`
+		APIUrl           string `json:"apiUrl"`
+		APIKey           string `json:"apiKey"`
+		AuthMode         string `json:"authMode"`
+		Enabled          bool   `json:"enabled"`
+		Transformer      string `json:"transformer"`
+		Model            string `json:"model"`
+		Remark           string `json:"remark"`
+		RequestOverrides string `json:"requestOverrides"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -314,6 +317,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		existing.Model = req.Model
 	}
 	existing.Remark = req.Remark
+	existing.RequestOverrides = req.RequestOverrides
 	existing.UpdatedAt = time.Now()
 
 	if err := h.storage.UpdateEndpoint(existing); err != nil {

@@ -17,6 +17,7 @@
 
 - **多端点轮换**：自动故障转移，一个失败自动切换下一个
 - **API 格式转换**：支持 Claude、OpenAI、Gemini 格式互转
+- **Augment 插件支持**：独立端口服务，支持 VSCode Augment 插件加密/明文请求
 - **Codex Token Pool**：支持批量导入 `access_token/refresh_token`，自动轮换、自动刷新、失效隔离与状态管理
 - **Token Pool 使用统计**：单条凭证请求/错误/Token 统计，支持快捷查看
 - **实时统计**：事件驱动的零延迟统计更新，支持今日/昨日/本周/本月四周期快速切换
@@ -104,6 +105,7 @@ wire_api = "responses"  # 或 "chat"
 - [详细配置](docs/configuration.md)
 - [开发指南](docs/development.md)
 - [常见问题](docs/FAQ.md)
+- [Augment 集成说明](AUGMENT_INTEGRATION.md)
 
 ## 许可证
 

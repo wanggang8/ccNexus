@@ -6,8 +6,8 @@ export function ActivateEndpointCredential(arg1, arg2) {
   return window['go']['main']['App']['ActivateEndpointCredential'](arg1, arg2);
 }
 
-export function AddEndpoint(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['AddEndpoint'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function AddEndpoint(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['AddEndpoint'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function AddProjectDir(arg1) {
@@ -116,6 +116,10 @@ export function GetArchiveData(arg1) {
 
 export function GetArchiveTrend(arg1) {
   return window['go']['main']['App']['GetArchiveTrend'](arg1);
+}
+
+export function GetAugmentConfig() {
+  return window['go']['main']['App']['GetAugmentConfig']();
 }
 
 export function GetAutoDarkTheme() {
@@ -338,6 +342,10 @@ export function RestoreFromWebDAV(arg1, arg2) {
   return window['go']['main']['App']['RestoreFromWebDAV'](arg1, arg2);
 }
 
+export function SaveAugmentConfig(arg1) {
+  return window['go']['main']['App']['SaveAugmentConfig'](arg1);
+}
+
 export function SaveEndpointsToFile(arg1) {
   return window['go']['main']['App']['SaveEndpointsToFile'](arg1);
 }
@@ -450,8 +458,8 @@ export function UpdateConfig(arg1) {
   return window['go']['main']['App']['UpdateConfig'](arg1);
 }
 
-export function UpdateEndpoint(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
-  return window['go']['main']['App']['UpdateEndpoint'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+export function UpdateEndpoint(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['main']['App']['UpdateEndpoint'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }
 
 export function UpdateEndpointCredentialToken(arg1, arg2, arg3, arg4) {

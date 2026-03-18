@@ -1144,6 +1144,63 @@ body {
     padding: 25px 30px 30px 30px;
 }
 
+/* JSON Merge Section */
+.json-merge-section {
+    margin-top: 20px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 15px;
+}
+
+.json-merge-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.json-merge-toggle-icon {
+    font-size: 12px;
+    transition: transform 0.2s;
+}
+
+.json-merge-body {
+    margin-top: 10px;
+}
+
+.json-merge-textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    resize: vertical;
+    background-color: var(--input-bg);
+    color: var(--text-primary);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.json-merge-textarea:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.json-merge-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.json-merge-help {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
 #welcomeModal .modal-header {
     display: flex;
     justify-content: space-between;

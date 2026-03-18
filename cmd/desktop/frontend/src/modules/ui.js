@@ -407,6 +407,7 @@ export function initUI() {
                     <button class="modal-close" onclick="window.closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <input type="hidden" id="requestOverrides" value="">
                     <div class="form-group">
                         <label><span class="required">*</span>${t('modal.name')}</label>
                         <input type="text" id="endpointName" placeholder="${t('modal.namePlaceholder')}">
@@ -477,6 +478,22 @@ export function initUI() {
                     <div class="form-group">
                         <label>${t('modal.remark')}</label>
                         <input type="text" id="endpointRemark" placeholder="${t('modal.remarkHelp')}">
+                    </div>
+                    
+                    <!-- JSON Merge Section -->
+                    <div class="form-group json-merge-section">
+                        <div class="json-merge-header" onclick="window.toggleJsonMergeSection()">
+                            <span class="json-merge-toggle-icon" id="jsonMergeToggleIcon">▶</span>
+                            <label style="cursor: pointer; margin: 0;">${t('modal.jsonMerge')}</label>
+                        </div>
+                        <div class="json-merge-body" id="jsonMergeBody" style="display: none;">
+                            <textarea id="jsonMergeInput" class="json-merge-textarea" placeholder="${t('modal.jsonMergePlaceholder')}"></textarea>
+                            <div class="json-merge-actions">
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="window.applyJsonMerge()">${t('modal.jsonMergeApply')}</button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="window.clearJsonMerge()">${t('modal.jsonMergeClear')}</button>
+                            </div>
+                            <p class="json-merge-help">${t('modal.jsonMergeHelp')}</p>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -780,6 +797,29 @@ export function initUI() {
                         <input type="text" id="settingsProxyUrl" placeholder="${t('settings.proxyUrlPlaceholder')}">
                         <p style="color: #666; font-size: 12px; margin-top: 5px;">
                             ${t('settings.proxyHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 14px; margin-top: 8px;">
+                        <label style="font-weight: 600; font-size: 13px; color: var(--text-secondary);">${t('settings.augmentSection')}</label>
+                    </div>
+                    <div class="form-group">
+                        <label>${t('settings.augmentEnabled')}</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label class="toggle-switch" style="width: 40px; height: 20px;">
+                                <input type="checkbox" id="settingsAugmentEnabled">
+                                <span class="toggle-slider" style="border-radius: 20px;"></span>
+                            </label>
+                            <span style="font-size: 13px; color: var(--text-secondary);" id="settingsAugmentEnabledLabel"></span>
+                        </div>
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('settings.augmentEnabledHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group">
+                        <label>${t('settings.augmentPort')}</label>
+                        <input type="number" id="settingsAugmentPort" min="1" max="65535" placeholder="8888">
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('settings.augmentPortHelp')}
                         </p>
                     </div>
                     <div class="form-group">

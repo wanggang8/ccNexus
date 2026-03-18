@@ -51,7 +51,10 @@ import {
     cancelConfirm,
     showCloseActionDialog,
     quitApplication,
-    minimizeToTray
+    minimizeToTray,
+    toggleJsonMergeSection,
+    applyJsonMerge,
+    clearJsonMerge
 } from './modules/modal.js'
 
 // Handle real-time stats update events from backend (4-period data)
@@ -280,6 +283,9 @@ window.showDataSyncDialog = showDataSyncDialog;
 window.switchStatsPeriod = switchStatsPeriod;
 window.switchEndpointViewMode = switchEndpointViewMode;
 window.exportEndpoints = exportEndpoints;
+window.toggleJsonMergeSection = toggleJsonMergeSection;
+window.applyJsonMerge = applyJsonMerge;
+window.clearJsonMerge = clearJsonMerge;
 window.importEndpoints = async (e) => {
     const file = e?.target?.files?.[0];
     if (file) await importEndpoints(file);

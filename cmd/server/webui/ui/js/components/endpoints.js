@@ -432,6 +432,21 @@ class Endpoints {
                                     Enabled
                                 </label>
                             </div>
+                            ${isEdit ? `
+                            <div class="json-merge-section">
+                                <div class="json-merge-header" id="json-merge-toggle">
+                                    <span class="json-merge-toggle-icon">▶</span>
+                                    <span>Request Overrides (Advanced)</span>
+                                </div>
+                                <div class="json-merge-body" style="display: none;">
+                                    <textarea class="json-merge-textarea" id="json-merge-input" placeholder='{"model": "gpt-4", "temperature": 0.7}'></textarea>
+                                    <div class="json-merge-actions">
+                                        <button type="button" class="btn btn-secondary btn-sm" id="json-merge-clear">Clear</button>
+                                    </div>
+                                    <p class="json-merge-help">Enter JSON to override request parameters when proxying. These values will be merged into the outgoing request.</p>
+                                </div>
+                            </div>
+                            ` : ''}
                         </form>
                     </div>
                     <div class="modal-footer">
@@ -446,6 +461,29 @@ class Endpoints {
         document.getElementById('cancel-btn').addEventListener('click', () => this.closeModal());
         document.getElementById('save-btn').addEventListener('click', () => this.saveEndpoint(isEdit, endpoint?.name));
         document.getElementById('fetch-models-btn').addEventListener('click', () => this.fetchModels());
+        
+        // JSON merge toggle
+        if (isEdit) {
+            const toggleBtn = document.getElementById('json-merge-toggle');
+            const mergeBody = toggleBtn.nextElementSibling;
+            const toggleIcon = toggleBtn.querySelector('.json-merge-toggle-icon');
+            
+            // Load requestOverrides
+            const jsonInput = document.getElementById('json-merge-input');
+            if (jsonInput && endpoint.requestOverrides) {
+                jsonInput.value = endpoint.requestOverrides;
+            }
+            
+            toggleBtn.addEventListener('click', () => {
+                const isHidden = mergeBody.style.display === 'none';
+                mergeBody.style.display = isHidden ? 'block' : 'none';
+                toggleIcon.textContent = isHidden ? '▼' : '▶';
+            });
+            
+            document.getElementById('json-merge-clear').addEventListener('click', () => {
+                document.getElementById('json-merge-input').value = '';
+            });
+        }
     }
 
     async fetchModels() {
@@ -560,6 +598,26 @@ class Endpoints {
             remark: formData.get('remark'),
             enabled: formData.get('enabled') === 'on'
         };
+
+        // Get requestOverrides from JSON input (only in edit mode)
+        if (isEdit) {
+            const jsonInput = document.getElementById('json-merge-input');
+            if (jsonInput) {
+                const jsonText = jsonInput.value.trim();
+                if (jsonText) {
+                    try {
+                        // Validate JSON
+                        JSON.parse(jsonText);
+                        data.requestOverrides = jsonText;
+                    } catch (error) {
+                        notifications.error('Invalid JSON format: ' + error.message);
+                        return;
+                    }
+                } else {
+                    data.requestOverrides = '';
+                }
+            }
+        }
 
         // If editing and API key is ****, don't send it
         if (isEdit && data.apiKey === '****') {

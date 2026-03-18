@@ -93,15 +93,16 @@ func isCodexBackendAPIURL(raw string) bool {
 
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
-	ID          int64  `json:"id,omitempty"`          // Storage ID, 0 when new (supports rename)
-	Name        string `json:"name"`
-	APIUrl      string `json:"apiUrl"`
-	APIKey      string `json:"apiKey"`
-	AuthMode    string `json:"authMode,omitempty"`
-	Enabled     bool   `json:"enabled"`
-	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, gemini, deepseek
-	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
-	Remark      string `json:"remark,omitempty"`      // Optional remark for the endpoint
+	ID               int64  `json:"id,omitempty"`               // Storage ID, 0 when new (supports rename)
+	Name             string `json:"name"`
+	APIUrl           string `json:"apiUrl"`
+	APIKey           string `json:"apiKey"`
+	AuthMode         string `json:"authMode,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Transformer      string `json:"transformer,omitempty"`      // Transformer type: claude, openai, gemini, deepseek
+	Model            string `json:"model,omitempty"`            // Target model name for non-Claude APIs
+	Remark           string `json:"remark,omitempty"`           // Optional remark for the endpoint
+	RequestOverrides string `json:"requestOverrides,omitempty"` // JSON string to override/delete request body fields
 }
 
 // WebDAVConfig represents WebDAV synchronization configuration
@@ -173,6 +174,9 @@ type Config struct {
 	CloseWindowBehavior       string          `json:"closeWindowBehavior,omitempty"` // "quit", "minimize", "ask"
 	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`     // Enable Claude Code task completion notification
 	ClaudeNotificationType    string          `json:"claudeNotificationType"`        // Notification type: toast, dialog, disabled
+	AugmentEnabled            bool            `json:"augmentEnabled"`                // Enable Augment plugin integration
+	AugmentPort               int             `json:"augmentPort"`                   // Augment server port (default 8888)
+	AugmentKeyPath            string          `json:"augmentKeyPath,omitempty"`      // Path to Augment private key (optional, auto-initialized)
 	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`              // WebDAV synchronization config
 	Backup                    *BackupConfig   `json:"backup,omitempty"`              // Backup/sync configuration
 	Update                    *UpdateConfig   `json:"update,omitempty"`              // Update configuration
@@ -507,6 +511,52 @@ func (c *Config) UpdateClaudeNotification(enabled bool, notifType string) {
 	c.ClaudeNotificationType = notifType
 }
 
+// GetAugmentConfig returns the Augment integration settings (thread-safe)
+func (c *Config) GetAugmentConfig() (enabled bool, port int, keyPath string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	p := c.AugmentPort
+	if p == 0 {
+		p = 8888
+	}
+	return c.AugmentEnabled, p, c.AugmentKeyPath
+}
+
+// GetAugmentEnabled returns whether Augment integration is enabled (thread-safe)
+func (c *Config) GetAugmentEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentEnabled
+}
+
+// GetAugmentPort returns the Augment server port (thread-safe)
+func (c *Config) GetAugmentPort() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.AugmentPort == 0 {
+		return 8888
+	}
+	return c.AugmentPort
+}
+
+// GetAugmentKeyPath returns the Augment private key path (thread-safe)
+func (c *Config) GetAugmentKeyPath() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentKeyPath
+}
+
+// UpdateAugmentConfig updates the Augment integration settings (thread-safe)
+func (c *Config) UpdateAugmentConfig(enabled bool, port int, keyPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AugmentEnabled = enabled
+	if port > 0 {
+		c.AugmentPort = port
+	}
+	c.AugmentKeyPath = keyPath
+}
+
 // StorageAdapter defines the interface needed for loading/saving config
 type StorageAdapter interface {
 	GetEndpoints() ([]StorageEndpoint, error)
@@ -519,16 +569,17 @@ type StorageAdapter interface {
 
 // StorageEndpoint represents an endpoint in storage
 type StorageEndpoint struct {
-	ID          int64  // 0 when unknown (adapter path); required for rename support
-	Name        string
-	APIUrl      string
-	APIKey      string
-	AuthMode    string
-	Enabled     bool
-	Transformer string
-	Model       string
-	Remark      string
-	SortOrder   int
+	ID               int64  // 0 when unknown (adapter path); required for rename support
+	Name             string
+	APIUrl           string
+	APIKey           string
+	AuthMode         string
+	Enabled          bool
+	Transformer      string
+	Model            string
+	Remark           string
+	RequestOverrides string
+	SortOrder        int
 }
 
 // LoadFromStorage loads configuration from SQLite storage
@@ -545,15 +596,16 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 
 	for _, ep := range endpoints {
 		endpoint := Endpoint{
-			ID:          ep.ID,
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			AuthMode:    NormalizeAuthMode(ep.AuthMode),
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Remark:      ep.Remark,
+			ID:               ep.ID,
+			Name:             ep.Name,
+			APIUrl:           ep.APIUrl,
+			APIKey:           ep.APIKey,
+			AuthMode:         NormalizeAuthMode(ep.AuthMode),
+			Enabled:          ep.Enabled,
+			Transformer:      ep.Transformer,
+			Model:            ep.Model,
+			Remark:           ep.Remark,
+			RequestOverrides: ep.RequestOverrides,
 		}
 		if endpoint.Transformer == "" {
 			endpoint.Transformer = "claude"
@@ -749,6 +801,22 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		config.ClaudeNotificationType = "toast"
 	}
 
+	// Load Augment config
+	if augmentEnabledStr, err := storage.GetConfig("augment_enabled"); err == nil && augmentEnabledStr != "" {
+		config.AugmentEnabled = augmentEnabledStr == "true"
+	}
+	if augmentPortStr, err := storage.GetConfig("augment_port"); err == nil && augmentPortStr != "" {
+		if port, err := strconv.Atoi(augmentPortStr); err == nil {
+			config.AugmentPort = port
+		}
+	}
+	if config.AugmentPort == 0 {
+		config.AugmentPort = 8888
+	}
+	if augmentKeyPath, err := storage.GetConfig("augment_key_path"); err == nil {
+		config.AugmentKeyPath = augmentKeyPath
+	}
+
 	return config, nil
 }
 
@@ -781,14 +849,15 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 			SortOrder: i, // Use array index as sort order
 		}
 		normalizedEndpoint := Endpoint{
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			AuthMode:    ep.AuthMode,
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Remark:      ep.Remark,
+			Name:             ep.Name,
+			APIUrl:           ep.APIUrl,
+			APIKey:           ep.APIKey,
+			AuthMode:         ep.AuthMode,
+			Enabled:          ep.Enabled,
+			Transformer:      ep.Transformer,
+			Model:            ep.Model,
+			Remark:           ep.Remark,
+			RequestOverrides: ep.RequestOverrides,
 		}
 		if normalizedEndpoint.Transformer == "" {
 			normalizedEndpoint.Transformer = "claude"
@@ -801,6 +870,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 		endpoint.Transformer = normalizedEndpoint.Transformer
 		endpoint.Model = normalizedEndpoint.Model
 		endpoint.Remark = normalizedEndpoint.Remark
+		endpoint.RequestOverrides = normalizedEndpoint.RequestOverrides
 		endpoint.SortOrder = i
 
 		// Prefer ID for update (handles rename: ep.ID from old name, ep.Name is new)
@@ -982,6 +1052,21 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	if err := storage.SetConfig("claude_notification_type", c.ClaudeNotificationType); err != nil {
 		return fmt.Errorf("failed to save claude_notification_type config: %w", err)
+	}
+
+	// Save Augment config
+	if err := storage.SetConfig("augment_enabled", strconv.FormatBool(c.AugmentEnabled)); err != nil {
+		return fmt.Errorf("failed to save augment_enabled config: %w", err)
+	}
+	augmentPort := c.AugmentPort
+	if augmentPort == 0 {
+		augmentPort = 8888
+	}
+	if err := storage.SetConfig("augment_port", strconv.Itoa(augmentPort)); err != nil {
+		return fmt.Errorf("failed to save augment_port config: %w", err)
+	}
+	if err := storage.SetConfig("augment_key_path", c.AugmentKeyPath); err != nil {
+		return fmt.Errorf("failed to save augment_key_path config: %w", err)
 	}
 
 	return nil

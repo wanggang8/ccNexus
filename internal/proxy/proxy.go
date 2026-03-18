@@ -518,6 +518,16 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			transformedBody = overrideModelInPayload(transformedBody, endpoint.Model)
 		}
 
+		// Apply request overrides if configured
+		if endpoint.RequestOverrides != "" {
+			transformedBody, err = applyRequestOverrides(transformedBody, endpoint.RequestOverrides)
+			if err != nil {
+				logger.Warn("[%s] Failed to apply request overrides: %v", endpoint.Name, err)
+			} else {
+				logger.DebugLog("[%s] Applied request overrides: %s", endpoint.Name, endpoint.RequestOverrides)
+			}
+		}
+
 		modelName := strings.TrimSpace(streamReq.Model)
 		if modelName == "" || (authMode == config.AuthModeCodexTokenPool && strings.TrimSpace(endpoint.Model) != "") {
 			modelName = endpoint.Model
@@ -1054,4 +1064,44 @@ func isTransientNetworkError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// applyRequestOverrides applies JSON overrides to the request body
+// Supports adding, replacing, and deleting fields (null values delete fields)
+func applyRequestOverrides(requestBody []byte, overridesJSON string) ([]byte, error) {
+	overridesJSON = strings.TrimSpace(overridesJSON)
+	if overridesJSON == "" {
+		return requestBody, nil
+	}
+
+	// Parse the request body
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(requestBody, &requestMap); err != nil {
+		return nil, fmt.Errorf("failed to parse request body: %w", err)
+	}
+
+	// Parse the overrides
+	var overrides map[string]interface{}
+	if err := json.Unmarshal([]byte(overridesJSON), &overrides); err != nil {
+		return nil, fmt.Errorf("failed to parse overrides JSON: %w", err)
+	}
+
+	// Apply overrides
+	for key, value := range overrides {
+		if value == nil {
+			// Delete field if value is null
+			delete(requestMap, key)
+		} else {
+			// Add or replace field
+			requestMap[key] = value
+		}
+	}
+
+	// Marshal back to JSON
+	modifiedBody, err := json.Marshal(requestMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal modified request: %w", err)
+	}
+
+	return modifiedBody, nil
 }

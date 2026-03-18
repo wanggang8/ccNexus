@@ -136,7 +136,15 @@ export default {
         tokenPoolOnlyForTokenMode: '仅 Token Pool 模式可管理令牌池',
         fetchModelsSuccess: '成功获取到 {count} 个模型',
         fetchModelsFailed: '获取模型列表失败',
-        fetchModelsEmpty: '未获取到模型列表'
+        fetchModelsEmpty: '未获取到模型列表',
+        jsonMerge: '请求参数覆盖',
+        jsonMergePlaceholder: '粘贴 JSON 数据，例如：{"apiUrl": "https://api.example.com", "model": "gpt-4"}',
+        jsonMergeApply: '应用',
+        jsonMergeClear: '清空',
+        jsonMergeHelp: '提示：JSON 中的字段会在代理请求时覆盖端点配置，null 值会清空对应字段',
+        jsonMergeEmpty: 'JSON 输入为空',
+        jsonMergeInvalid: 'JSON 格式无效',
+        jsonMergeSuccess: '已应用 {count} 个覆盖字段'
     },
     logs: {
         title: '日志',
@@ -246,7 +254,14 @@ export default {
         save: '保存',
         cancel: '取消',
         saveSuccess: '设置保存成功',
-        saveFailed: '设置保存失败'
+        saveFailed: '设置保存失败',
+        augmentSection: 'Augment 代理',
+        augmentEnabled: '启用 Augment 代理',
+        augmentEnabledOn: '已启用',
+        augmentEnabledOff: '已禁用',
+        augmentEnabledHelp: '启用后将在独立端口监听 Augment 插件请求，修改后需重启生效',
+        augmentPort: '监听端口',
+        augmentPortHelp: '默认 8888，VSCode Augment 插件端点填写 http://127.0.0.1:8888'
     },
     statistics: {
         title: '统计信息',

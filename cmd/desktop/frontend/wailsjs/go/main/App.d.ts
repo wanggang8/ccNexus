@@ -3,7 +3,7 @@
 
 export function ActivateEndpointCredential(arg1:number,arg2:number):Promise<void>;
 
-export function AddEndpoint(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<void>;
+export function AddEndpoint(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string):Promise<void>;
 
 export function AddProjectDir(arg1:string):Promise<void>;
 
@@ -58,6 +58,8 @@ export function GenerateMockArchives(arg1:number):Promise<string>;
 export function GetArchiveData(arg1:string):Promise<string>;
 
 export function GetArchiveTrend(arg1:string):Promise<string>;
+
+export function GetAugmentConfig():Promise<string>;
 
 export function GetAutoDarkTheme():Promise<string>;
 
@@ -169,6 +171,8 @@ export function RestoreFromProvider(arg1:string,arg2:string,arg3:string):Promise
 
 export function RestoreFromWebDAV(arg1:string,arg2:string):Promise<void>;
 
+export function SaveAugmentConfig(arg1:string):Promise<void>;
+
 export function SaveEndpointsToFile(arg1:string):Promise<void>;
 
 export function SaveSettings(arg1:string):Promise<void>;
@@ -225,7 +229,7 @@ export function UpdateBackupProvider(arg1:string):Promise<void>;
 
 export function UpdateConfig(arg1:string):Promise<void>;
 
-export function UpdateEndpoint(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string):Promise<void>;
+export function UpdateEndpoint(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string):Promise<void>;
 
 export function UpdateEndpointCredentialToken(arg1:number,arg2:number,arg3:string,arg4:string):Promise<void>;
 

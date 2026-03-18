@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lich0821/ccNexus/internal/augment/server"
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/proxy"
@@ -31,6 +32,9 @@ var changelogZH []byte
 
 //go:embed CHANGELOG.json
 var changelogEN []byte
+
+//go:embed augment-private-key.pem
+var augmentPrivateKeyPEM []byte
 
 // WailsInfo represents the info section from wails.json
 type WailsInfo struct {
@@ -67,15 +71,16 @@ type App struct {
 	trayIcon []byte
 
 	// Services
-	stats    *service.StatsService
-	endpoint *service.EndpointService
-	settings *service.SettingsService
-	webdav   *service.WebDAVService
-	backup   *service.BackupService
-	archive  *service.ArchiveService
-	update   *service.UpdateService
-	terminal *service.TerminalService
-	traffic  *service.TrafficService
+	stats         *service.StatsService
+	endpoint      *service.EndpointService
+	settings      *service.SettingsService
+	webdav        *service.WebDAVService
+	backup        *service.BackupService
+	archive       *service.ArchiveService
+	update        *service.UpdateService
+	terminal      *service.TerminalService
+	traffic       *service.TrafficService
+	augmentServer *server.Server
 }
 
 // NewApp creates a new App application struct
@@ -182,6 +187,9 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}()
 
+	// Initialize and start Augment server if enabled
+	a.initAugmentServer(configDir, cfg)
+
 	time.Sleep(300 * time.Millisecond)
 	runtime.WindowShow(ctx)
 
@@ -190,6 +198,9 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown is called when the app is closing
 func (a *App) shutdown(ctx context.Context) {
+	if a.augmentServer != nil {
+		a.augmentServer.Stop()
+	}
 	if a.proxy != nil {
 		a.proxy.Stop()
 	}
@@ -275,6 +286,9 @@ func (a *App) Quit() {
 			logger.Warn("Failed to save stats: %v", err)
 		}
 		a.proxy.Stop()
+	}
+	if a.augmentServer != nil {
+		a.augmentServer.Stop()
 	}
 	logger.GetLogger().Close()
 
@@ -404,12 +418,12 @@ func (a *App) GetStatsTrendByPeriod(period string) string {
 
 // ========== Endpoint Bindings ==========
 
-func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
-	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark)
+func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark, requestOverrides string) error {
+	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark, requestOverrides)
 }
 func (a *App) RemoveEndpoint(index int) error { return a.endpoint.RemoveEndpoint(index) }
-func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
-	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, remark)
+func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark, requestOverrides string) error {
+	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, remark, requestOverrides)
 }
 func (a *App) ToggleEndpoint(index int, enabled bool) error {
 	return a.endpoint.ToggleEndpoint(index, enabled)
@@ -1140,3 +1154,78 @@ func (a *App) GetTrafficLogs(filterJSON string) string {
 }
 func (a *App) GetTrafficLogDetail(id string) string { return a.traffic.GetLogDetail(id) }
 func (a *App) ClearTrafficLogs()                    { a.traffic.ClearLogs() }
+
+// ========== Augment Integration Bindings ==========
+
+// initAugmentServer initializes and starts the Augment proxy server.
+// It writes the embedded private key to configDir/augment-private-key.pem on first run.
+func (a *App) initAugmentServer(configDir string, cfg *config.Config) {
+	// Write embedded private key if not present.
+	defaultKeyPath := filepath.Join(configDir, "augment-private-key.pem")
+	if _, err := os.Stat(defaultKeyPath); os.IsNotExist(err) {
+		if err := os.WriteFile(defaultKeyPath, augmentPrivateKeyPEM, 0600); err != nil {
+			logger.Warn("Failed to write Augment private key: %v", err)
+		} else {
+			logger.Info("Augment private key initialized: %s", defaultKeyPath)
+		}
+	}
+
+	if !cfg.GetAugmentEnabled() {
+		logger.Info("Augment server disabled, skipping")
+		return
+	}
+
+	keyPath := cfg.GetAugmentKeyPath()
+	if keyPath == "" {
+		keyPath = defaultKeyPath
+	}
+
+	srv, err := server.New(cfg, keyPath)
+	if err != nil {
+		logger.Warn("Failed to create Augment server: %v", err)
+		return
+	}
+
+	a.augmentServer = srv
+	if err := srv.Start(); err != nil {
+		logger.Warn("Failed to start Augment server: %v", err)
+		a.augmentServer = nil
+		return
+	}
+	logger.Info("Augment server started on port %d", cfg.GetAugmentPort())
+}
+
+// GetAugmentConfig returns the current Augment integration configuration as JSON.
+func (a *App) GetAugmentConfig() string {
+	enabled, port, _ := a.config.GetAugmentConfig()
+	return desktopSuccessJSON(map[string]interface{}{
+		"enabled": enabled,
+		"port":    port,
+	})
+}
+
+// SaveAugmentConfig saves the Augment integration configuration.
+// Input JSON: {"enabled": bool, "port": int}
+func (a *App) SaveAugmentConfig(settingsJSON string) error {
+	var input struct {
+		Enabled bool `json:"enabled"`
+		Port    int  `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(settingsJSON), &input); err != nil {
+		return fmt.Errorf("invalid Augment config JSON: %w", err)
+	}
+	if input.Port < 1 || input.Port > 65535 {
+		input.Port = 8888
+	}
+
+	_, _, keyPath := a.config.GetAugmentConfig()
+	a.config.UpdateAugmentConfig(input.Enabled, input.Port, keyPath)
+
+	configAdapter := storage.NewConfigStorageAdapter(a.storage)
+	if err := a.config.SaveToStorage(configAdapter); err != nil {
+		return fmt.Errorf("failed to save Augment config: %w", err)
+	}
+
+	logger.Info("Augment config saved: enabled=%v port=%d (restart required)", input.Enabled, input.Port)
+	return nil
+}

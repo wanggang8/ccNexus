@@ -140,7 +140,15 @@ export default {
         tokenPoolOnlyForTokenMode: 'Token pool can only be managed in Token Pool mode',
         fetchModelsSuccess: 'Successfully fetched {count} models',
         fetchModelsFailed: 'Failed to fetch models',
-        fetchModelsEmpty: 'No models found'
+        fetchModelsEmpty: 'No models found',
+        jsonMerge: 'Request Overrides',
+        jsonMergePlaceholder: 'Paste JSON data, e.g.: {"apiUrl": "https://api.example.com", "model": "gpt-4"}',
+        jsonMergeApply: 'Apply',
+        jsonMergeClear: 'Clear',
+        jsonMergeHelp: 'Tip: Fields in JSON will override endpoint config during proxy requests, null values will clear the field',
+        jsonMergeEmpty: 'JSON input is empty',
+        jsonMergeInvalid: 'Invalid JSON format',
+        jsonMergeSuccess: 'Applied {count} override(s)'
     },
     logs: {
         title: 'Logs',
@@ -250,7 +258,14 @@ export default {
         save: 'Save',
         cancel: 'Cancel',
         saveSuccess: 'Settings saved successfully',
-        saveFailed: 'Failed to save settings'
+        saveFailed: 'Failed to save settings',
+        augmentSection: 'Augment Proxy',
+        augmentEnabled: 'Enable Augment Proxy',
+        augmentEnabledOn: 'Enabled',
+        augmentEnabledOff: 'Disabled',
+        augmentEnabledHelp: 'When enabled, listens on a dedicated port for Augment plugin requests. Restart required after changes.',
+        augmentPort: 'Listen Port',
+        augmentPortHelp: 'Default 8888. Set the VSCode Augment plugin endpoint to http://127.0.0.1:8888'
     },
     statistics: {
         title: 'Statistics',

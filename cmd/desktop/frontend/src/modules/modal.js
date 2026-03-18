@@ -193,6 +193,9 @@ export function showAddEndpointModal() {
     document.getElementById('endpointTransformer').value = 'claude';
     document.getElementById('endpointModel').value = '';
     document.getElementById('endpointRemark').value = '';
+    document.getElementById('jsonMergeInput').value = '';
+    const hiddenField = document.getElementById('requestOverrides');
+    if (hiddenField) hiddenField.value = '';
     handleAuthModeChange();
     updateManageTokenPoolButton();
     handleTransformerChange();
@@ -215,6 +218,12 @@ export async function editEndpoint(index) {
     document.getElementById('endpointTransformer').value = ep.transformer || 'claude';
     document.getElementById('endpointModel').value = ep.model || '';
     document.getElementById('endpointRemark').value = ep.remark || '';
+    
+    // Load requestOverrides
+    const requestOverrides = ep.requestOverrides || '';
+    document.getElementById('jsonMergeInput').value = requestOverrides;
+    const hiddenField = document.getElementById('requestOverrides');
+    if (hiddenField) hiddenField.value = requestOverrides;
 
     handleAuthModeChange();
     updateManageTokenPoolButton();
@@ -244,6 +253,10 @@ export async function saveEndpoint() {
     const model = document.getElementById('endpointModel').value.trim();
     const remark = document.getElementById('endpointRemark').value.trim();
     const isCodexTokenPool = isCodexTokenPoolMode(authMode);
+    
+    // Get requestOverrides from hidden field
+    const hiddenField = document.getElementById('requestOverrides');
+    const requestOverrides = hiddenField ? hiddenField.value.trim() : '';
 
     if (isCodexTokenPool) {
         url = CODEX_FIXED_API_URL;
@@ -276,9 +289,9 @@ export async function saveEndpoint() {
 
     try {
         if (currentEditIndex === -1) {
-            await addEndpoint(name, url, key, authMode, transformer, model, remark);
+            await addEndpoint(name, url, key, authMode, transformer, model, remark, requestOverrides);
         } else {
-            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, remark);
+            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, remark, requestOverrides);
         }
 
         closeModal();
@@ -729,5 +742,55 @@ export function openGitHub() {
 export function openArticle() {
     if (window.go?.main?.App) {
         window.go.main.App.OpenURL('https://mp.weixin.qq.com/s/ohtkyIMd5YC7So1q-gE0og');
+    }
+}
+
+// Toggle JSON merge section
+export function toggleJsonMergeSection() {
+    const body = document.getElementById('jsonMergeBody');
+    const icon = document.getElementById('jsonMergeToggleIcon');
+    if (body.style.display === 'none') {
+        body.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        body.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+// Apply JSON merge to form fields
+export function applyJsonMerge() {
+    const input = document.getElementById('jsonMergeInput');
+    const jsonText = input.value.trim();
+    
+    if (!jsonText) {
+        showNotification(t('modal.jsonMergeEmpty'), 'warning');
+        return;
+    }
+    
+    // Validate JSON
+    try {
+        JSON.parse(jsonText);
+    } catch (error) {
+        showError(t('modal.jsonMergeInvalid') + ': ' + error.message);
+        return;
+    }
+    
+    // Store in hidden field (will be saved to requestOverrides)
+    const hiddenField = document.getElementById('requestOverrides');
+    if (hiddenField) {
+        hiddenField.value = jsonText;
+    }
+    
+    showNotification(t('modal.jsonMergeSuccess'), 'success');
+}
+
+// Clear JSON merge input
+export function clearJsonMerge() {
+    const input = document.getElementById('jsonMergeInput');
+    input.value = '';
+    const hiddenField = document.getElementById('requestOverrides');
+    if (hiddenField) {
+        hiddenField.value = '';
     }
 }
