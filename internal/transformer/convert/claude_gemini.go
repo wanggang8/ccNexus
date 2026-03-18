@@ -231,10 +231,7 @@ func ClaudeRespToGemini(claudeResp []byte) ([]byte, error) {
 		}
 	}
 
-	finishReason := "STOP"
-	if resp.StopReason == "tool_use" {
-		finishReason = "TOOL_CODE"
-	}
+	finishReason := mapClaudeStopToGeminiFinish(resp.StopReason, len(parts) > 0 && parts[len(parts)-1]["functionCall"] != nil)
 
 	geminiResp := map[string]interface{}{
 		"candidates": []map[string]interface{}{
@@ -262,9 +259,11 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 
 	content := make([]map[string]interface{}, 0) // Initialize as empty array, not nil
 	stopReason := "end_turn"
+	hasToolCall := false
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
+		stopReason = mapGeminiFinishToClaude(candidate.FinishReason, false)
 		for _, part := range candidate.Content.Parts {
 			if part.Thought && part.Text != "" {
 				// Convert Gemini thought to Claude thinking format
@@ -288,8 +287,12 @@ func GeminiRespToClaude(geminiResp []byte) ([]byte, error) {
 					"name":  part.FunctionCall.Name,
 					"input": part.FunctionCall.Args,
 				})
+				hasToolCall = true
 				stopReason = "tool_use"
 			}
+		}
+		if hasToolCall {
+			stopReason = "tool_use"
 		}
 	}
 
@@ -378,7 +381,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 						"parts": []map[string]interface{}{
 							{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
 						},
-					}, "finishReason": "TOOL_CODE"},
+					}, "finishReason": "STOP"},
 				},
 			}
 			d, _ := json.Marshal(chunk)
@@ -457,7 +460,32 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 	candidate := resp.Candidates[0]
 	hasFunctionCall := false
 	for _, part := range candidate.Content.Parts {
+		if part.Thought && part.Text != "" {
+			// Gemini thought part → Claude thinking block (D15)
+			if ctx.ContentBlockStarted {
+				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ContentIndex})...)
+				ctx.ContentBlockStarted = false
+				ctx.ContentIndex++
+			}
+			if !ctx.ThinkingBlockStarted {
+				ctx.ThinkingBlockStarted = true
+				ctx.ThinkingIndex = ctx.ContentIndex
+				result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
+					"index": ctx.ThinkingIndex, "content_block": map[string]interface{}{"type": "thinking", "thinking": ""},
+				})...)
+			}
+			result = append(result, buildClaudeEvent("content_block_delta", map[string]interface{}{
+				"index": ctx.ThinkingIndex, "delta": map[string]interface{}{"type": "thinking_delta", "thinking": part.Text},
+			})...)
+			continue
+		}
 		if part.Text != "" {
+			// Close thinking block if open
+			if ctx.ThinkingBlockStarted {
+				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ThinkingIndex})...)
+				ctx.ThinkingBlockStarted = false
+				ctx.ContentIndex = ctx.ThinkingIndex + 1
+			}
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
@@ -499,10 +527,7 @@ func GeminiStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ContentIndex})...)
 			ctx.ContentBlockStarted = false
 		}
-		stopReason := "end_turn"
-		if hasFunctionCall || candidate.FinishReason == "TOOL_CODE" {
-			stopReason = "tool_use"
-		}
+		stopReason := mapGeminiFinishToClaude(candidate.FinishReason, hasFunctionCall)
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
 			"usage": currentClaudeUsage(ctx),
@@ -567,4 +592,19 @@ func convertClaudeContentToGeminiParts(content []interface{}, toolUseIDToName ma
 		}
 	}
 	return parts
+}
+
+// mapClaudeStopToGeminiFinish maps Claude stop_reason to Gemini finishReason.
+func mapClaudeStopToGeminiFinish(stopReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "STOP" // Gemini uses STOP even for tool calls; tool presence is implied by functionCall parts
+	}
+	switch stopReason {
+	case "max_tokens":
+		return "MAX_TOKENS"
+	case "end_turn", "stop_sequence":
+		return "STOP"
+	default:
+		return "STOP"
+	}
 }

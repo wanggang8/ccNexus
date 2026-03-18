@@ -158,6 +158,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
+		finishReason = mapGeminiFinishToOpenAI(candidate.FinishReason, false)
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
 				textContent += part.Text
@@ -258,10 +259,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	// Check for finish
 	if candidate.FinishReason != "" {
-		finishReason := "stop"
-		if hasToolCall || candidate.FinishReason == "TOOL_CODE" {
-			finishReason = "tool_calls"
-		}
+		finishReason := mapGeminiFinishToOpenAI(candidate.FinishReason, hasToolCall)
 		usage := currentOpenAIUsage(ctx)
 		chunk, _ := buildOpenAIChunkWithUsage("gemini-chunk", model, "", nil, finishReason, usage)
 		result.Write(chunk)
@@ -331,4 +329,46 @@ func convertOpenAIContentToGeminiParts(content []interface{}) []map[string]inter
 		}
 	}
 	return parts
+}
+
+// mapGeminiFinishToOpenAI maps Gemini finishReason to OpenAI finish_reason.
+func mapGeminiFinishToOpenAI(geminiReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "tool_calls"
+	}
+	switch geminiReason {
+	case "STOP":
+		return "stop"
+	case "MAX_TOKENS":
+		return "length"
+	case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+		return "content_filter"
+	case "RECITATION":
+		return "stop"
+	case "MALFORMED_FUNCTION_CALL":
+		return "stop"
+	default:
+		return "stop"
+	}
+}
+
+// mapGeminiFinishToClaude maps Gemini finishReason to Claude stop_reason.
+func mapGeminiFinishToClaude(geminiReason string, hasToolCall bool) string {
+	if hasToolCall {
+		return "tool_use"
+	}
+	switch geminiReason {
+	case "STOP":
+		return "end_turn"
+	case "MAX_TOKENS":
+		return "max_tokens"
+	case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+		return "end_turn"
+	case "RECITATION":
+		return "end_turn"
+	case "MALFORMED_FUNCTION_CALL":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
 }

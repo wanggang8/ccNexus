@@ -416,10 +416,7 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		message["tool_calls"] = toolCalls
 	}
 
-	finishReason := "stop"
-	if resp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
-	}
+	finishReason := mapClaudeStopToOpenAIFinish(resp.StopReason)
 
 	openaiResp := map[string]interface{}{
 		"id":      resp.ID,
@@ -448,6 +445,9 @@ func OpenAIRespToClaude(openaiResp []byte) ([]byte, error) {
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		if choice.FinishReason != "" {
+			stopReason = mapOpenAIFinishToClaudeStop(choice.FinishReason)
+		}
 		if choice.Message.Content != "" {
 			content = append(content, splitThinkTaggedText(choice.Message.Content)...)
 		}
@@ -579,10 +579,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 		if delta, ok := data["delta"].(map[string]interface{}); ok {
 			if stopReason, ok := delta["stop_reason"].(string); ok && stopReason != "" {
-				finish := "stop"
-				if stopReason == "tool_use" {
-					finish = "tool_calls"
-				}
+				finish := mapClaudeStopToOpenAIFinish(stopReason)
 				finishChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
 				if err != nil {
 					return nil, err
@@ -809,10 +806,7 @@ func OpenAIStreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte,
 			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
 			ctx.ToolBlockStarted = false
 		}
-		stopReason := "end_turn"
-		if *choice.FinishReason == "tool_calls" {
-			stopReason = "tool_use"
-		}
+		stopReason := mapOpenAIFinishToClaudeStop(*choice.FinishReason)
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
 			"usage": map[string]interface{}{"output_tokens": 0},
@@ -943,4 +937,34 @@ func normalizeToolResultContent(content interface{}) interface{} {
 		return convertOpenAIContentToClaude(arr)
 	}
 	return extractToolResultContent(content)
+}
+
+// mapClaudeStopToOpenAIFinish maps Claude stop_reason to OpenAI finish_reason.
+func mapClaudeStopToOpenAIFinish(stopReason string) string {
+	switch stopReason {
+	case "tool_use":
+		return "tool_calls"
+	case "max_tokens":
+		return "length"
+	case "end_turn", "stop_sequence":
+		return "stop"
+	default:
+		return "stop"
+	}
+}
+
+// mapOpenAIFinishToClaudeStop maps OpenAI finish_reason to Claude stop_reason.
+func mapOpenAIFinishToClaudeStop(finishReason string) string {
+	switch finishReason {
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	case "content_filter":
+		return "end_turn"
+	case "stop":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
 }
