@@ -116,6 +116,9 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux, handlerWrapper func(http.
 	// Register proxy routes
 	mux.HandleFunc("/", p.handleProxy)
 	mux.HandleFunc("/v1/messages/count_tokens", p.handleCountTokens)
+	mux.HandleFunc("/usage/api/get-models", p.handleGetModels)
+	mux.HandleFunc("/usage/api/balance", p.handleGetBalance)
+	mux.HandleFunc("/usage/api/getLoginToken", p.handleGetLoginToken)
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.HandleFunc("/stats", p.handleStats)
 

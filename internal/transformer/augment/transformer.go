@@ -67,8 +67,10 @@ func (t *Transformer) TransformRequest(req []byte) ([]byte, error) {
 	}
 
 	switch t.targetType {
-	case "claude", "cli":
+	case "claude":
 		return toClaudeRequest(&ar)
+	case "cli":
+		return toCliRequest(&ar)
 	case "openai", "openai2":
 		return toOpenAIRequest(&ar)
 	default:
