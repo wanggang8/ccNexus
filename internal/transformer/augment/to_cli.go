@@ -7,8 +7,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
+
+// supportsThinking checks if the model supports extended/interleaved thinking.
+// Claude 4+ series (sonnet-4, opus-4, haiku-4.5, sonnet-4.5, etc.) support thinking.
+// Claude 3.x and earlier do not.
+func supportsThinking(model string) bool {
+	m := strings.ToLower(model)
+
+	// Claude 4+ model patterns
+	thinkingPrefixes := []string{
+		"claude-sonnet-4",
+		"claude-opus-4",
+		"claude-haiku-4",
+		"claude-4",
+	}
+	for _, prefix := range thinkingPrefixes {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+
+	// Aliases that map to Claude 4+ models
+	thinkingAliases := []string{
+		"claude-sonnet",    // latest sonnet = 4.x
+		"claude-opus",      // latest opus = 4.x
+		"claude-haiku",     // latest haiku = 4.x
+	}
+	for _, alias := range thinkingAliases {
+		if m == alias {
+			return true
+		}
+	}
+
+	return false
+}
 
 var (
 	cliMetadata     *CLIMetadata
@@ -86,10 +121,12 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 		req["system"] = system
 	}
 
-	// T4: Enable interleaved thinking for CLI mode (supported via anthropic-beta header)
-	req["thinking"] = map[string]interface{}{
-		"type":          "enabled",
-		"budget_tokens": 10000,
+	// T4: Enable thinking for models that support it (Claude 4+ series)
+	if supportsThinking(ar.Model) {
+		req["thinking"] = map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": 10000,
+		}
 	}
 
 	return json.Marshal(req)
