@@ -496,10 +496,12 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
-			outputIndex := idx + 1
+			// M1: output_index starts after the text message (if any)
+			textOffset := 0
 			if ctx.ContentBlockStarted {
-				outputIndex = idx + 1
+				textOffset = 1
 			}
+			outputIndex := idx + textOffset
 
 			// New tool call (has ID)
 			if tc.ID != "" {

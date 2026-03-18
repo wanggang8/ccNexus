@@ -48,20 +48,42 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 			// Check if message has Claude-format content blocks with tool_result
 			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
 				hasToolResult := false
+				var otherBlocks []interface{}
 				for _, item := range content {
 					if block, ok := item.(map[string]interface{}); ok {
 						if block["type"] == "tool_result" {
 							hasToolResult = true
-							openaiMsg := map[string]interface{}{
+							fixedMessages = append(fixedMessages, map[string]interface{}{
 								"role":         "tool",
 								"tool_call_id": block["tool_use_id"],
 								"content":      block["content"],
-							}
-							fixedMessages = append(fixedMessages, openaiMsg)
+							})
+						} else {
+							otherBlocks = append(otherBlocks, item)
 						}
+					} else {
+						otherBlocks = append(otherBlocks, item)
 					}
 				}
 				if hasToolResult {
+					// H4: Preserve non-tool_result content blocks (text, images) as a separate message
+					if len(otherBlocks) > 0 {
+						preservedMsg := map[string]interface{}{"role": msg["role"]}
+						if len(otherBlocks) == 1 {
+							if tb, ok := otherBlocks[0].(map[string]interface{}); ok {
+								if text, ok := tb["text"].(string); ok && tb["type"] == "text" {
+									preservedMsg["content"] = text
+								} else {
+									preservedMsg["content"] = otherBlocks
+								}
+							} else {
+								preservedMsg["content"] = otherBlocks
+							}
+						} else {
+							preservedMsg["content"] = otherBlocks
+						}
+						fixedMessages = append(fixedMessages, preservedMsg)
+					}
 					continue
 				}
 			}

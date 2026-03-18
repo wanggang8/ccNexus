@@ -68,12 +68,7 @@ func OpenAI2ReqToGemini(openai2Req []byte, model string) ([]byte, error) {
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
+			geminiReq["toolConfig"] = mapToolChoiceToGeminiConfig(req.ToolChoice)
 		}
 	}
 
@@ -101,10 +96,11 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 			}
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
+				callID := GenerateToolCallID(part.FunctionCall.Name)
 				functionCalls = append(functionCalls, map[string]interface{}{
 					"type":      "function_call",
-					"id":        fmt.Sprintf("call_%d", len(functionCalls)),
-					"call_id":   fmt.Sprintf("call_%d", len(functionCalls)),
+					"id":        callID,
+					"call_id":   callID,
 					"name":      part.FunctionCall.Name,
 					"arguments": string(args),
 				})

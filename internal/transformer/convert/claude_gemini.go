@@ -54,7 +54,10 @@ func ClaudeReqToGemini(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		genConfig["maxOutputTokens"] = req.MaxTokens
 	}
-	if req.Temperature > 0 {
+	// Use raw map to detect explicit temperature (including 0)
+	var rawReq map[string]interface{}
+	json.Unmarshal(claudeReq, &rawReq)
+	if _, hasTemp := rawReq["temperature"]; hasTemp {
 		genConfig["temperature"] = req.Temperature
 	}
 	if len(genConfig) > 0 {
@@ -128,9 +131,12 @@ func GeminiReqToClaude(geminiReq []byte, model string) ([]byte, error) {
 				contentBlocks = append(contentBlocks, map[string]interface{}{"type": "text", "text": part.Text})
 			}
 			if part.FunctionCall != nil {
-				// Generate unique ID for each function call
+				// Generate unique ID for each function call (always unique, even for same function name)
 				toolID := GenerateToolCallID(part.FunctionCall.Name)
-				toolNameToID[part.FunctionCall.Name] = toolID // Store latest ID for this function name
+				// M4: Use indexed key to avoid overwriting parallel calls to the same function
+				toolMapKey := fmt.Sprintf("%s_%d", part.FunctionCall.Name, len(contentBlocks))
+				toolNameToID[toolMapKey] = toolID
+				toolNameToID[part.FunctionCall.Name] = toolID // Keep last-wins as fallback for functionResponse lookup
 				contentBlocks = append(contentBlocks, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    toolID,
@@ -369,6 +375,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
 				args = map[string]interface{}{}
 			}
+			// L7: Don't emit finishReason on individual tool block stop — stream may continue
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{
@@ -376,7 +383,7 @@ func ClaudeStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 						"parts": []map[string]interface{}{
 							{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
 						},
-					}, "finishReason": "STOP"},
+					}},
 				},
 			}
 			d, _ := json.Marshal(chunk)

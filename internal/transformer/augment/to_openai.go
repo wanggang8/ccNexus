@@ -80,13 +80,24 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 	// Check if the last message already has matching tool_calls; if not, synthesize one.
 	if toolResults := extractToolResults(nodes); len(toolResults) > 0 {
 		if !lastMessageHasToolCalls(*msgs, toolResults) {
+			// L6: Build tool_use_id→name map from response nodes (type=5) in the same node set
+			toolIDToName := make(map[string]string)
+			for _, n := range nodes {
+				if n.Type == 5 && n.ToolUse != nil {
+					toolIDToName[n.ToolUse.ToolUseID] = n.ToolUse.ToolName
+				}
+			}
 			var syntheticToolCalls []map[string]interface{}
 			for _, tr := range toolResults {
+				funcName := toolIDToName[tr.ToolUseID]
+				if funcName == "" {
+					funcName = "unknown_tool"
+				}
 				syntheticToolCalls = append(syntheticToolCalls, map[string]interface{}{
 					"id":   tr.ToolUseID,
 					"type": "function",
 					"function": map[string]interface{}{
-						"name":      "tool_" + tr.ToolUseID,
+						"name":      funcName,
 						"arguments": "{}",
 					},
 				})

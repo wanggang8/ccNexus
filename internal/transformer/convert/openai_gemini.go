@@ -297,28 +297,45 @@ func OpenAIStreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte,
 		parts = append(parts, map[string]interface{}{"text": delta.Content})
 	}
 
+	// H2: Track ALL tool calls by index (not just the last one)
 	for _, tc := range delta.ToolCalls {
+		idx := 0
+		if tc.Index != nil {
+			idx = *tc.Index
+		}
+		if ctx.OpenAIToolCalls == nil {
+			ctx.OpenAIToolCalls = make(map[int]*transformer.OpenAIToolCall)
+		}
+		state := ctx.OpenAIToolCalls[idx]
+		if state == nil {
+			state = &transformer.OpenAIToolCall{}
+			ctx.OpenAIToolCalls[idx] = state
+		}
 		if tc.ID != "" {
-			ctx.CurrentToolName = tc.Function.Name
-			ctx.ToolArguments = ""
+			state.ID = tc.ID
+		}
+		if tc.Function.Name != "" {
+			state.Function.Name = tc.Function.Name
 		}
 		if tc.Function.Arguments != "" {
-			ctx.ToolArguments += tc.Function.Arguments
-		}
-		if tc.ID != "" || (tc.Function.Name == "" && tc.Function.Arguments == "") {
-			continue
+			state.Function.Arguments += tc.Function.Arguments
 		}
 	}
 
 	finishReason := chunk.Choices[0].FinishReason
-	if finishReason != nil && *finishReason == "tool_calls" && ctx.CurrentToolName != "" {
-		var args map[string]interface{}
-		if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
-			args = map[string]interface{}{}
+	if finishReason != nil && *finishReason == "tool_calls" && len(ctx.OpenAIToolCalls) > 0 {
+		for _, tc := range ctx.OpenAIToolCalls {
+			if tc.Function.Name == "" {
+				continue
+			}
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				args = map[string]interface{}{}
+			}
+			parts = append(parts, map[string]interface{}{
+				"functionCall": map[string]interface{}{"name": tc.Function.Name, "args": args},
+			})
 		}
-		parts = append(parts, map[string]interface{}{
-			"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args},
-		})
 	}
 
 	if len(parts) > 0 {
