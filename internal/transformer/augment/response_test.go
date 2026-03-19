@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 func readNDJSONLines(t *testing.T, s string) []map[string]interface{} {
@@ -28,6 +30,21 @@ func readNDJSONLines(t *testing.T, s string) []map[string]interface{} {
 	return out
 }
 
+func collectTokenUsageNodes(lines []map[string]interface{}) []map[string]interface{} {
+	var usageNodes []map[string]interface{}
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, n := range nodes {
+			node, _ := n.(map[string]interface{})
+			if node["type"] == float64(augmentNodeTypeTokenUsage) {
+				usage, _ := node["token_usage"].(map[string]interface{})
+				usageNodes = append(usageNodes, usage)
+			}
+		}
+	}
+	return usageNodes
+}
+
 func TestStreamConvertClaude_TextDeltaToNDJSONText(t *testing.T) {
 	sse := "" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n" +
@@ -48,7 +65,7 @@ func TestStreamConvertClaude_TextDeltaToNDJSONText(t *testing.T) {
 		t.Fatalf("expected final stop_reason, got %#v", lines[len(lines)-1])
 	}
 }
- func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
+func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 	sse := "" +
 		"data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\"}}\n\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"README.md\\\"\"}}\n\n" +
@@ -562,5 +579,154 @@ func TestStreamConvertOpenAI_ToolUseStartStructure(t *testing.T) {
 
 	if !foundStart {
 		t.Errorf("expected TOOL_USE_START node")
+	}
+}
+
+func TestStreamConvertClaude_EmitSingleFinalTokenUsageNode(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":50}}\n\n" +
+		"data: {\"type\":\"message_stop\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n\n"
+
+	var b strings.Builder
+	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(100) {
+		t.Fatalf("expected input_tokens 100, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(50) {
+		t.Fatalf("expected output_tokens 50, got %#v", usage["output_tokens"])
+	}
+}
+
+func TestStreamConvertClaude_MessageStartUsageMerged(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":30}}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+		"data: {\"type\":\"message_stop\",\"usage\":{\"output_tokens\":20}}\n\n"
+
+	var b strings.Builder
+	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(120) {
+		t.Fatalf("expected input_tokens 120, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(20) {
+		t.Fatalf("expected output_tokens 20, got %#v", usage["output_tokens"])
+	}
+	if usage["cache_read_input_tokens"] != float64(30) {
+		t.Fatalf("expected cache_read_input_tokens 30, got %#v", usage["cache_read_input_tokens"])
+	}
+}
+
+func TestStreamConvertOpenAI_ChoicesEmptyUsageCaptured(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":80,\"completion_tokens\":40,\"total_tokens\":120}}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+
+	var b strings.Builder
+	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(80) {
+		t.Fatalf("expected input_tokens 80, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(40) {
+		t.Fatalf("expected output_tokens 40, got %#v", usage["output_tokens"])
+	}
+}
+
+func TestStreamConvertOpenAI_EmitSingleFinalTokenUsageNode(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":6}}\n\n"
+
+	var b strings.Builder
+	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(11) {
+		t.Fatalf("expected input_tokens 11, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(6) {
+		t.Fatalf("expected output_tokens 6, got %#v", usage["output_tokens"])
+	}
+}
+
+func TestStreamConvertOpenAI_OutputUsageFallbackToEstimateWhenTooSmall(t *testing.T) {
+	longText := strings.Repeat("This is a long answer segment. ", 90)
+	estimatedOutput := tokencount.EstimateOutputTokens(longText)
+	if estimatedOutput < usageFallbackMinEstimatedOutputTokens {
+		t.Fatalf("test setup invalid: estimated output too small: %d", estimatedOutput)
+	}
+
+	contentChunk, err := json.Marshal(map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"delta": map[string]interface{}{"content": longText}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal content chunk: %v", err)
+	}
+
+	finishChunk, err := json.Marshal(map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"delta": map[string]interface{}{}, "finish_reason": "stop"},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     50,
+			"completion_tokens": 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal finish chunk: %v", err)
+	}
+
+	sse := "data: " + string(contentChunk) + "\n\n" +
+		"data: " + string(finishChunk) + "\n\n"
+
+	var b strings.Builder
+	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(50) {
+		t.Fatalf("expected input_tokens 50, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(estimatedOutput) {
+		t.Fatalf("expected output_tokens fallback to %d, got %#v", estimatedOutput, usage["output_tokens"])
 	}
 }

@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+
+	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 // Augment protocol constants (from augment-protocol.js)
@@ -29,6 +32,11 @@ const (
 	augmentNodeTypeThinking           = 8
 	augmentNodeTypeBillingMetadata    = 9
 	augmentNodeTypeTokenUsage         = 10
+)
+
+const (
+	usageFallbackMinEstimatedOutputTokens = 80
+	usageFallbackOutputMismatchRatio      = 3
 )
 
 // Content block delta types
@@ -103,6 +111,9 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	var buf toolUseBuffer
 	nextNodeID := 1
 	hasEmittedToolUse := false // Track if any tool_use was emitted for stop_reason fallback
+	var usageAcc usageAccumulator
+	var generatedText strings.Builder
+	usageEmitted := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -139,6 +150,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			case deltaTypeTextDelta:
 				text, _ := delta["text"].(string)
 				if text != "" {
+					generatedText.WriteString(text)
 					writeChunkLine(w, newBaseChunk(text))
 				}
 			case deltaTypeInputJSONDelta:
@@ -159,6 +171,16 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 					chunk := newBaseChunk("")
 					chunk["nodes"] = []interface{}{thinkingNode}
 					writeChunkLine(w, chunk)
+				}
+			}
+
+		case "message_start":
+			if usage, ok := ev["usage"].(map[string]interface{}); ok {
+				usageAcc.merge(usage)
+			}
+			if msg, ok := ev["message"].(map[string]interface{}); ok {
+				if usage, ok := msg["usage"].(map[string]interface{}); ok {
+					usageAcc.merge(usage)
 				}
 			}
 
@@ -250,16 +272,17 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			}
 			// Extract usage from both delta["usage"] and top-level ev["usage"]
 			if usage, ok := delta["usage"].(map[string]interface{}); ok {
-				emitTokenUsageNode(w, usage, &nextNodeID)
+				usageAcc.merge(usage)
 			}
 			if usage, ok := ev["usage"].(map[string]interface{}); ok {
-				emitTokenUsageNode(w, usage, &nextNodeID)
+				usageAcc.merge(usage)
 			}
 
 		case "message_stop":
 			if usage, ok := ev["usage"].(map[string]interface{}); ok {
-				emitTokenUsageNode(w, usage, &nextNodeID)
+				usageAcc.merge(usage)
 			}
+			usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 			// Fallback: if tool_use was emitted, final stop_reason must be TOOL_USE_REQUESTED.
 			finalReason := augmentStopReasonEndTurn
 			if hasEmittedToolUse {
@@ -270,6 +293,11 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			writeChunkLine(w, chunk)
 		}
 	}
+
+	if !usageEmitted {
+		_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+	}
+
 	return scanner.Err()
 }
 
@@ -315,45 +343,216 @@ func mapOpenAIFinishReason(fr string) int {
 	}
 }
 
-// emitTokenUsageNode creates and writes a TOKEN_USAGE node (type=10) based on usage data.
-// Based on tokenUsageNode from augment-protocol.js
-func emitTokenUsageNode(w io.Writer, usage map[string]interface{}, nextNodeID *int) {
-	tokenUsage := make(map[string]interface{})
+type usageAccumulator struct {
+	inputTokens              int
+	outputTokens             int
+	totalTokens              int
+	cacheReadInputTokens     int
+	cacheCreationInputTokens int
 
-	// Extract token counts (supports both Claude and OpenAI formats)
-	if val, ok := usage["input_tokens"].(float64); ok {
-		tokenUsage["input_tokens"] = int(val)
-	} else if val, ok := usage["prompt_tokens"].(float64); ok {
-		tokenUsage["input_tokens"] = int(val)
-	}
+	hasInputTokens              bool
+	hasOutputTokens             bool
+	hasTotalTokens              bool
+	hasCacheReadInputTokens     bool
+	hasCacheCreationInputTokens bool
+}
 
-	if val, ok := usage["output_tokens"].(float64); ok {
-		tokenUsage["output_tokens"] = int(val)
-	} else if val, ok := usage["completion_tokens"].(float64); ok {
-		tokenUsage["output_tokens"] = int(val)
-	}
-
-	// Claude-specific: prompt caching tokens
-	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
-		tokenUsage["cache_read_input_tokens"] = int(val)
-	}
-	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		tokenUsage["cache_creation_input_tokens"] = int(val)
-	}
-
-	// OpenAI-specific: prompt_tokens_details
-	if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
-		if val, ok := details["cached_tokens"].(float64); ok {
-			tokenUsage["cache_read_input_tokens"] = int(val)
-		}
-		if val, ok := details["cache_creation_tokens"].(float64); ok {
-			tokenUsage["cache_creation_input_tokens"] = int(val)
-		}
-	}
-
-	// Only emit if we have at least one token count
-	if len(tokenUsage) == 0 {
+func (a *usageAccumulator) merge(raw map[string]interface{}) {
+	if len(raw) == 0 {
 		return
+	}
+
+	if v, ok := usageInt(raw, "input_tokens", "prompt_tokens"); ok {
+		a.setInputTokens(v)
+	}
+	if v, ok := usageInt(raw, "output_tokens", "completion_tokens"); ok {
+		a.setOutputTokens(v)
+	}
+	if v, ok := usageInt(raw, "total_tokens"); ok {
+		a.setTotalTokens(v)
+	}
+	if v, ok := usageInt(raw, "cache_read_input_tokens"); ok {
+		a.setCacheReadInputTokens(v)
+	}
+	if v, ok := usageInt(raw, "cache_creation_input_tokens"); ok {
+		a.setCacheCreationInputTokens(v)
+	}
+
+	if details, ok := raw["prompt_tokens_details"].(map[string]interface{}); ok {
+		if v, ok := usageInt(details, "cached_tokens"); ok {
+			a.setCacheReadInputTokens(v)
+		}
+		if v, ok := usageInt(details, "cache_creation_tokens"); ok {
+			a.setCacheCreationInputTokens(v)
+		}
+	}
+}
+
+func (a *usageAccumulator) setInputTokens(v int) {
+	if v < 0 {
+		return
+	}
+	if !a.hasInputTokens || v > a.inputTokens {
+		a.inputTokens = v
+		a.hasInputTokens = true
+	}
+}
+
+func (a *usageAccumulator) setOutputTokens(v int) {
+	if v < 0 {
+		return
+	}
+	if !a.hasOutputTokens || v > a.outputTokens {
+		a.outputTokens = v
+		a.hasOutputTokens = true
+	}
+}
+
+func (a *usageAccumulator) setTotalTokens(v int) {
+	if v < 0 {
+		return
+	}
+	if !a.hasTotalTokens || v > a.totalTokens {
+		a.totalTokens = v
+		a.hasTotalTokens = true
+	}
+}
+
+func (a *usageAccumulator) setCacheReadInputTokens(v int) {
+	if v < 0 {
+		return
+	}
+	if !a.hasCacheReadInputTokens || v > a.cacheReadInputTokens {
+		a.cacheReadInputTokens = v
+		a.hasCacheReadInputTokens = true
+	}
+}
+
+func (a *usageAccumulator) setCacheCreationInputTokens(v int) {
+	if v < 0 {
+		return
+	}
+	if !a.hasCacheCreationInputTokens || v > a.cacheCreationInputTokens {
+		a.cacheCreationInputTokens = v
+		a.hasCacheCreationInputTokens = true
+	}
+}
+
+func (a *usageAccumulator) buildTokenUsage(outputText string) map[string]interface{} {
+	if a == nil {
+		return nil
+	}
+
+	inputTokens := a.inputTokens
+	outputTokens := a.outputTokens
+	hasInputTokens := a.hasInputTokens
+	hasOutputTokens := a.hasOutputTokens
+
+	// If only one side exists but total_tokens is present, derive the other side.
+	if a.hasTotalTokens && hasOutputTokens && !hasInputTokens && a.totalTokens >= outputTokens {
+		inputTokens = a.totalTokens - outputTokens
+		hasInputTokens = true
+	}
+	if a.hasTotalTokens && hasInputTokens && !hasOutputTokens && a.totalTokens >= inputTokens {
+		outputTokens = a.totalTokens - inputTokens
+		hasOutputTokens = true
+	}
+
+	estimatedOutputTokens := tokencount.EstimateOutputTokens(outputText)
+	if estimatedOutputTokens > 0 {
+		if !hasOutputTokens || outputTokens <= 0 {
+			outputTokens = estimatedOutputTokens
+			hasOutputTokens = true
+		} else if estimatedOutputTokens >= usageFallbackMinEstimatedOutputTokens &&
+			estimatedOutputTokens >= outputTokens*usageFallbackOutputMismatchRatio {
+			outputTokens = estimatedOutputTokens
+		}
+	}
+
+	tokenUsage := make(map[string]interface{})
+	if hasInputTokens {
+		tokenUsage["input_tokens"] = inputTokens
+	}
+	if hasOutputTokens {
+		tokenUsage["output_tokens"] = outputTokens
+	}
+	if a.hasCacheReadInputTokens {
+		tokenUsage["cache_read_input_tokens"] = a.cacheReadInputTokens
+	}
+	if a.hasCacheCreationInputTokens {
+		tokenUsage["cache_creation_input_tokens"] = a.cacheCreationInputTokens
+	}
+
+	if len(tokenUsage) == 0 {
+		return nil
+	}
+	return tokenUsage
+}
+
+func usageInt(m map[string]interface{}, keys ...string) (int, bool) {
+	for _, key := range keys {
+		if raw, exists := m[key]; exists {
+			if v, ok := toTokenInt(raw); ok {
+				return v, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func toTokenInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return n, true
+	case int32:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case float32:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case json.Number:
+		if iv, err := n.Int64(); err == nil && iv >= 0 {
+			return int(iv), true
+		}
+		if fv, err := n.Float64(); err == nil && fv >= 0 {
+			return int(fv), true
+		}
+	case string:
+		s := strings.TrimSpace(n)
+		if s == "" {
+			return 0, false
+		}
+		if iv, err := strconv.Atoi(s); err == nil && iv >= 0 {
+			return iv, true
+		}
+		if fv, err := strconv.ParseFloat(s, 64); err == nil && fv >= 0 {
+			return int(fv), true
+		}
+	}
+	return 0, false
+}
+
+func emitAggregatedTokenUsageNode(w io.Writer, usageAcc *usageAccumulator, outputText string, nextNodeID *int) bool {
+	tokenUsage := usageAcc.buildTokenUsage(outputText)
+	if len(tokenUsage) == 0 {
+		return false
 	}
 
 	node := map[string]interface{}{
@@ -367,6 +566,7 @@ func emitTokenUsageNode(w io.Writer, usage map[string]interface{}, nextNodeID *i
 	chunk := newBaseChunk("")
 	chunk["nodes"] = []interface{}{node}
 	writeChunkLine(w, chunk)
+	return true
 }
 
 func emitThinkingChunk(w io.Writer, text string, nextNodeID *int) {
@@ -399,6 +599,8 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	// index -> accumulated tool call
 	acc := map[int]*openAIToolCallAccum{}
 	inThinkTag := false // T6: track <think> tag state
+	var usageAcc usageAccumulator
+	var generatedText strings.Builder
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -414,6 +616,10 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			continue
 		}
+		if usage, ok := ev["usage"].(map[string]interface{}); ok {
+			usageAcc.merge(usage)
+		}
+
 		choices, _ := ev["choices"].([]interface{})
 		if len(choices) == 0 {
 			continue
@@ -423,6 +629,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 		// T1: Handle reasoning_content (DeepSeek, OpenAI reasoning models)
 		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+			generatedText.WriteString(reasoning)
 			thinkNode := map[string]interface{}{
 				"id":       nextNodeID,
 				"type":     augmentNodeTypeThinking,
@@ -438,6 +645,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 		// T6: Handle <think> tags in content as THINKING nodes
 		if content, ok := delta["content"].(string); ok && content != "" {
+			generatedText.WriteString(content)
 			remaining := content
 			for len(remaining) > 0 {
 				if inThinkTag {
@@ -527,12 +735,6 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
-			// Extract usage information before processing finish_reason
-			// to ensure we don't miss it after clearing accumulator
-			if usage, ok := ev["usage"].(map[string]interface{}); ok {
-				emitTokenUsageNode(w, usage, &nextNodeID)
-			}
-
 			switch fr {
 			case "tool_calls":
 				var nodes []interface{}
@@ -575,14 +777,10 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				writeChunkLine(w, chunk)
 				acc = map[int]*openAIToolCallAccum{}
 			}
-			continue // Skip the usage check below since we already handled it
-		}
-
-		// Extract usage information if present (OpenAI format)
-		// This handles cases where usage arrives without finish_reason
-		if usage, ok := ev["usage"].(map[string]interface{}); ok {
-			emitTokenUsageNode(w, usage, &nextNodeID)
+			continue
 		}
 	}
+
+	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 	return scanner.Err()
 }
