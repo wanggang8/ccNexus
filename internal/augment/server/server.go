@@ -33,6 +33,24 @@ type Server struct {
 	running    bool
 }
 
+// responseWriter wraps http.ResponseWriter to capture status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Flush implements http.Flusher interface
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // New creates a new Augment server instance.
 func New(cfg *config.Config, privateKeyPath string) (*Server, error) {
 	dec, err := decrypt.New(privateKeyPath)
@@ -77,14 +95,34 @@ func (s *Server) Start() error {
 	}
 
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/v1/messages", s.handleRequest)
 	mux.HandleFunc("/v1/chat/completions", s.handleRequest)
+	mux.HandleFunc("/chat-stream", s.handleRequest)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/v1/models", s.handleGetModels)
+	mux.HandleFunc("/usage/api/get-models", s.handleGetModels)
+	mux.HandleFunc("/usage/api/balance", s.handleGetBalance)
+	mux.HandleFunc("/usage/api/getLoginToken", s.handleGetLoginToken)
+
+	// Add logging middleware that logs all requests and catches 404s
+	loggedMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("Augment: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		// Create a response writer wrapper to capture status code
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		mux.ServeHTTP(rw, r)
+
+		// Log 404s with more details
+		if rw.statusCode == http.StatusNotFound {
+			logger.Warn("Augment: 404 Not Found - %s %s (headers: %v)", r.Method, r.URL.Path, r.Header)
+		}
+	})
 
 	addr := fmt.Sprintf(":%d", s.config.AugmentPort)
 	s.httpServer = &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      loggedMux,
 		ReadTimeout:  300 * time.Second,
 		WriteTimeout: 300 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -472,4 +510,362 @@ func (s *Server) writeErrorResponse(w http.ResponseWriter, message string, isStr
 			},
 		})
 	}
+}
+
+// ModelInfo represents basic model information from various API providers.
+type ModelInfo struct {
+	ID          string
+	DisplayName string
+	CreatedAt   time.Time
+}
+
+// fetchClaudeModels fetches model list from Claude API.
+func (s *Server) fetchClaudeModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
+	
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	req.Header.Set("x-api-key", endpoint.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	
+	var result struct {
+		Data []struct {
+			ID          string    `json:"id"`
+			DisplayName string    `json:"display_name"`
+			CreatedAt   time.Time `json:"created_at"`
+		} `json:"data"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.DisplayName,
+			CreatedAt:   m.CreatedAt,
+		})
+	}
+	
+	return models, nil
+}
+
+// fetchOpenAIModels fetches model list from OpenAI-compatible API.
+func (s *Server) fetchOpenAIModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
+	
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+		} `json:"data"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.ID, // OpenAI doesn't provide display_name
+			CreatedAt:   time.Unix(m.Created, 0),
+		})
+	}
+	
+	return models, nil
+}
+
+// fetchGeminiModels fetches model list from Gemini API.
+func (s *Server) fetchGeminiModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + endpoint.APIKey
+	
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	
+	var result struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	
+	models := make([]ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		// Extract model ID from "models/gemini-pro" format
+		modelID := strings.TrimPrefix(m.Name, "models/")
+		
+		models = append(models, ModelInfo{
+			ID:          modelID,
+			DisplayName: m.DisplayName,
+			CreatedAt:   time.Now(), // Gemini doesn't provide creation time
+		})
+	}
+	
+	return models, nil
+}
+
+// convertToAugmentFormat converts model list to Augment-compatible format.
+func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) map[string]interface{} {
+	result := make(map[string]interface{})
+	
+	for i, model := range models {
+		// Generate short name from model ID
+		shortName := model.ID
+		if strings.Contains(model.ID, "-") {
+			parts := strings.Split(model.ID, "-")
+			if len(parts) > 0 {
+				shortName = parts[0]
+			}
+		}
+		
+		// Determine priority (lower number = higher priority)
+		priority := i + 1
+		
+		// Create model entry in Augment-compatible format
+		modelEntry := map[string]interface{}{
+			"displayName":   model.ID,
+			"description":   model.DisplayName,
+			"shortName":     shortName,
+			"priority":      priority,
+			"isLegacyModel": false,
+		}
+		
+		result[model.ID] = modelEntry
+	}
+	
+	return result
+}
+
+// fetchModelsFromEndpoint fetches models from the endpoint based on its type.
+func (s *Server) fetchModelsFromEndpoint(endpoint *config.Endpoint, targetType string) (map[string]interface{}, error) {
+	var models []ModelInfo
+	var err error
+	
+	switch targetType {
+	case "claude", "cli":
+		models, err = s.fetchClaudeModels(endpoint)
+	case "openai", "openai2":
+		models, err = s.fetchOpenAIModels(endpoint)
+	case "gemini":
+		// Try Gemini API first, fallback to OpenAI-compatible
+		models, err = s.fetchGeminiModels(endpoint)
+		if err != nil {
+			logger.Debug("Augment: Gemini API failed, trying OpenAI-compatible: %v", err)
+			models, err = s.fetchOpenAIModels(endpoint)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported target type: %s", targetType)
+	}
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no models returned from endpoint")
+	}
+	
+	return s.convertToAugmentFormat(models, targetType), nil
+}
+
+// getDefaultModels returns the default model list as fallback.
+func (s *Server) getDefaultModels() map[string]interface{} {
+	return map[string]interface{}{
+		"claude-sonnet-4-5-20250929": map[string]interface{}{
+			"displayName":   "claude-sonnet-4-5-20250929",
+			"description":   "Claude Sonnet 4.5",
+			"shortName":     "sonnet-4.5",
+			"priority":      10,
+			"isLegacyModel": false,
+		},
+		"claude-opus-4-20250514": map[string]interface{}{
+			"displayName":   "claude-opus-4-20250514",
+			"description":   "Claude Opus 4",
+			"shortName":     "opus-4",
+			"priority":      9,
+			"isLegacyModel": false,
+		},
+		"claude-3-5-sonnet-20241022": map[string]interface{}{
+			"displayName":   "claude-3-5-sonnet-20241022",
+			"description":   "Claude 3.5 Sonnet",
+			"shortName":     "3.5-sonnet",
+			"priority":      8,
+			"isLegacyModel": false,
+		},
+	}
+}
+
+// handleGetModels handles model list requests for Augment plugin.
+func (s *Server) handleGetModels(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/get-models from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Try to fetch models dynamically from endpoint
+	targetType, endpoint := s.selectTarget()
+	var models map[string]interface{}
+	
+	if endpoint != nil {
+		logger.Debug("Augment: attempting to fetch models from endpoint (type: %s)", targetType)
+		fetchedModels, err := s.fetchModelsFromEndpoint(endpoint, targetType)
+		if err != nil {
+			logger.Debug("Augment: failed to fetch models from endpoint: %v, using defaults", err)
+			models = s.getDefaultModels()
+		} else {
+			logger.Debug("Augment: successfully fetched %d models from endpoint", len(fetchedModels))
+			models = fetchedModels
+		}
+	} else {
+		logger.Debug("Augment: no endpoint configured, using default models")
+		models = s.getDefaultModels()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
+	logger.Debug("Augment: returned model list with %d models", len(models))
+}
+
+// handleGetBalance handles balance query requests for Augment plugin.
+func (s *Server) handleGetBalance(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/balance from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Return balance info in Augment-compatible format
+	balance := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"name":          "ccNexus Proxy",
+			"remain_quota":  999999,
+			"remain_amount": 999999,
+			"unlimited":     false,
+			"expired_time":  4102444800,
+			"status":        1,
+			"status_text":   "enabled",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(balance)
+	logger.Debug("Augment: returned balance info")
+}
+
+// handleGetLoginToken handles login token requests for Augment plugin.
+func (s *Server) handleGetLoginToken(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/getLoginToken from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get first enabled endpoint for tenantUrl and accessToken
+	s.mu.RLock()
+	var tenantUrl, accessToken string
+	if len(s.config.Endpoints) > 0 {
+		for i := range s.config.Endpoints {
+			ep := &s.config.Endpoints[i]
+			if ep.Enabled {
+				tenantUrl = strings.TrimSuffix(ep.APIUrl, "/")
+				accessToken = ep.APIKey
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	// Fallback to default values if no endpoint found
+	if tenantUrl == "" {
+		tenantUrl = "https://api.anthropic.com"
+	}
+	if accessToken == "" {
+		accessToken = "augment-proxy-token"
+	}
+
+	// Return login token in Augment-compatible format
+	// Note: data is duplicated at both top level and nested for compatibility
+	token := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"tenantUrl":   tenantUrl,
+			"accessToken": accessToken,
+		},
+		"tenantUrl":   tenantUrl,
+		"accessToken": accessToken,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(token)
+	logger.Debug("Augment: returned login token")
 }

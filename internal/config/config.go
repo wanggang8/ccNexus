@@ -517,7 +517,7 @@ func (c *Config) GetAugmentConfig() (enabled bool, port int, keyPath string) {
 	defer c.mu.RUnlock()
 	p := c.AugmentPort
 	if p == 0 {
-		p = 8888
+		p = 2346
 	}
 	return c.AugmentEnabled, p, c.AugmentKeyPath
 }
@@ -534,7 +534,7 @@ func (c *Config) GetAugmentPort() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.AugmentPort == 0 {
-		return 8888
+		return 2346
 	}
 	return c.AugmentPort
 }
@@ -811,7 +811,7 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		}
 	}
 	if config.AugmentPort == 0 {
-		config.AugmentPort = 8888
+		config.AugmentPort = 2346
 	}
 	if augmentKeyPath, err := storage.GetConfig("augment_key_path"); err == nil {
 		config.AugmentKeyPath = augmentKeyPath
@@ -1060,7 +1060,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	augmentPort := c.AugmentPort
 	if augmentPort == 0 {
-		augmentPort = 8888
+		augmentPort = 2346
 	}
 	if err := storage.SetConfig("augment_port", strconv.Itoa(augmentPort)); err != nil {
 		return fmt.Errorf("failed to save augment_port config: %w", err)

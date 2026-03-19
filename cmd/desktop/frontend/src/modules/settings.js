@@ -232,7 +232,7 @@ async function loadCurrentSettings() {
                 const augmentPort = document.getElementById('settingsAugmentPort');
                 const augmentEnabledLabel = document.getElementById('settingsAugmentEnabledLabel');
                 if (augmentEnabled) augmentEnabled.checked = augmentConfig.data.enabled;
-                if (augmentPort) augmentPort.value = augmentConfig.data.port || 8888;
+                if (augmentPort) augmentPort.value = augmentConfig.data.port || 2346;
                 if (augmentEnabledLabel) {
                     augmentEnabledLabel.textContent = augmentConfig.data.enabled ? t('settings.augmentEnabledOn') : t('settings.augmentEnabledOff');
                 }
@@ -361,7 +361,7 @@ export async function saveSettings() {
             if (augmentEnabledEl && augmentPortEl) {
                 const augmentSettings = {
                     enabled: augmentEnabledEl.checked,
-                    port: parseInt(augmentPortEl.value) || 8888
+                    port: parseInt(augmentPortEl.value) || 2346
                 };
                 await window.go.main.App.SaveAugmentConfig(JSON.stringify(augmentSettings));
             }

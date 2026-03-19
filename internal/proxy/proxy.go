@@ -116,9 +116,6 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux, handlerWrapper func(http.
 	// Register proxy routes
 	mux.HandleFunc("/", p.handleProxy)
 	mux.HandleFunc("/v1/messages/count_tokens", p.handleCountTokens)
-	mux.HandleFunc("/usage/api/get-models", p.handleGetModels)
-	mux.HandleFunc("/usage/api/balance", p.handleGetBalance)
-	mux.HandleFunc("/usage/api/getLoginToken", p.handleGetLoginToken)
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.HandleFunc("/stats", p.handleStats)
 
@@ -733,17 +730,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 				// Record traffic log for failed non-streaming response
 				p.trafficRecorder.Record(&TrafficLog{
-					Timestamp:       startTime,
-					EndpointName:    endpoint.Name,
-					ClientFormat:    string(clientFormat),
-					TransformerName: transformerName,
-					Method:          r.Method,
-					Path:            r.URL.Path,
-					StatusCode:      http.StatusBadGateway,
-					Duration:        time.Since(startTime),
-					IsStreaming:     false,
-					Error:           err.Error(),
-					OriginalRequest: bodyBytes,
+					Timestamp:          startTime,
+					EndpointName:       endpoint.Name,
+					ClientFormat:       string(clientFormat),
+					TransformerName:    transformerName,
+					Method:             r.Method,
+					Path:               r.URL.Path,
+					StatusCode:         http.StatusBadGateway,
+					Duration:           time.Since(startTime),
+					IsStreaming:        false,
+					Error:              err.Error(),
+					OriginalRequest:    bodyBytes,
 					TransformedRequest: transformedBody,
 					OriginalResponse:   originalResp,
 				})

@@ -251,7 +251,7 @@ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, request_overrides, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, COALESCE(request_overrides, ''), sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -750,9 +750,9 @@ func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoin
 
 	query := ""
 	if authModeColumnCount > 0 {
-		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, COALESCE(auth_mode, 'api_key') as auth_mode, enabled, transformer, model, remark, request_overrides, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
+		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, COALESCE(auth_mode, 'api_key') as auth_mode, enabled, transformer, model, remark, COALESCE(request_overrides, ''), COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
 	} else {
-		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, 'api_key' as auth_mode, enabled, transformer, model, remark, request_overrides, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
+		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, 'api_key' as auth_mode, enabled, transformer, model, remark, COALESCE(request_overrides, ''), COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
 	}
 
 	rows, err := db.Query(query)
@@ -901,7 +901,7 @@ func (s *SQLiteStorage) mergeEndpoints(tx *sql.Tx, strategy MergeStrategy) error
 		_, err := tx.Exec(fmt.Sprintf(`
 			INSERT OR IGNORE INTO endpoints
 			(name, api_url, api_key, auth_mode, enabled, transformer, model, remark, request_overrides, sort_order)
-			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, request_overrides, COALESCE(sort_order, 0)
+			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, COALESCE(request_overrides, ''), COALESCE(sort_order, 0)
 			FROM backup.endpoints
 		`, selectAuthMode))
 		return err
@@ -910,7 +910,7 @@ func (s *SQLiteStorage) mergeEndpoints(tx *sql.Tx, strategy MergeStrategy) error
 		_, err := tx.Exec(fmt.Sprintf(`
 			INSERT OR REPLACE INTO endpoints
 			(name, api_url, api_key, auth_mode, enabled, transformer, model, remark, request_overrides, sort_order)
-			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, request_overrides, COALESCE(sort_order, 0)
+			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, COALESCE(request_overrides, ''), COALESCE(sort_order, 0)
 			FROM backup.endpoints
 		`, selectAuthMode))
 		return err

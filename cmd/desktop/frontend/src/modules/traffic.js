@@ -328,3 +328,21 @@ export async function initTraffic() {
         updateRecordingUI(false);
     }
 }
+
+// Handle traffic tab activation (called when user switches to traffic tab)
+export async function onTrafficTabActivated() {
+    try {
+        // Check if recording is active
+        const isRecording = await window.go.main.App.IsTrafficRecording();
+        
+        // If recording is active but auto-refresh is not running, start it
+        if (isRecording && !refreshInterval) {
+            startAutoRefresh();
+        }
+        
+        // Refresh logs immediately
+        await loadTrafficLogs(currentFilter);
+    } catch (error) {
+        console.error('Failed to handle traffic tab activation:', error);
+    }
+}
