@@ -212,23 +212,35 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	if err := json.Unmarshal(openaiReq, &reqMap); err != nil {
 		return nil, err
 	}
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(openaiReq, &req); err != nil {
+		return nil, err
+	}
 
 	claudeReq := map[string]interface{}{
 		"model":      model,
 		"max_tokens": DefaultMaxTokens,
 		"stream":     false,
 	}
+	claudeMaxTokens := DefaultMaxTokens
 
 	if stream, ok := reqMap["stream"].(bool); ok {
 		claudeReq["stream"] = stream
 	}
-	if maxTokens, ok := reqMap["max_tokens"].(float64); ok && maxTokens > 0 {
-		claudeReq["max_tokens"] = int(maxTokens)
+	if maxTokensValue, ok := reqMap["max_tokens"].(float64); ok && maxTokensValue > 0 {
+		maxTokensInt := int(maxTokensValue)
+		claudeReq["max_tokens"] = maxTokensInt
+		claudeMaxTokens = maxTokensInt
 	} else if maxComp, ok := reqMap["max_completion_tokens"].(float64); ok && maxComp > 0 {
-		claudeReq["max_tokens"] = int(maxComp)
+		maxTokensInt := int(maxComp)
+		claudeReq["max_tokens"] = maxTokensInt
+		claudeMaxTokens = maxTokensInt
 	}
 	if temp, ok := reqMap["temperature"].(float64); ok {
 		claudeReq["temperature"] = temp
+	}
+	if thinking := buildClaudeThinkingConfig(req.Thinking, req.EnableThinking, claudeMaxTokens); thinking != nil {
+		claudeReq["thinking"] = thinking
 	}
 
 	// Convert messages

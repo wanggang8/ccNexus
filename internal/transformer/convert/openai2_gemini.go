@@ -438,7 +438,21 @@ func convertOpenAI2ContentToGeminiParts(content interface{}) []map[string]interf
 		}
 		switch partMap["type"] {
 		case "input_text", "output_text":
-			parts = append(parts, map[string]interface{}{"text": partMap["text"]})
+			if text, ok := partMap["text"].(string); ok && text != "" {
+				parts = append(parts, map[string]interface{}{"text": text})
+			}
+		case "input_image", "image_url", "image":
+			url, ok := normalizeImageURL(partMap["image_url"])
+			if !ok {
+				url, ok = normalizeImageURL(partMap)
+			}
+			if ok {
+				if inlineData := geminiInlineDataFromURL(url); inlineData != nil {
+					parts = append(parts, inlineData)
+				} else if strings.HasPrefix(strings.TrimSpace(url), "http://") || strings.HasPrefix(strings.TrimSpace(url), "https://") {
+					logger.Warn("URL image source not supported for Gemini conversion, image dropped (url=%s)", url)
+				}
+			}
 		}
 	}
 

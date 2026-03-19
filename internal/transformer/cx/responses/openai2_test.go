@@ -58,6 +58,45 @@ func TestOpenAI2Transformer_TransformRequest_ModelOverride(t *testing.T) {
 	}
 }
 
+func TestOpenAI2Transformer_TransformRequest_StripsInternalThinkingFields(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o-mini")
+
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": "Hello",
+		"thinking": {"type": "enabled", "budget_tokens": 2048},
+		"enable_thinking": true,
+		"budget_tokens": 2048,
+		"reasoning_effort": "low"
+	}`
+
+	result, err := trans.TransformRequest([]byte(openai2Req))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o-mini" {
+		t.Fatalf("expected model override to remain applied, got %#v", data["model"])
+	}
+	if _, ok := data["thinking"]; ok {
+		t.Fatalf("expected thinking to be stripped, got %#v", data["thinking"])
+	}
+	if _, ok := data["enable_thinking"]; ok {
+		t.Fatalf("expected enable_thinking to be stripped, got %#v", data["enable_thinking"])
+	}
+	if _, ok := data["budget_tokens"]; ok {
+		t.Fatalf("expected budget_tokens to be stripped, got %#v", data["budget_tokens"])
+	}
+	if data["reasoning_effort"] != "low" {
+		t.Fatalf("expected reasoning_effort to be preserved, got %#v", data["reasoning_effort"])
+	}
+}
+
 func TestOpenAI2Transformer_TransformResponse(t *testing.T) {
 	trans := NewOpenAI2Transformer("gpt-4o")
 

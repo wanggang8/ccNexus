@@ -54,6 +54,54 @@ func TestOpenAIReqToOpenAI2_Basic(t *testing.T) {
 	}
 }
 
+func TestOpenAIReqToOpenAI2_PreservesReasoningEffortAndImages(t *testing.T) {
+	openaiReq := `{
+		"model": "gpt-4.1",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Describe this image"},
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}}
+			]
+		}],
+		"reasoning_effort": "medium"
+	}`
+
+	result, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if openai2Req["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning_effort to be preserved, got %#v", openai2Req["reasoning_effort"])
+	}
+
+	input := openai2Req["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("expected 1 input item, got %d", len(input))
+	}
+	msg := input[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts, got %d", len(content))
+	}
+	if content[0].(map[string]interface{})["type"] != "input_text" {
+		t.Fatalf("expected first part to be input_text, got %#v", content[0])
+	}
+	imagePart := content[1].(map[string]interface{})
+	if imagePart["type"] != "input_image" {
+		t.Fatalf("expected second part to be input_image, got %#v", imagePart)
+	}
+	if imagePart["image_url"] != "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" {
+		t.Fatalf("expected image url to be preserved, got %#v", imagePart["image_url"])
+	}
+}
+
 func TestOpenAIReqToOpenAI2DefaultsToolChoiceAutoWhenToolsPresent(t *testing.T) {
 	openaiReq := `{
 		"model":"gpt-4.1",
@@ -163,6 +211,55 @@ func TestOpenAI2ReqToOpenAI_Basic(t *testing.T) {
 	// Check max_completion_tokens
 	if openaiReq.MaxCompletionTokens != 1024 {
 		t.Errorf("Expected max_completion_tokens 1024, got %d", openaiReq.MaxCompletionTokens)
+	}
+}
+
+func TestOpenAI2ReqToOpenAI_PreservesImagesAndReasoningEffort(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": [
+			{
+				"type": "message",
+				"role": "user",
+				"content": [
+					{"type": "input_text", "text": "Look"},
+					{"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/"}
+				]
+			}
+		],
+		"reasoning_effort": "high"
+	}`
+
+	result, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq transformer.OpenAIRequest
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if openaiReq.ReasoningEffort != "high" {
+		t.Fatalf("expected reasoning_effort to be preserved, got %#v", openaiReq.ReasoningEffort)
+	}
+	if len(openaiReq.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(openaiReq.Messages))
+	}
+	content, ok := openaiReq.Messages[0].Content.([]interface{})
+	if !ok {
+		t.Fatalf("expected array content with image, got %T", openaiReq.Messages[0].Content)
+	}
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts, got %d", len(content))
+	}
+	imagePart := content[1].(map[string]interface{})
+	if imagePart["type"] != "image_url" {
+		t.Fatalf("expected second part to be image_url, got %#v", imagePart["type"])
+	}
+	urlObj := imagePart["image_url"].(map[string]interface{})
+	if urlObj["url"] != "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/" {
+		t.Fatalf("expected image url to be preserved, got %#v", urlObj["url"])
 	}
 }
 

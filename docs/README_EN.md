@@ -100,9 +100,20 @@ wire_api = "responses"  # or "chat"
 
 ## Documentation
 
+### Core Docs (Project Facts)
 - [Configuration Guide](configuration_en.md)
 - [Development Guide](development_en.md)
+- [Augment Integration](AUGMENT_INTEGRATION.md)
+- [OpenAI → Claude Code CLI Conversion Spec](openai-to-claude-code-cli.md)
+- [Traffic Recording](TRAFFIC_RECORDING.md)
+
+### Ops / Deployment / FAQ
+- [Server Operations](SERVER_OPERATION.md)
+- [Docker Deployment](README_DOCKER.md)
 - [FAQ](FAQ_en.md)
+
+### Archive
+- [Cursor Proxy Tutorial (Archived)](archive/cursor代理使用教程.md)
 
 ## License
 

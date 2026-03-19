@@ -32,9 +32,9 @@ func supportsThinking(model string) bool {
 
 	// Aliases that map to Claude 4+ models
 	thinkingAliases := []string{
-		"claude-sonnet",    // latest sonnet = 4.x
-		"claude-opus",      // latest opus = 4.x
-		"claude-haiku",     // latest haiku = 4.x
+		"claude-sonnet", // latest sonnet = 4.x
+		"claude-opus",   // latest opus = 4.x
+		"claude-haiku",  // latest haiku = 4.x
 	}
 	for _, alias := range thinkingAliases {
 		if m == alias {
@@ -93,6 +93,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 	messages := buildClaudeMessages(ar)
 	tools := buildClaudeTools(ar.EffectiveTools())
 	system := buildCliSystem(ar.UserGuidelines)
+	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
 	// Prompt Caching — three levels (tools → system → last history message).
 	if len(tools) > 0 {
@@ -107,7 +108,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 
 	req := map[string]interface{}{
 		"model":      ar.Model,
-		"max_tokens": effectiveMaxTokens(ar.MaxTokens),
+		"max_tokens": maxTokens,
 		"stream":     ar.IsStreaming(),
 		"messages":   messages,
 		"metadata": map[string]interface{}{
@@ -121,12 +122,10 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 		req["system"] = system
 	}
 
-	// T4: Enable thinking for models that support it (Claude 4+ series)
-	if supportsThinking(ar.Model) {
-		req["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 10000,
-		}
+	// T4: Enable thinking when explicitly requested, or fall back to model-based
+	// defaults for Claude Code compatibility.
+	if thinking := buildClaudeThinkingConfig(ar.Thinking, ar.EnableThinking, ar.Model, maxTokens, true); thinking != nil {
+		req["thinking"] = thinking
 	}
 
 	return json.Marshal(req)

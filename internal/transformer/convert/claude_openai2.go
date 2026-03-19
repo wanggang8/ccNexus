@@ -163,6 +163,9 @@ func OpenAI2ReqToClaude(openai2Req []byte, model string) ([]byte, error) {
 	if req.Temperature != nil {
 		claudeReq["temperature"] = *req.Temperature
 	}
+	if thinking := buildClaudeThinkingConfig(req.Thinking, req.EnableThinking, req.MaxOutputTokens); thinking != nil {
+		claudeReq["thinking"] = thinking
+	}
 
 	// Convert input to messages
 	messages := convertOpenAI2InputToClaude(req.Input)
@@ -700,6 +703,24 @@ func convertClaudeMessageToOpenAI2Items(content []interface{}, role string) []ma
 		case "text":
 			text, _ := m["text"].(string)
 			messageParts = append(messageParts, map[string]interface{}{"type": textType, "text": text})
+		case "image":
+			if source, ok := m["source"].(map[string]interface{}); ok {
+				if url, ok := source["url"].(string); ok && strings.TrimSpace(url) != "" {
+					messageParts = append(messageParts, openAI2ImagePartFromURL(url))
+					continue
+				}
+				if sourceType, _ := source["type"].(string); strings.ToLower(strings.TrimSpace(sourceType)) == "base64" {
+					mediaType, _ := source["media_type"].(string)
+					data, _ := source["data"].(string)
+					mediaType = strings.TrimSpace(mediaType)
+					if mediaType == "" {
+						mediaType = "image/png"
+					}
+					if data != "" {
+						messageParts = append(messageParts, openAI2ImagePartFromURL(fmt.Sprintf("data:%s;base64,%s", mediaType, data)))
+					}
+				}
+			}
 		case "thinking":
 			// Skip thinking blocks - they are Claude's internal reasoning
 			continue
@@ -832,7 +853,19 @@ func convertOpenAI2ContentToClaude(content interface{}, role string) interface{}
 		}
 		switch partMap["type"] {
 		case "input_text", "output_text":
-			result = append(result, map[string]interface{}{"type": "text", "text": partMap["text"]})
+			if text, ok := partMap["text"].(string); ok && text != "" {
+				result = append(result, map[string]interface{}{"type": "text", "text": text})
+			}
+		case "input_image", "image_url", "image":
+			url, ok := normalizeImageURL(partMap["image_url"])
+			if !ok {
+				url, ok = normalizeImageURL(partMap)
+			}
+			if ok {
+				if imageBlock := claudeImageBlockFromURL(url); imageBlock != nil {
+					result = append(result, imageBlock)
+				}
+			}
 		}
 	}
 

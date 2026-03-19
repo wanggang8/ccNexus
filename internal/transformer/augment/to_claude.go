@@ -13,6 +13,7 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 	messages := buildClaudeMessages(ar)
 	tools := buildClaudeTools(ar.EffectiveTools())
 	system := buildClaudeSystem(ar.UserGuidelines)
+	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
 	// Prompt Caching — three levels (tools → system → last history message).
 	if len(tools) > 0 {
@@ -27,7 +28,7 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 
 	req := map[string]interface{}{
 		"model":      ar.Model,
-		"max_tokens": effectiveMaxTokens(ar.MaxTokens),
+		"max_tokens": maxTokens,
 		"stream":     ar.IsStreaming(),
 		"messages":   messages,
 	}
@@ -36,6 +37,9 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 	}
 	if len(system) > 0 {
 		req["system"] = system
+	}
+	if thinking := buildClaudeThinkingConfig(ar.Thinking, ar.EnableThinking, ar.Model, maxTokens, false); thinking != nil {
+		req["thinking"] = thinking
 	}
 
 	return json.Marshal(req)
@@ -67,7 +71,7 @@ func appendClaudeHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 
 func appendClaudeCurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string) {
 	if len(nodes) == 0 {
-		if message != "" {
+		if message != "" || len(images) > 0 {
 			msg := map[string]interface{}{"role": "user", "content": message}
 			appendTopLevelImages(msg, images)
 			*msgs = append(*msgs, msg)
@@ -82,23 +86,24 @@ func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 	if toolResults := extractToolResults(nodes); len(toolResults) > 0 {
 		content := make([]map[string]interface{}, 0, len(toolResults))
 		for _, tr := range toolResults {
-		block := map[string]interface{}{
-			"type":        "tool_result",
-			"tool_use_id": tr.ToolUseID,
-			"content":     tr.Content,
-		}
-		if len(tr.Content) >= minCacheSizeBytes {
-			block["cache_control"] = map[string]interface{}{"type": "ephemeral"}
-		}
+			block := map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": tr.ToolUseID,
+				"content":     tr.Content,
+			}
+			if len(tr.Content) >= minCacheSizeBytes {
+				block["cache_control"] = map[string]interface{}{"type": "ephemeral"}
+			}
 			content = append(content, block)
 		}
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
 	}
 
 	// Text + IDE state + images.
-	text := fallbackText
+	// Prefer text extracted from nodes; fall back to the plain-text message field.
+	text := extractText(nodes)
 	if text == "" {
-		text = extractText(nodes)
+		text = fallbackText
 	}
 	ideState := extractIdeState(nodes)
 	if ideState != "" && !ideStateDuplicate(*msgs, ideState) {
@@ -107,30 +112,18 @@ func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 
 	imageBlocks := extractImageBlocks(nodes)
 
-	if text != "" || len(imageBlocks) > 0 || len(topImages) > 0 {
-		if text == "" {
-			text = ""
+	imageParts := make([]map[string]interface{}, 0, len(imageBlocks)+len(topImages))
+	for _, img := range imageBlocks {
+		imageParts = append(imageParts, img)
+	}
+	for _, raw := range topImages {
+		if block := buildClaudeImageBlock(raw, defaultImageMediaType); block != nil {
+			imageParts = append(imageParts, block)
 		}
-		var content interface{} = text
-		if len(imageBlocks) > 0 || len(topImages) > 0 {
-			parts := []map[string]interface{}{{"type": "text", "text": text}}
-			for _, img := range imageBlocks {
-				parts = append(parts, img)
-			}
-			for _, raw := range topImages {
-				if raw != "" {
-					parts = append(parts, map[string]interface{}{
-						"type": "image",
-						"source": map[string]interface{}{
-							"type":       "base64",
-							"media_type": "image/png",
-							"data":       raw,
-						},
-					})
-				}
-			}
-			content = parts
-		}
+	}
+
+	if text != "" || len(imageParts) > 0 {
+		content := buildTextImageContent(text, imageParts)
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
 	}
 }
@@ -140,20 +133,15 @@ func appendTopLevelImages(msg map[string]interface{}, images []string) {
 		return
 	}
 	text, _ := msg["content"].(string)
-	parts := []map[string]interface{}{{"type": "text", "text": text}}
+	imageParts := make([]map[string]interface{}, 0, len(images))
 	for _, raw := range images {
-		if raw != "" {
-			parts = append(parts, map[string]interface{}{
-				"type": "image",
-				"source": map[string]interface{}{
-					"type":       "base64",
-					"media_type": "image/png",
-					"data":       raw,
-				},
-			})
+		if block := buildClaudeImageBlock(raw, defaultImageMediaType); block != nil {
+			imageParts = append(imageParts, block)
 		}
 	}
-	msg["content"] = parts
+	if len(imageParts) > 0 {
+		msg["content"] = buildTextImageContent(text, imageParts)
+	}
 }
 
 func appendClaudeResponseNodes(msgs *[]map[string]interface{}, text string, nodes []Node) {
@@ -161,20 +149,47 @@ func appendClaudeResponseNodes(msgs *[]map[string]interface{}, text string, node
 		return
 	}
 	var content []map[string]interface{}
-	if text != "" {
-		content = append(content, map[string]interface{}{"type": "text", "text": text})
-	}
+	hasTextBlock := false
+
 	for _, n := range nodes {
-		if n.Type == 5 && n.ToolUse != nil {
-			input := parseToolInput(n.ToolUse.InputJSON)
-			content = append(content, map[string]interface{}{
-				"type":  "tool_use",
-				"id":    n.ToolUse.ToolUseID,
-				"name":  n.ToolUse.ToolName,
-				"input": input,
-			})
+		switch n.Type {
+		case 0:
+			if n.TextNode != nil && n.TextNode.Content != "" {
+				content = append(content, map[string]interface{}{"type": "text", "text": n.TextNode.Content})
+				hasTextBlock = true
+			}
+		case 8:
+			if n.Thinking != nil {
+				block := map[string]interface{}{
+					"type":     "thinking",
+					"thinking": n.Thinking.Summary,
+				}
+				if n.Thinking.Signature != "" {
+					block["signature"] = n.Thinking.Signature
+				}
+				content = append(content, block)
+			}
+		case 5:
+			if n.ToolUse != nil {
+				input := parseToolInput(n.ToolUse.InputJSON)
+				content = append(content, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    n.ToolUse.ToolUseID,
+					"name":  n.ToolUse.ToolName,
+					"input": input,
+				})
+			}
 		}
 	}
+
+	if len(content) == 0 && text != "" {
+		content = append(content, map[string]interface{}{"type": "text", "text": text})
+	} else if text != "" && !hasTextBlock {
+		// Preserve node order when structured blocks are present by appending the
+		// fallback response text after the node-derived content.
+		content = append(content, map[string]interface{}{"type": "text", "text": text})
+	}
+
 	if len(content) > 0 {
 		*msgs = append(*msgs, map[string]interface{}{"role": "assistant", "content": content})
 	}
@@ -296,7 +311,7 @@ func extractText(nodes []Node) string {
 }
 
 var imageFormatMap = map[int]string{
-	0: "image/png",  // Default format (unspecified)
+	0: "image/png", // Default format (unspecified)
 	1: "image/png",
 	2: "image/jpeg",
 	3: "image/gif",
@@ -308,15 +323,12 @@ func extractImageBlocks(nodes []Node) []map[string]interface{} {
 	for _, n := range nodes {
 		if n.Type == 2 && n.ImageNode != nil && n.ImageNode.ImageData != "" {
 			mediaType := imageFormatMap[n.ImageNode.Format]
-			// No need for fallback check since map now includes 0 key
-			out = append(out, map[string]interface{}{
-				"type": "image",
-				"source": map[string]interface{}{
-					"type":       "base64",
-					"media_type": mediaType,
-					"data":       n.ImageNode.ImageData,
-				},
-			})
+			if mediaType == "" {
+				mediaType = defaultImageMediaType
+			}
+			if block := buildClaudeImageBlock(n.ImageNode.ImageData, mediaType); block != nil {
+				out = append(out, block)
+			}
 		}
 	}
 	return out
@@ -418,7 +430,7 @@ func BuildAuthHeaders(targetType, apiKey string) map[string]string {
 		return map[string]string{"Authorization": fmt.Sprintf("Bearer %s", apiKey)}
 	default:
 		return map[string]string{
-			"x-api-key":          apiKey,
+			"x-api-key":         apiKey,
 			"anthropic-version": "2023-06-01",
 		}
 	}

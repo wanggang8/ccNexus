@@ -194,7 +194,7 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 }
 
 // buildProxyRequest creates an HTTP request for the target API
-func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string, transformedBody []byte, transformerName string, credential *storage.EndpointCredential) (*http.Request, error) {
+func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string, transformedBody []byte, transformerName string, credential *storage.EndpointCredential, thinkingEnabled bool) (*http.Request, error) {
 	targetPath := getTargetPath(r.URL.Path, endpoint, transformedBody, transformerName)
 	if targetPath == "" {
 		targetPath = r.URL.Path
@@ -260,6 +260,10 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 		proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
+	if thinkingEnabled && isClaudeTransformer(transformerName) {
+		appendHeaderValue(proxyReq.Header, "anthropic-beta", "interleaved-thinking-2025-05-14")
+	}
+
 	// Set Host header
 	if parsedBase, err := url.Parse(normalizedAPIUrl); err == nil && strings.TrimSpace(parsedBase.Host) != "" {
 		proxyReq.Header.Set("Host", parsedBase.Host)
@@ -303,6 +307,30 @@ func ensureHeader(headers http.Header, key, value string) {
 	}
 	if strings.TrimSpace(headers.Get(key)) == "" {
 		headers.Set(key, value)
+	}
+}
+
+func appendHeaderValue(headers http.Header, key, value string) {
+	if headers == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	existing := strings.TrimSpace(headers.Get(key))
+	if existing == "" {
+		headers.Set(key, value)
+		return
+	}
+	if strings.Contains(existing, value) {
+		return
+	}
+	headers.Set(key, existing+","+value)
+}
+
+func isClaudeTransformer(transformerName string) bool {
+	switch strings.TrimSpace(transformerName) {
+	case "cc_claude", "cx_chat_claude", "cx_resp_claude":
+		return true
+	default:
+		return false
 	}
 }
 

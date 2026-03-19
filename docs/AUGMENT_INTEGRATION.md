@@ -2,7 +2,7 @@
 
 ## 概述
 
-ccNexus 现已集成 Augment 插件支持，在独立端口（默认 8888）提供 Augment 格式转换服务。
+ccNexus 现已集成 Augment 插件支持，在独立端口（默认 2346）提供 Augment 格式转换服务。
 
 ## 核心特性
 
@@ -22,12 +22,11 @@ internal/augment/
 │   └── decryptor.go          # RSA+AES 解密器
 ├── server/
 │   └── server.go              # 独立 HTTP 服务器
-├── types.go                   # Augment 数据结构
-└── transformer/augment/       # 格式转换器
-    ├── to_claude.go
-    ├── to_openai.go
-    ├── to_cli.go
-    └── to_gemini.go
+internal/transformer/augment/  # 格式转换器
+├── to_claude.go
+├── to_openai.go
+├── to_cli.go
+└── to_gemini.go
 ```
 
 ### 请求流程
@@ -37,7 +36,7 @@ Augment Plugin
     ↓
     ↓ (加密/明文请求)
     ↓
-:8888 Augment Server
+:2346 Augment Server
     ↓
     ├─→ 检测 encrypted_data 字段
     ├─→ 如有加密则 RSA+AES 解密
@@ -72,15 +71,15 @@ var augmentPrivateKeyPEM []byte
 ```go
 type Config struct {
     // ...
-    AugmentEnabled bool   `json:"augment_enabled"`
-    AugmentPort    int    `json:"augment_port"`
-    AugmentKeyPath string `json:"augment_key_path"`
+    AugmentEnabled bool   `json:"augmentEnabled"`
+    AugmentPort    int    `json:"augmentPort"`
+    AugmentKeyPath string `json:"augmentKeyPath,omitempty"`
 }
 ```
 
 **默认值**：
 - Enabled: false
-- Port: 8888
+- Port: 2346
 - KeyPath: `~/.ccNexus/augment-private-key.pem`
 
 ### 3. 解密实现
@@ -108,23 +107,14 @@ plaintext = removePKCS7Padding(plaintext)
 
 **Augment → Claude**：
 ```go
-// 转换消息格式
-for _, msg := range augReq.Messages {
-    claudeMsg := ClaudeMessage{
-        Role:    msg.Role,
-        Content: msg.Content,
-    }
-    claudeReq.Messages = append(claudeReq.Messages, claudeMsg)
-}
+// 转换请求
+body, err := toClaudeRequest(augmentReq)
 ```
 
 **Augment → OpenAI**：
 ```go
-// 映射模型名称
-modelMap := map[string]string{
-    "claude-3-5-sonnet-20241022": "gpt-4-turbo-preview",
-    // ...
-}
+// 转换请求
+body, err := toOpenAIRequest(augmentReq)
 ```
 
 ### 5. HTTP 服务器
@@ -132,8 +122,6 @@ modelMap := map[string]string{
 **端点**：
 - `POST /v1/messages` - Claude 格式
 - `POST /v1/chat/completions` - OpenAI 格式
-- `POST /v1/cli` - CLI 格式
-- `POST /v1/models/gemini-*` - Gemini 格式
 - `GET /health` - 健康检查
 
 **请求处理**：
@@ -180,7 +168,7 @@ func (a *App) SaveAugmentConfig(settingsJSON string) error
 ```json
 {
   "enabled": true,
-  "port": 8888
+  "port": 2346
 }
 ```
 
@@ -191,7 +179,7 @@ func (a *App) SaveAugmentConfig(settingsJSON string) error
 1. 打开 ccNexus UI
 2. 进入设置页面
 3. 找到 Augment 配置项
-4. 启用服务并设置端口（默认 8888）
+4. 启用服务并设置端口（默认 2346）
 5. 保存并重启应用
 
 ### VSCode Augment 插件配置
@@ -199,7 +187,7 @@ func (a *App) SaveAugmentConfig(settingsJSON string) error
 在 VSCode 设置中配置：
 ```json
 {
-  "augment.apiEndpoint": "http://localhost:8888",
+  "augment.apiEndpoint": "http://localhost:2346",
   "augment.apiKey": "your-api-key"
 }
 ```
@@ -208,13 +196,13 @@ func (a *App) SaveAugmentConfig(settingsJSON string) error
 
 ```bash
 # 检查端口监听
-lsof -i :8888
+lsof -i :2346
 
 # 测试健康检查
-curl http://localhost:8888/health
+curl http://localhost:2346/health
 
 # 测试请求
-curl -X POST http://localhost:8888/v1/messages \
+curl -X POST http://localhost:2346/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: your-key" \
   -d '{
@@ -246,9 +234,9 @@ curl -X POST http://localhost:8888/v1/messages \
 **症状**：端口未监听，无法连接
 
 **排查**：
-1. 检查配置：`augment_enabled: true`
+1. 检查配置：`augmentEnabled: true`
 2. 查看日志：`~/.ccNexus/debug.log`
-3. 确认端口未被占用：`lsof -i :8888`
+3. 确认端口未被占用：`lsof -i :2346`
 4. 验证私钥文件存在：`ls -la ~/.ccNexus/augment-private-key.pem`
 
 ### 解密失败

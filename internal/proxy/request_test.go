@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/storage"
 )
 
 func TestEnsureCodexResponsesPayload(t *testing.T) {
@@ -65,6 +67,34 @@ func TestOverrideModelInPayload(t *testing.T) {
 	}
 	if payload["model"] != "gpt-5.2-codex" {
 		t.Fatalf("expected model override to gpt-5.2-codex, got %#v", payload["model"])
+	}
+}
+
+func TestBuildProxyRequestAddsClaudeThinkingBeta(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/messages", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "Claude",
+		APIUrl:      "https://api.anthropic.com",
+		APIKey:      "test-key",
+		Transformer: "claude",
+		Enabled:     true,
+	}
+	body := []byte(`{"thinking":{"type":"enabled","budget_tokens":1024}}`)
+	req, err := buildProxyRequest(r, endpoint, "test-key", body, "cx_chat_claude", &storage.EndpointCredential{}, true)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	beta := req.Header.Get("anthropic-beta")
+	if beta == "" {
+		t.Fatal("expected anthropic-beta header to be set")
+	}
+	if beta != "interleaved-thinking-2025-05-14" {
+		t.Fatalf("expected interleaved-thinking beta, got %#v", beta)
 	}
 }
 

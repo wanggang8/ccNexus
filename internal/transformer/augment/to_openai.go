@@ -64,7 +64,7 @@ func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 
 func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string) {
 	if len(nodes) == 0 {
-		if message != "" {
+		if message != "" || len(images) > 0 {
 			msg := map[string]interface{}{"role": "user", "content": message}
 			appendOpenAITopLevelImages(msg, images)
 			*msgs = append(*msgs, msg)
@@ -118,9 +118,10 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 	}
 
 	// Text + IDE state + images → user message.
-	text := fallbackText
+	// Prefer text extracted from nodes; fall back to the plain-text message field.
+	text := extractText(nodes)
 	if text == "" {
-		text = extractText(nodes)
+		text = fallbackText
 	}
 	ideState := extractIdeState(nodes)
 	if ideState != "" && !ideStateDuplicate(*msgs, ideState) {
@@ -130,27 +131,16 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 	imageBlocks := extractImageBlocks(nodes)
 
 	if text != "" || len(imageBlocks) > 0 || len(topImages) > 0 {
-		if text == "" {
-			text = ""
+		imageParts := make([]map[string]interface{}, 0, len(imageBlocks)+len(topImages))
+		for _, img := range imageBlocks {
+			imageParts = append(imageParts, convertImageBlockToOpenAI(img))
 		}
-		var content interface{} = text
-		if len(imageBlocks) > 0 || len(topImages) > 0 {
-			parts := []map[string]interface{}{{"type": "text", "text": text}}
-			for _, img := range imageBlocks {
-				parts = append(parts, convertImageBlockToOpenAI(img))
+		for _, raw := range topImages {
+			if block := buildOpenAIImagePart(raw, defaultImageMediaType); block != nil {
+				imageParts = append(imageParts, block)
 			}
-			for _, raw := range topImages {
-				if raw != "" {
-					parts = append(parts, map[string]interface{}{
-						"type": "image_url",
-						"image_url": map[string]interface{}{
-							"url": "data:image/png;base64," + raw,
-						},
-					})
-				}
-			}
-			content = parts
 		}
+		content := buildTextImageContent(text, imageParts)
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
 	}
 }
@@ -160,18 +150,15 @@ func appendOpenAITopLevelImages(msg map[string]interface{}, images []string) {
 		return
 	}
 	text, _ := msg["content"].(string)
-	parts := []map[string]interface{}{{"type": "text", "text": text}}
+	imageParts := make([]map[string]interface{}, 0, len(images))
 	for _, raw := range images {
-		if raw != "" {
-			parts = append(parts, map[string]interface{}{
-				"type": "image_url",
-				"image_url": map[string]interface{}{
-					"url": "data:image/png;base64," + raw,
-				},
-			})
+		if block := buildOpenAIImagePart(raw, defaultImageMediaType); block != nil {
+			imageParts = append(imageParts, block)
 		}
 	}
-	msg["content"] = parts
+	if len(imageParts) > 0 {
+		msg["content"] = buildTextImageContent(text, imageParts)
+	}
 }
 
 func convertImageBlockToOpenAI(claudeBlock map[string]interface{}) map[string]interface{} {
@@ -193,12 +180,25 @@ func appendOpenAIResponseNodes(msgs *[]map[string]interface{}, text string, node
 	if text == "" && len(nodes) == 0 {
 		return
 	}
-	msg := map[string]interface{}{"role": "assistant"}
-	if text != "" {
-		msg["content"] = text
+	msg := map[string]interface{}{"role": "assistant", "content": nil}
+
+	// Use ResponseText if present; otherwise extract text from type=0 nodes.
+	responseText := text
+	if responseText == "" {
+		responseText = extractText(nodes)
 	}
+	if responseText != "" {
+		msg["content"] = responseText
+	}
+
+	// Add tool_calls from type=5 nodes.
 	var toolCalls []map[string]interface{}
+	hasThinking := false
 	for _, n := range nodes {
+		if n.Type == 8 && n.Thinking != nil {
+			hasThinking = true
+			continue
+		}
 		if n.Type == 5 && n.ToolUse != nil {
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   n.ToolUse.ToolUseID,
@@ -212,6 +212,9 @@ func appendOpenAIResponseNodes(msgs *[]map[string]interface{}, text string, node
 	}
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
+	}
+	if responseText == "" && len(toolCalls) == 0 && hasThinking {
+		msg["content"] = "(thinking...)"
 	}
 	*msgs = append(*msgs, msg)
 }
@@ -262,4 +265,3 @@ func lastMessageHasToolCalls(msgs []map[string]interface{}, results []toolResult
 	}
 	return true
 }
-

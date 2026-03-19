@@ -44,6 +44,7 @@ const (
 	deltaTypeTextDelta      = "text_delta"
 	deltaTypeInputJSONDelta = "input_json_delta"
 	deltaTypeThinkingDelta  = "thinking_delta"
+	deltaTypeSignatureDelta = "signature_delta"
 )
 
 // ConvertSSEToNDJSON converts an SSE stream (from Claude/OpenAI) to NDJSON format
@@ -78,6 +79,12 @@ type toolUseBuffer struct {
 	started bool // Track if TOOL_USE_START has been emitted
 }
 
+type thinkingBuffer struct {
+	active    bool
+	summary   strings.Builder
+	signature string
+}
+
 func writeChunkLine(w io.Writer, obj map[string]interface{}) {
 	line, err := json.Marshal(obj)
 	if err != nil {
@@ -106,15 +113,43 @@ func newBaseChunk(text string) map[string]interface{} {
 	}
 }
 
+func emitThinkingChunk(w io.Writer, text, signature string, nextNodeID *int) {
+	if text == "" && signature == "" {
+		return
+	}
+	node := map[string]interface{}{
+		"id":       *nextNodeID,
+		"type":     augmentNodeTypeThinking,
+		"content":  "",
+		"thinking": map[string]interface{}{"summary": text},
+	}
+	if signature != "" {
+		node["thinking"].(map[string]interface{})["signature"] = signature
+	}
+	*nextNodeID++
+	chunk := newBaseChunk("")
+	chunk["nodes"] = []interface{}{node}
+	writeChunkLine(w, chunk)
+}
+
 func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	scanner := bufio.NewScanner(r)
 	var lastEventType string
 	var buf toolUseBuffer
+	var thinking thinkingBuffer
 	nextNodeID := 1
 	hasEmittedToolUse := false // Track if any tool_use was emitted for stop_reason fallback
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
 	usageEmitted := false
+
+	flushThinking := func() {
+		if !thinking.active {
+			return
+		}
+		emitThinkingChunk(w, thinking.summary.String(), thinking.signature, &nextNodeID)
+		thinking = thinkingBuffer{}
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -160,18 +195,20 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 					buf.input.WriteString(partial)
 				}
 			case deltaTypeThinkingDelta:
-				thinking, _ := delta["thinking"].(string)
-				if thinking != "" {
-					thinkingNode := map[string]interface{}{
-						"id":       nextNodeID,
-						"type":     augmentNodeTypeThinking,
-						"content":  "",
-						"thinking": map[string]interface{}{"summary": thinking},
+				thinkingText, _ := delta["thinking"].(string)
+				if thinkingText != "" {
+					if !thinking.active {
+						thinking.active = true
 					}
-					nextNodeID++
-					chunk := newBaseChunk("")
-					chunk["nodes"] = []interface{}{thinkingNode}
-					writeChunkLine(w, chunk)
+					thinking.summary.WriteString(thinkingText)
+				}
+			case deltaTypeSignatureDelta:
+				signature, _ := delta["signature"].(string)
+				if signature != "" {
+					if !thinking.active {
+						thinking.active = true
+					}
+					thinking.signature = signature
 				}
 			}
 
@@ -222,9 +259,15 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				chunk["nodes"] = []interface{}{startNode}
 				writeChunkLine(w, chunk)
 				buf.started = true
+			} else if cbType == "thinking" {
+				thinking = thinkingBuffer{active: true}
 			}
 
 		case "content_block_stop":
+			if thinking.active {
+				flushThinking()
+				continue
+			}
 			if buf.active {
 				// Emit TOOL_USE node (type=5) with complete input
 				toolUse := map[string]interface{}{
@@ -283,6 +326,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			if usage, ok := ev["usage"].(map[string]interface{}); ok {
 				usageAcc.merge(usage)
 			}
+			flushThinking()
 			usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 			// Fallback: if tool_use was emitted, final stop_reason must be TOOL_USE_REQUESTED.
 			finalReason := augmentStopReasonEndTurn
@@ -295,13 +339,14 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 	}
 
+	flushThinking()
+
 	if !usageEmitted {
 		_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 	}
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
 	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
-	inputTokens, outputTokens := 0, 0
 	if tokenUsage != nil {
 		if v, ok := tokenUsage["input_tokens"].(int); ok {
 			inputTokens = v
@@ -581,22 +626,6 @@ func emitAggregatedTokenUsageNode(w io.Writer, usageAcc *usageAccumulator, outpu
 	return true
 }
 
-func emitThinkingChunk(w io.Writer, text string, nextNodeID *int) {
-	if text == "" {
-		return
-	}
-	node := map[string]interface{}{
-		"id":       *nextNodeID,
-		"type":     augmentNodeTypeThinking,
-		"content":  "",
-		"thinking": map[string]interface{}{"summary": text},
-	}
-	*nextNodeID++
-	chunk := newBaseChunk("")
-	chunk["nodes"] = []interface{}{node}
-	writeChunkLine(w, chunk)
-}
-
 type openAIToolCallAccum struct {
 	id      string
 	name    string
@@ -613,6 +642,31 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	inThinkTag := false // T6: track <think> tag state
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
+	var pendingReasoning strings.Builder
+	var pendingThinkTag strings.Builder
+
+	flushReasoning := func() {
+		if pendingReasoning.Len() == 0 {
+			return
+		}
+		emitThinkingChunk(w, pendingReasoning.String(), "", &nextNodeID)
+		pendingReasoning.Reset()
+	}
+
+	flushThinkTag := func() {
+		if pendingThinkTag.Len() == 0 {
+			inThinkTag = false
+			return
+		}
+		emitThinkingChunk(w, pendingThinkTag.String(), "", &nextNodeID)
+		pendingThinkTag.Reset()
+		inThinkTag = false
+	}
+
+	flushAllThinking := func() {
+		flushReasoning()
+		flushThinkTag()
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -642,34 +696,26 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		// T1: Handle reasoning_content (DeepSeek, OpenAI reasoning models)
 		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
 			generatedText.WriteString(reasoning)
-			thinkNode := map[string]interface{}{
-				"id":       nextNodeID,
-				"type":     augmentNodeTypeThinking,
-				"content":  "",
-				"thinking": map[string]interface{}{"summary": reasoning},
-			}
-			nextNodeID++
-			chunk := newBaseChunk("")
-			chunk["nodes"] = []interface{}{thinkNode}
-			writeChunkLine(w, chunk)
-			continue
+			pendingReasoning.WriteString(reasoning)
 		}
 
 		// T6: Handle <think> tags in content as THINKING nodes
 		if content, ok := delta["content"].(string); ok && content != "" {
 			generatedText.WriteString(content)
+			flushReasoning()
 			remaining := content
 			for len(remaining) > 0 {
 				if inThinkTag {
 					closeIdx := strings.Index(remaining, "</think>")
 					if closeIdx == -1 {
 						// All remaining is thinking content
-						emitThinkingChunk(w, remaining, &nextNodeID)
+						pendingThinkTag.WriteString(remaining)
 						remaining = ""
 					} else {
 						if closeIdx > 0 {
-							emitThinkingChunk(w, remaining[:closeIdx], &nextNodeID)
+							pendingThinkTag.WriteString(remaining[:closeIdx])
 						}
+						flushThinkTag()
 						inThinkTag = false
 						remaining = remaining[closeIdx+len("</think>"):]
 					}
@@ -692,6 +738,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 
 		if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+			flushAllThinking()
 			for _, raw := range toolCalls {
 				tc, _ := raw.(map[string]interface{})
 				idxFloat, _ := tc["index"].(float64)
@@ -747,6 +794,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+			flushAllThinking()
 			switch fr {
 			case "tool_calls":
 				var nodes []interface{}
@@ -793,11 +841,12 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 	}
 
+	flushAllThinking()
+
 	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
 	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
-	inputTokens, outputTokens := 0, 0
 	if tokenUsage != nil {
 		if v, ok := tokenUsage["input_tokens"].(int); ok {
 			inputTokens = v

@@ -18,40 +18,40 @@ wails doctor
 
 ```bash
 # Install frontend dependencies
-cd frontend && npm install && cd ..
+cd cmd/desktop/frontend && npm install && cd ../../..
 
 # Start development mode (with hot reload)
-wails dev
+cd cmd/desktop && wails dev
 ```
 
 ## Build for Release
 
 ```bash
-npm run build           # Current platform
-npm run build:prod      # Production optimized
-npm run build:windows   # Windows
-npm run build:macos     # macOS
-npm run build:linux     # Linux
+cd cmd/desktop && wails build
 ```
 
-Build output is in `build/bin/` directory.
+Build output is in `cmd/desktop/build/bin/` directory.
 
 ## Project Structure
 
 ```
 ccNexus/
-├── main.go                 # Application entry
-├── app.go                  # Core application logic
+├── cmd/
+│   ├── desktop/             # Desktop app (Wails)
+│   │   ├── app.go
+│   │   ├── main.go
+│   │   └── frontend/         # Frontend code
+│   │       ├── src/modules/  # Feature modules
+│   │       ├── src/i18n/     # Internationalization
+│   │       └── src/themes/   # Theme styles
+│   └── server/               # Headless server
 ├── internal/
-│   ├── proxy/              # HTTP proxy core
-│   ├── transformer/        # API format transformers
-│   ├── storage/            # SQLite data storage
-│   ├── config/             # Configuration management
-│   ├── webdav/             # WebDAV sync
-│   ├── logger/             # Logging system
-│   └── tray/               # System tray
-└── frontend/               # Frontend code
-    ├── src/modules/        # Feature modules
-    ├── src/i18n/           # Internationalization
-    └── src/themes/         # Theme styles
+│   ├── proxy/                # HTTP proxy core
+│   ├── transformer/          # API format transformers
+│   ├── storage/              # SQLite data storage
+│   ├── config/               # Configuration management
+│   ├── webdav/               # WebDAV sync
+│   ├── logger/               # Logging system
+│   └── tray/                 # System tray
+└── docs/
 ```

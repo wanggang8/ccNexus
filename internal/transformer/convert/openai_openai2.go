@@ -42,10 +42,10 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 
 		// assistant messages with tool_calls → function_call items (optionally preceded by a text message item)
 		if len(msg.ToolCalls) > 0 {
-			if text, ok := msg.Content.(string); ok && text != "" {
+			if parts := convertOpenAIChatContentToOpenAI2Parts(msg.Content, msg.Role); len(parts) > 0 {
 				input = append(input, map[string]interface{}{
 					"type": "message", "role": "assistant",
-					"content": []map[string]interface{}{{"type": "output_text", "text": text}},
+					"content": parts,
 				})
 			}
 			for _, tc := range msg.ToolCalls {
@@ -60,34 +60,13 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		}
 
 		item := map[string]interface{}{"type": "message", "role": msg.Role}
-		var contentParts []map[string]interface{}
-
-		switch content := msg.Content.(type) {
-		case string:
-			textType := "input_text"
-			if msg.Role == "assistant" {
-				textType = "output_text"
-			}
-			if content != "" {
-				contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
-			}
-		case []interface{}:
-			textType := "input_text"
-			if msg.Role == "assistant" {
-				textType = "output_text"
-			}
-			for _, part := range content {
-				if p, ok := part.(map[string]interface{}); ok {
-					if p["type"] == "text" {
-						contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": p["text"]})
-					}
-				}
-			}
-		}
-		item["content"] = contentParts
+		item["content"] = convertOpenAIChatContentToOpenAI2Parts(msg.Content, msg.Role)
 		input = append(input, item)
 	}
 	openai2Req["input"] = input
+	if req.ReasoningEffort != nil {
+		openai2Req["reasoning_effort"] = req.ReasoningEffort
+	}
 	// TODO: max_output_tokens is standard OpenAI Responses API param but some
 	// third-party endpoints (e.g. SiliconFlow) don't support it. Skipping for compatibility.
 
@@ -152,8 +131,11 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 					pendingToolCalls = nil
 				}
 				role, _ := itemMap["role"].(string)
-				text := extractOpenAI2Text(itemMap["content"])
-				messages = append(messages, transformer.OpenAIMessage{Role: role, Content: text})
+				content := convertOpenAI2ContentToOpenAIChat(itemMap["content"], role)
+				if content == nil {
+					content = ""
+				}
+				messages = append(messages, transformer.OpenAIMessage{Role: role, Content: content})
 
 			case "function_call":
 				callID, _ := itemMap["call_id"].(string)
@@ -197,6 +179,9 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 	}
 	if req.Temperature != nil {
 		openaiReq.Temperature = req.Temperature
+	}
+	if req.ReasoningEffort != nil {
+		openaiReq.ReasoningEffort = req.ReasoningEffort
 	}
 
 	if len(req.Tools) > 0 {
@@ -653,22 +638,118 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 	return nil, nil
 }
 
-func extractOpenAI2Text(content interface{}) string {
+func convertOpenAIChatContentToOpenAI2Parts(content interface{}, role string) []map[string]interface{} {
+	var parts []map[string]interface{}
+	switch v := content.(type) {
+	case string:
+		if v == "" {
+			return parts
+		}
+		textType := "input_text"
+		if role == "assistant" {
+			textType = "output_text"
+		}
+		parts = append(parts, map[string]interface{}{"type": textType, "text": v})
+	case []interface{}:
+		textType := "input_text"
+		if role == "assistant" {
+			textType = "output_text"
+		}
+		for _, part := range v {
+			partMap, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			switch partMap["type"] {
+			case "text":
+				if text, ok := partMap["text"].(string); ok && text != "" {
+					parts = append(parts, map[string]interface{}{"type": textType, "text": text})
+				}
+			case "image_url":
+				url, ok := normalizeImageURL(partMap["image_url"])
+				if !ok {
+					url, ok = normalizeImageURL(partMap)
+				}
+				if ok {
+					if imagePart := openAI2ImagePartFromURL(url); imagePart != nil {
+						parts = append(parts, imagePart)
+					}
+				}
+			}
+		}
+	}
+	return parts
+}
+
+func convertOpenAI2ContentToOpenAIChat(content interface{}, role string) interface{} {
 	arr, ok := content.([]interface{})
 	if !ok {
-		return ""
+		if str, ok := content.(string); ok {
+			return str
+		}
+		return nil
 	}
-	var parts []string
+
+	textType := "input_text"
+	if role == "assistant" {
+		textType = "output_text"
+	}
+
+	var parts []map[string]interface{}
+	var textBuffer []string
+	hasImage := false
+
+	flushTextBuffer := func() {
+		for _, text := range textBuffer {
+			parts = append(parts, map[string]interface{}{"type": textType, "text": text})
+		}
+		textBuffer = nil
+	}
+
 	for _, part := range arr {
 		partMap, ok := part.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if partMap["type"] == "input_text" || partMap["type"] == "output_text" {
-			if text, ok := partMap["text"].(string); ok {
-				parts = append(parts, text)
+
+		switch partMap["type"] {
+		case "input_text", "output_text":
+			if text, ok := partMap["text"].(string); ok && text != "" {
+				if hasImage {
+					parts = append(parts, map[string]interface{}{"type": textType, "text": text})
+				} else {
+					textBuffer = append(textBuffer, text)
+				}
+			}
+		case "input_image", "image_url", "image":
+			url, ok := normalizeImageURL(partMap["image_url"])
+			if !ok {
+				url, ok = normalizeImageURL(partMap)
+			}
+			if ok {
+				hasImage = true
+				if len(textBuffer) > 0 {
+					flushTextBuffer()
+				}
+				if imagePart := openAIChatImagePartFromURL(url); imagePart != nil {
+					parts = append(parts, imagePart)
+				}
 			}
 		}
 	}
-	return strings.Join(parts, "")
+
+	if !hasImage {
+		if len(textBuffer) == 0 {
+			return nil
+		}
+		if len(textBuffer) == 1 {
+			return textBuffer[0]
+		}
+		return strings.Join(textBuffer, "")
+	}
+
+	if len(textBuffer) > 0 {
+		flushTextBuffer()
+	}
+	return parts
 }

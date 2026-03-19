@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -104,3 +107,18 @@ func TestMapEndpointTransformerToTargetType(t *testing.T) {
 	}
 }
 
+func TestCreateUpstreamRequest_AddsThinkingBetaHeader(t *testing.T) {
+	s := &Server{config: config.DefaultConfig()}
+	endpoint := &config.Endpoint{APIKey: "test-key"}
+	body := []byte(`{"model":"claude-sonnet-4-5-20250929","thinking":{"type":"enabled","budget_tokens":2048}}`)
+
+	req, err := s.createUpstreamRequest(context.Background(), http.MethodPost, "https://api.anthropic.com/v1/messages", body, "claude", endpoint)
+	if err != nil {
+		t.Fatalf("createUpstreamRequest: %v", err)
+	}
+
+	beta := req.Header.Get("anthropic-beta")
+	if !strings.Contains(beta, "interleaved-thinking-2025-05-14") {
+		t.Fatalf("expected thinking beta header, got %q", beta)
+	}
+}

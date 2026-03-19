@@ -318,7 +318,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create transformer.
-	transformer, err := augment.New(targetType, "")
+	transformer, err := augment.New(targetType, endpoint.Model)
 	if err != nil {
 		logger.Error("Augment: failed to create transformer: %v", err)
 		s.writeErrorResponse(w, "Internal error", ar.IsStreaming())
@@ -1307,7 +1307,29 @@ func (s *Server) createUpstreamRequest(ctx context.Context, method, url string, 
 		for k, v := range authHeaders {
 			req.Header.Set(k, v)
 		}
+		if targetType == "claude" && claudeThinkingEnabled(body) {
+			req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		}
 	}
 
 	return req, nil
+}
+
+func claudeThinkingEnabled(body []byte) bool {
+	var req struct {
+		Thinking map[string]interface{} `json:"thinking"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	if len(req.Thinking) == 0 {
+		return false
+	}
+	thinkingType, _ := req.Thinking["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(thinkingType)) {
+	case "enabled", "adaptive":
+		return true
+	default:
+		return false
+	}
 }

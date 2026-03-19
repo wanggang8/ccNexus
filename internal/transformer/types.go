@@ -38,9 +38,11 @@ type OpenAIRequest struct {
 	MaxTokens           int             `json:"max_tokens,omitempty"` // Legacy field
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64        `json:"temperature,omitempty"`
+	Thinking            interface{}     `json:"thinking,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
 	EnableThinking      bool            `json:"enable_thinking,omitempty"` // For models that support reasoning/thinking
+	ReasoningEffort     interface{}     `json:"reasoning_effort,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice          interface{}     `json:"tool_choice,omitempty"`
 }
@@ -208,7 +210,7 @@ type StreamContext struct {
 	ToolArguments   string // Accumulated tool arguments
 	// Track all active tool calls for multi-tool-call streaming (OpenAI→OpenAI2)
 	ActiveToolCalls []ActiveToolCall // All tool calls accumulated during streaming
-	IncludeUsage    bool   // Whether OpenAI-compatible streaming should emit usage chunk
+	IncludeUsage    bool             // Whether OpenAI-compatible streaming should emit usage chunk
 	// <think> tag handling for streaming text
 	InThinkingTag       bool   // Track if we are inside a <think> tag
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
@@ -352,7 +354,7 @@ type OpenAI2InputItem struct {
 
 // OpenAI2ContentPart represents a content part in Responses API
 type OpenAI2ContentPart struct {
-	Type string `json:"type"` // "input_text", "output_text", "tool_use", "tool_result"
+	Type string `json:"type"` // "input_text", "output_text", "input_image", "tool_use", "tool_result"
 	Text string `json:"text,omitempty"`
 	// Tool use fields
 	ID        string `json:"id,omitempty"`
@@ -361,6 +363,9 @@ type OpenAI2ContentPart struct {
 	// Tool result fields
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Output    string `json:"output,omitempty"`
+	// Image fields
+	ImageURL interface{} `json:"image_url,omitempty"`
+	Detail   string      `json:"detail,omitempty"`
 }
 
 // OpenAI2Tool represents a tool in Responses API
@@ -376,6 +381,9 @@ type OpenAI2Request struct {
 	Model           string        `json:"model"`
 	Input           interface{}   `json:"input"`                  // string or []OpenAI2InputItem
 	Instructions    string        `json:"instructions,omitempty"` // system prompt
+	Thinking        interface{}   `json:"thinking,omitempty"`
+	EnableThinking  bool          `json:"enable_thinking,omitempty"`
+	ReasoningEffort interface{}   `json:"reasoning_effort,omitempty"`
 	Tools           []OpenAI2Tool `json:"tools,omitempty"`
 	ToolChoice      interface{}   `json:"tool_choice,omitempty"`
 	Stream          bool          `json:"stream,omitempty"`

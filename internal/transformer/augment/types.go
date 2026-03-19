@@ -13,6 +13,8 @@ type AugmentRequest struct {
 	Tools           []ToolDefinition   `json:"tools,omitempty"` // alias field
 	UserGuidelines  string             `json:"user_guidelines,omitempty"`
 	Images          []string           `json:"images,omitempty"` // base64 image data
+	Thinking        interface{}        `json:"thinking,omitempty"`
+	EnableThinking  bool               `json:"enable_thinking,omitempty"`
 	MaxTokens       int                `json:"max_tokens,omitempty"`
 	Stream          *bool              `json:"stream,omitempty"`
 	Metadata        map[string]string  `json:"metadata,omitempty"`
@@ -41,6 +43,7 @@ func (r *AugmentRequest) IsStreaming() bool {
 //	type=2  image_node
 //	type=4  ide_state_node
 //	type=5  tool_use (response side)
+//	type=8  thinking (response side)
 type Node struct {
 	Type           int             `json:"type"`
 	TextNode       *TextNode       `json:"text_node,omitempty"`
@@ -48,6 +51,7 @@ type Node struct {
 	ImageNode      *ImageNode      `json:"image_node,omitempty"`
 	IdeStateNode   *IdeStateNode   `json:"ide_state_node,omitempty"`
 	ToolUse        *ToolUseNode    `json:"tool_use,omitempty"`
+	Thinking       *ThinkingNode   `json:"thinking,omitempty"`
 }
 
 // TextNode holds the text content of a type=0 node.
@@ -92,6 +96,12 @@ type ToolUseNode struct {
 	InputJSON     string `json:"input_json"`
 	McpServerName string `json:"mcp_server_name,omitempty"` // MCP server identifier
 	McpToolName   string `json:"mcp_tool_name,omitempty"`   // MCP tool name
+}
+
+// ThinkingNode describes extended thinking output (type=8).
+type ThinkingNode struct {
+	Summary   string `json:"summary,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // ChatHistoryEntry is one turn in the conversation history.

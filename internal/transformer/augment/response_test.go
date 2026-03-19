@@ -438,6 +438,7 @@ func TestStreamConvertClaude_ThinkingDelta(t *testing.T) {
 	sse := "" +
 		"data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"thinking\"}}\n\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think...\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig123\"}}\n\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" about this.\"}}\n\n" +
 		"data: {\"type\":\"content_block_stop\"}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
@@ -448,15 +449,19 @@ func TestStreamConvertClaude_ThinkingDelta(t *testing.T) {
 	}
 	lines := readNDJSONLines(t, b.String())
 
-	// Should have THINKING node(s) with thinking summary
+	// Should have exactly one THINKING node with combined summary and signature.
 	foundThinking := false
+	thinkingCount := 0
 	for _, obj := range lines {
 		nodes, _ := obj["nodes"].([]interface{})
 		for _, n := range nodes {
 			node, _ := n.(map[string]interface{})
 			if node["type"] == float64(augmentNodeTypeThinking) {
+				thinkingCount++
 				if thinking, ok := node["thinking"].(map[string]interface{}); ok {
-					if summary, ok := thinking["summary"].(string); ok && strings.Contains(summary, "Let me think") {
+					summary, _ := thinking["summary"].(string)
+					signature, _ := thinking["signature"].(string)
+					if summary == "Let me think... about this." && signature == "sig123" {
 						foundThinking = true
 					}
 				}
@@ -464,8 +469,50 @@ func TestStreamConvertClaude_ThinkingDelta(t *testing.T) {
 		}
 	}
 
+	if thinkingCount != 1 {
+		t.Fatalf("expected exactly 1 thinking node, got %d", thinkingCount)
+	}
 	if !foundThinking {
-		t.Errorf("expected thinking content in output")
+		t.Errorf("expected combined thinking content and signature in output")
+	}
+}
+
+func TestStreamConvertOpenAI_ThinkingDeltaAggregated(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" about this\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Answer\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+
+	thinkingCount := 0
+	foundCombined := false
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, n := range nodes {
+			node, _ := n.(map[string]interface{})
+			if node["type"] == float64(augmentNodeTypeThinking) {
+				thinkingCount++
+				if thinking, ok := node["thinking"].(map[string]interface{}); ok {
+					summary, _ := thinking["summary"].(string)
+					if summary == "Let me think about this" {
+						foundCombined = true
+					}
+				}
+			}
+		}
+	}
+
+	if thinkingCount != 1 {
+		t.Fatalf("expected exactly 1 thinking node, got %d", thinkingCount)
+	}
+	if !foundCombined {
+		t.Fatalf("expected combined reasoning_content in thinking node")
 	}
 }
 

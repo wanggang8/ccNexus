@@ -162,8 +162,8 @@ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
 
 	// Strip Anthropic-specific top-level fields
 	delete(data, "thinking")
+	delete(data, "enable_thinking")
 	delete(data, "budget_tokens")
-	delete(data, "reasoning_effort")
 	delete(data, "metadata")
 
 	return json.Marshal(data)

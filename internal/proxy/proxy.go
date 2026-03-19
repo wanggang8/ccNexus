@@ -540,7 +540,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				// CLI/Claude 格式：检测 thinking.type == "enabled"
 				if thinking, ok := transformedReq["thinking"].(map[string]interface{}); ok {
 					if thinkingType, ok := thinking["type"].(string); ok {
-						thinkingEnabled = thinkingType == "enabled"
+						switch strings.ToLower(strings.TrimSpace(thinkingType)) {
+						case "enabled", "adaptive":
+							thinkingEnabled = true
+						}
 					}
 				}
 				// OpenAI 格式：检测 enable_thinking 字段
@@ -552,7 +555,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
+		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential, thinkingEnabled)
 		if err != nil {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)

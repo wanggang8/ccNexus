@@ -8,7 +8,7 @@
 | Log Level | 0=Debug, 1=Info, 2=Warn, 3=Error | `1` |
 | Language | Chinese / English | `zh-CN` |
 | Theme | 12 themes available | `light` |
-| Auto Theme | Auto switch based on time (7:00-19:00 light) | Off |
+| Auto Theme | Auto switch between light/dark based on time (defaults: light=`light`, dark=`dark`) | Off |
 | Window Close Behavior | Close / Minimize to tray / Ask every time | Ask every time |
 
 ## Endpoint Configuration

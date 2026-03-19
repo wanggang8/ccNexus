@@ -109,6 +109,49 @@ func TestClaudeReqToOpenAI2_WithContentArray(t *testing.T) {
 	}
 }
 
+func TestClaudeReqToOpenAI2_WithImages(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Describe this"},
+				{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/"}}
+			]
+		}],
+		"max_tokens": 1024
+	}`
+
+	result, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	input := openai2Req["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("Expected 1 input item, got %d", len(input))
+	}
+
+	msg := input[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("Expected 2 content parts, got %d", len(content))
+	}
+
+	imagePart := content[1].(map[string]interface{})
+	if imagePart["type"] != "input_image" {
+		t.Fatalf("Expected second part to be input_image, got %#v", imagePart["type"])
+	}
+	if imagePart["image_url"] != "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/" {
+		t.Fatalf("Expected image url to be preserved, got %#v", imagePart["image_url"])
+	}
+}
+
 func TestClaudeReqToOpenAI2_InvalidJSON(t *testing.T) {
 	_, err := ClaudeReqToOpenAI2([]byte("not valid json"), "gpt-4o")
 	if err == nil {
@@ -181,6 +224,65 @@ func TestOpenAI2ReqToClaude_WithArrayInput(t *testing.T) {
 	messages := claudeReq["messages"].([]interface{})
 	if len(messages) != 2 {
 		t.Fatalf("Expected 2 messages, got %d", len(messages))
+	}
+}
+
+func TestOpenAI2ReqToClaude_WithImagesAndEnableThinking(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": [
+			{
+				"type": "message",
+				"role": "user",
+				"content": [
+					{"type": "input_text", "text": "Describe this"},
+					{"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}
+				]
+			}
+		],
+		"enable_thinking": true,
+		"max_output_tokens": 10
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	thinking, ok := claudeReq["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking config, got %#v", claudeReq["thinking"])
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type=enabled, got %#v", thinking["type"])
+	}
+	if thinking["budget_tokens"] != float64(9) {
+		t.Fatalf("expected budget_tokens=9, got %#v", thinking["budget_tokens"])
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(content))
+	}
+	imageBlock := content[1].(map[string]interface{})
+	if imageBlock["type"] != "image" {
+		t.Fatalf("expected image block, got %#v", imageBlock["type"])
+	}
+	source := imageBlock["source"].(map[string]interface{})
+	if source["type"] != "base64" {
+		t.Fatalf("expected base64 source, got %#v", source["type"])
+	}
+	if source["media_type"] != "image/png" {
+		t.Fatalf("expected media_type image/png, got %#v", source["media_type"])
 	}
 }
 

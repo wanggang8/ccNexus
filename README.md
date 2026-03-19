@@ -102,10 +102,20 @@ wire_api = "responses"  # 或 "chat"
 
 ## 文档
 
+### 核心文档（项目事实）
 - [详细配置](docs/configuration.md)
 - [开发指南](docs/development.md)
+- [Augment 集成说明](docs/AUGMENT_INTEGRATION.md)
+- [OpenAI → Claude Code CLI 转换规范](docs/openai-to-claude-code-cli.md)
+- [流量记录说明](docs/TRAFFIC_RECORDING.md)
+
+### 运维 / 部署 / 常见问题
+- [服务器运维](docs/SERVER_OPERATION.md)
+- [Docker 部署](docs/README_DOCKER.md)
 - [常见问题](docs/FAQ.md)
-- [Augment 集成说明](AUGMENT_INTEGRATION.md)
+
+### 归档
+- [Cursor 代理使用教程（归档）](docs/archive/cursor代理使用教程.md)
 
 ## 许可证
 

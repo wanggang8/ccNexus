@@ -152,6 +152,42 @@ func TestOpenAITransformer_TransformRequest_KeepOpenAIFormat(t *testing.T) {
 	}
 }
 
+func TestOpenAITransformer_TransformRequest_StripsInternalThinkingFields(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+
+	openaiReq := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"thinking": {"type": "enabled", "budget_tokens": 2048},
+		"enable_thinking": true,
+		"budget_tokens": 2048,
+		"reasoning_effort": "medium"
+	}`
+
+	result, err := trans.TransformRequest([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if _, ok := data["thinking"]; ok {
+		t.Fatalf("expected thinking to be stripped, got %#v", data["thinking"])
+	}
+	if _, ok := data["enable_thinking"]; ok {
+		t.Fatalf("expected enable_thinking to be stripped, got %#v", data["enable_thinking"])
+	}
+	if _, ok := data["budget_tokens"]; ok {
+		t.Fatalf("expected budget_tokens to be stripped, got %#v", data["budget_tokens"])
+	}
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning_effort to be preserved, got %#v", data["reasoning_effort"])
+	}
+}
+
 // ========== Response Tests ==========
 
 func TestOpenAITransformer_TransformResponse_Passthrough(t *testing.T) {

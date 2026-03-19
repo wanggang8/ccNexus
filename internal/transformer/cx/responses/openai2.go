@@ -31,6 +31,9 @@ func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
 	}
 
 	data["model"] = t.model
+	delete(data, "thinking")
+	delete(data, "enable_thinking")
+	delete(data, "budget_tokens")
 	return json.Marshal(data)
 }
 

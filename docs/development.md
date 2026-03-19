@@ -18,40 +18,40 @@ wails doctor
 
 ```bash
 # 安装前端依赖
-cd frontend && npm install && cd ..
+cd cmd/desktop/frontend && npm install && cd ../../..
 
 # 启动开发模式（支持热重载）
-wails dev
+cd cmd/desktop && wails dev
 ```
 
 ## 构建发布
 
 ```bash
-npm run build           # 当前平台
-npm run build:prod      # 生产环境优化
-npm run build:windows   # Windows
-npm run build:macos     # macOS
-npm run build:linux     # Linux
+cd cmd/desktop && wails build
 ```
 
-构建产物位于 `build/bin/` 目录。
+构建产物位于 `cmd/desktop/build/bin/` 目录。
 
 ## 项目结构
 
 ```
 ccNexus/
-├── main.go                 # 应用入口
-├── app.go                  # 核心应用逻辑
+├── cmd/
+│   ├── desktop/             # 桌面端 (Wails)
+│   │   ├── app.go
+│   │   ├── main.go
+│   │   └── frontend/         # 前端代码
+│   │       ├── src/modules/  # 功能模块
+│   │       ├── src/i18n/     # 国际化
+│   │       └── src/themes/   # 主题样式
+│   └── server/               # 纯后端服务
 ├── internal/
-│   ├── proxy/              # HTTP 代理核心
-│   ├── transformer/        # API 格式转换器
-│   ├── storage/            # SQLite 数据存储
-│   ├── config/             # 配置管理
-│   ├── webdav/             # WebDAV 同步
-│   ├── logger/             # 日志系统
-│   └── tray/               # 系统托盘
-└── frontend/               # 前端代码
-    ├── src/modules/        # 功能模块
-    ├── src/i18n/           # 国际化
-    └── src/themes/         # 主题样式
+│   ├── proxy/                # HTTP 代理核心
+│   ├── transformer/          # API 格式转换器
+│   ├── storage/              # SQLite 数据存储
+│   ├── config/               # 配置管理
+│   ├── webdav/               # WebDAV 同步
+│   ├── logger/               # 日志系统
+│   └── tray/                 # 系统托盘
+└── docs/
 ```

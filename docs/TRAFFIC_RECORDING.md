@@ -72,7 +72,7 @@ POST /api/traffic/clear
 
 ## Web UI
 
-访问 `http://localhost:8787/ui/traffic.html` 可以使用图形界面：
+访问 `http://localhost:8787/ui/`，在左侧导航中进入 Traffic 页面即可使用图形界面：
 
 - 查看流量日志列表
 - 查看请求/响应详情

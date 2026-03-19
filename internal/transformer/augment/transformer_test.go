@@ -109,6 +109,67 @@ func TestToClaudeRequest_WithTools(t *testing.T) {
 	}
 }
 
+func TestToClaudeRequest_EnableThinkingFlag(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		Message:        "think about this",
+		EnableThinking: true,
+		MaxTokens:      2000,
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	thinking, ok := req["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking config, got %v", req["thinking"])
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking type enabled, got %v", thinking["type"])
+	}
+	if thinking["budget_tokens"] != float64(1999) {
+		t.Fatalf("expected budget_tokens 1999, got %v", thinking["budget_tokens"])
+	}
+}
+
+func TestToClaudeRequest_ThinkingConfigPassThrough(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		Message: "think about this",
+		Thinking: map[string]interface{}{
+			"type": "adaptive",
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	thinking, ok := req["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking config, got %v", req["thinking"])
+	}
+	if thinking["type"] != "adaptive" {
+		t.Fatalf("expected thinking type adaptive, got %v", thinking["type"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("adaptive thinking should not force budget_tokens, got %v", thinking["budget_tokens"])
+	}
+}
+
 func TestToClaudeRequest_ToolResult(t *testing.T) {
 	tr, _ := New("claude", "")
 	input := AugmentRequest{
@@ -173,6 +234,132 @@ func TestToClaudeRequest_ChatHistory(t *testing.T) {
 	}
 }
 
+func TestToClaudeRequest_ChatHistoryResponseNodeOrder(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		ChatHistory: []ChatHistoryEntry{
+			{
+				ResponseNodes: []Node{
+					{Type: 8, Thinking: &ThinkingNode{Summary: "first thought", Signature: "sig-1"}},
+					{Type: 0, TextNode: &TextNode{Content: "final answer"}},
+					{Type: 5, ToolUse: &ToolUseNode{ToolName: "search", ToolUseID: "call_1", InputJSON: "{}"}},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 assistant message, got %d", len(msgs))
+	}
+	msg := msgs[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 3 {
+		t.Fatalf("expected 3 content blocks, got %d", len(content))
+	}
+
+	if content[0].(map[string]interface{})["type"] != "thinking" {
+		t.Fatalf("expected first block to be thinking, got %v", content[0])
+	}
+	if content[1].(map[string]interface{})["type"] != "text" {
+		t.Fatalf("expected second block to be text, got %v", content[1])
+	}
+	if content[2].(map[string]interface{})["type"] != "tool_use" {
+		t.Fatalf("expected third block to be tool_use, got %v", content[2])
+	}
+}
+
+func TestToClaudeRequest_ImageOnlyDataURL(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		Images: []string{"data:image/jpeg;base64,Zm9vYmFy"},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	msg := msgs[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	img := content[0].(map[string]interface{})
+	if img["type"] != "image" {
+		t.Fatalf("expected image block, got %v", img["type"])
+	}
+	source := img["source"].(map[string]interface{})
+	if source["media_type"] != "image/jpeg" {
+		t.Fatalf("expected media_type image/jpeg, got %v", source["media_type"])
+	}
+	if source["data"] != "Zm9vYmFy" {
+		t.Fatalf("expected stripped base64 payload, got %v", source["data"])
+	}
+}
+
+func TestToClaudeRequest_ImageNodeDataURL(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		Nodes: []Node{
+			{
+				Type: 2,
+				ImageNode: &ImageNode{
+					ImageData: "data:image/webp;base64,Zm9vYmFy",
+					Format:    1,
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	msg := msgs[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	img := content[0].(map[string]interface{})
+	source := img["source"].(map[string]interface{})
+	if source["media_type"] != "image/webp" {
+		t.Fatalf("expected media_type image/webp, got %v", source["media_type"])
+	}
+	if source["data"] != "Zm9vYmFy" {
+		t.Fatalf("expected stripped base64 payload, got %v", source["data"])
+	}
+}
+
 func TestToClaudeRequest_IdeStateDedup(t *testing.T) {
 	tr, _ := New("claude", "")
 	ideState := &IdeStateNode{
@@ -182,9 +369,9 @@ func TestToClaudeRequest_IdeStateDedup(t *testing.T) {
 		Message: "test",
 		ChatHistory: []ChatHistoryEntry{
 			{
-				RequestNodes: []Node{{Type: 4, IdeStateNode: ideState}},
+				RequestNodes:   []Node{{Type: 4, IdeStateNode: ideState}},
 				RequestMessage: "prev",
-				ResponseText:  "response",
+				ResponseText:   "response",
 			},
 		},
 		Nodes: []Node{{Type: 4, IdeStateNode: ideState}},
@@ -261,6 +448,41 @@ func TestToOpenAIRequest_WithUserGuidelines(t *testing.T) {
 	first := msgs[0].(map[string]interface{})
 	if first["role"] != "system" {
 		t.Errorf("expected first message to be system, got %v", first["role"])
+	}
+}
+
+func TestToOpenAIRequest_ImageOnlyDataURL(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := AugmentRequest{
+		Images: []string{"data:image/jpeg;base64,Zm9vYmFy"},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	msg := msgs[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	img := content[0].(map[string]interface{})
+	if img["type"] != "image_url" {
+		t.Fatalf("expected image_url block, got %v", img["type"])
+	}
+	imageURL := img["image_url"].(map[string]interface{})
+	if imageURL["url"] != "data:image/jpeg;base64,Zm9vYmFy" {
+		t.Fatalf("expected preserved data URL, got %v", imageURL["url"])
 	}
 }
 
