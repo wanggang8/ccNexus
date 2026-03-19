@@ -265,7 +265,7 @@ export default {
         augmentEnabledOff: 'Disabled',
         augmentEnabledHelp: 'When enabled, listens on a dedicated port for Augment plugin requests. Restart required after changes.',
         augmentPort: 'Listen Port',
-        augmentPortHelp: 'Default 8888. Set the VSCode Augment plugin endpoint to http://127.0.0.1:8888'
+        augmentPortHelp: 'Default 2346. Set the VSCode Augment plugin endpoint to http://127.0.0.1:2346',
     },
     statistics: {
         title: 'Statistics',

@@ -93,7 +93,7 @@ func isCodexBackendAPIURL(raw string) bool {
 
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
-	ID               int64  `json:"id,omitempty"`               // Storage ID, 0 when new (supports rename)
+	ID               int64  `json:"id,omitempty"` // Storage ID, 0 when new (supports rename)
 	Name             string `json:"name"`
 	APIUrl           string `json:"apiUrl"`
 	APIKey           string `json:"apiKey"`
@@ -175,7 +175,7 @@ type Config struct {
 	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`     // Enable Claude Code task completion notification
 	ClaudeNotificationType    string          `json:"claudeNotificationType"`        // Notification type: toast, dialog, disabled
 	AugmentEnabled            bool            `json:"augmentEnabled"`                // Enable Augment plugin integration
-	AugmentPort               int             `json:"augmentPort"`                   // Augment server port (default 8888)
+	AugmentPort               int             `json:"augmentPort"`                   // Augment server port (default 2346)
 	AugmentKeyPath            string          `json:"augmentKeyPath,omitempty"`      // Path to Augment private key (optional, auto-initialized)
 	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`              // WebDAV synchronization config
 	Backup                    *BackupConfig   `json:"backup,omitempty"`              // Backup/sync configuration
@@ -569,7 +569,7 @@ type StorageAdapter interface {
 
 // StorageEndpoint represents an endpoint in storage
 type StorageEndpoint struct {
-	ID               int64  // 0 when unknown (adapter path); required for rename support
+	ID               int64 // 0 when unknown (adapter path); required for rename support
 	Name             string
 	APIUrl           string
 	APIKey           string

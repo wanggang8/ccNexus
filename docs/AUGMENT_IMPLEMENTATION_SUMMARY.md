@@ -23,7 +23,7 @@
 - `internal/transformer/augment/types.go` - 转换器类型定义
 
 **HTTP 服务器**：
-- `internal/augment/server/server.go` - 独立 HTTP 服务（端口 8888）
+- `internal/augment/server/server.go` - 独立 HTTP 服务（端口 2346） 
 
 **主应用集成**：
 - `cmd/desktop/app.go` - 私钥 embed、启停逻辑、Wails 绑定

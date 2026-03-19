@@ -261,7 +261,7 @@ export default {
         augmentEnabledOff: '已禁用',
         augmentEnabledHelp: '启用后将在独立端口监听 Augment 插件请求，修改后需重启生效',
         augmentPort: '监听端口',
-        augmentPortHelp: '默认 8888，VSCode Augment 插件端点填写 http://127.0.0.1:8888'
+        augmentPortHelp: '默认 2346，VSCode Augment 插件端点填写 http://127.0.0.1:2346'
     },
     statistics: {
         title: '统计信息',

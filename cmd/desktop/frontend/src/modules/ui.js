@@ -817,7 +817,7 @@ export function initUI() {
                     </div>
                     <div class="form-group">
                         <label>${t('settings.augmentPort')}</label>
-                        <input type="number" id="settingsAugmentPort" min="1" max="65535" placeholder="8888">
+                        <input type="number" id="settingsAugmentPort" min="1" max="65535" placeholder="2346">
                         <p style="color: #666; font-size: 12px; margin-top: 5px;">
                             ${t('settings.augmentPortHelp')}
                         </p>

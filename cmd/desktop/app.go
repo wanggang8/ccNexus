@@ -1180,7 +1180,7 @@ func (a *App) initAugmentServer(configDir string, cfg *config.Config) {
 		keyPath = defaultKeyPath
 	}
 
-	srv, err := server.New(cfg, keyPath)
+	srv, err := server.New(cfg, keyPath, a.proxy.GetTrafficRecorder())
 	if err != nil {
 		logger.Warn("Failed to create Augment server: %v", err)
 		return
@@ -1215,7 +1215,7 @@ func (a *App) SaveAugmentConfig(settingsJSON string) error {
 		return fmt.Errorf("invalid Augment config JSON: %w", err)
 	}
 	if input.Port < 1 || input.Port > 65535 {
-		input.Port = 8888
+		input.Port = 2346
 	}
 
 	_, _, keyPath := a.config.GetAugmentConfig()

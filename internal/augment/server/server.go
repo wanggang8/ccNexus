@@ -1,5 +1,5 @@
 // Package server provides a standalone HTTP server for the Augment plugin integration.
-// It listens on a dedicated port (default 8888) and handles encrypted/plaintext requests
+// It listens on a dedicated port (default 2346) and handles encrypted/plaintext requests
 // from the VSCode Augment plugin, converting them to Claude/OpenAI format and proxying
 // to the configured upstream endpoint.
 package server
@@ -19,18 +19,20 @@ import (
 	"github.com/lich0821/ccNexus/internal/augment/decrypt"
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/transformer/augment"
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // Server is the standalone Augment HTTP server.
 type Server struct {
-	config     *config.Config
-	decryptor  *decrypt.Decryptor
-	httpServer *http.Server
-	httpClient *http.Client
-	mu         sync.RWMutex
-	running    bool
+	config          *config.Config
+	decryptor       *decrypt.Decryptor
+	trafficRecorder *proxy.TrafficRecorder
+	httpServer      *http.Server
+	httpClient      *http.Client
+	mu              sync.RWMutex
+	running         bool
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code
@@ -51,8 +53,62 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+// limitedBuffer captures at most limit bytes (best-effort) to avoid unbounded memory usage.
+type limitedBuffer struct {
+	data  []byte
+	limit int
+}
+
+func newLimitedBuffer(limit int) *limitedBuffer {
+	return &limitedBuffer{
+		data:  make([]byte, 0, min(limit, 16*1024)),
+		limit: limit,
+	}
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 || len(p) == 0 {
+		return len(p), nil
+	}
+
+	remaining := b.limit - len(b.data)
+	if remaining > 0 {
+		if len(p) <= remaining {
+			b.data = append(b.data, p...)
+		} else {
+			b.data = append(b.data, p[:remaining]...)
+		}
+	}
+	// Pretend we consumed the whole input to keep streaming conversion flowing.
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte {
+	return b.data
+}
+
+type teeCapture struct {
+	w   io.Writer
+	cap *limitedBuffer
+}
+
+func (t *teeCapture) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if n > 0 {
+		_, _ = t.cap.Write(p[:n])
+	}
+	return n, err
+}
+
+// Flush delegates to underlying response writer so streaming behaves as before.
+func (t *teeCapture) Flush() {
+	if f, ok := t.w.(interface{ Flush() }); ok {
+		f.Flush()
+	}
+}
+
 // New creates a new Augment server instance.
-func New(cfg *config.Config, privateKeyPath string) (*Server, error) {
+func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder) (*Server, error) {
 	dec, err := decrypt.New(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("augment server: failed to create decryptor: %w", err)
@@ -75,9 +131,10 @@ func New(cfg *config.Config, privateKeyPath string) (*Server, error) {
 	}
 
 	return &Server{
-		config:     cfg,
-		decryptor:  dec,
-		httpClient: httpClient,
+		config:          cfg,
+		decryptor:       dec,
+		trafficRecorder: trafficRecorder,
+		httpClient:      httpClient,
 	}, nil
 }
 
@@ -185,6 +242,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleRequest handles incoming Augment plugin requests.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	clientFormat := "augment"
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -195,6 +255,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("Augment: failed to read request body: %v", err)
 		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		if s.trafficRecorder != nil {
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:    startTime,
+				ClientFormat: clientFormat,
+				Method:       r.Method,
+				Path:         r.URL.Path,
+				StatusCode:   http.StatusBadRequest,
+				Duration:     time.Since(startTime),
+				Error:        err.Error(),
+			})
+		}
 		return
 	}
 	defer r.Body.Close()
@@ -203,6 +274,18 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("Augment: failed to parse request: %v", err)
 		s.writeErrorResponse(w, err.Error(), false)
+		if s.trafficRecorder != nil {
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      http.StatusInternalServerError,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: body,
+			})
+		}
 		return
 	}
 
@@ -211,6 +294,23 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if endpoint == nil {
 		logger.Error("Augment: no available endpoint")
 		s.writeErrorResponse(w, "No available endpoint", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           "No available endpoint",
+				OriginalRequest: decrypted,
+			})
+		}
 		return
 	}
 
@@ -219,6 +319,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("Augment: failed to create transformer: %v", err)
 		s.writeErrorResponse(w, "Internal error", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           err.Error(),
+				OriginalRequest: decrypted,
+			})
+		}
 		return
 	}
 
@@ -227,14 +345,46 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("Augment: failed to transform request: %v", err)
 		s.writeErrorResponse(w, "Request transformation failed", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    clientFormat,
+				TransformerName: transformer.Name(),
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           err.Error(),
+				OriginalRequest: decrypted,
+			})
+		}
 		return
 	}
 
 	// Extract tool context for response transformation.
 	toolContext := transformer.GetToolContext()
+	transformerName := transformer.Name()
 
 	// Proxy to upstream.
-	s.proxyToUpstream(w, r, transformed, endpoint, targetType, ar.IsStreaming(), toolContext)
+	s.proxyToUpstream(
+		w,
+		r,
+		transformed,
+		endpoint,
+		targetType,
+		ar.IsStreaming(),
+		toolContext,
+		decrypted,
+		transformerName,
+		startTime,
+		clientFormat,
+	)
 }
 
 // parseAugmentRequest returns the parsed AugmentRequest and the JSON bytes that
@@ -326,16 +476,48 @@ func mapEndpointTransformerToTargetType(transformerName string) (string, bool) {
 }
 
 // proxyToUpstream proxies the transformed request to the upstream API.
-func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, body []byte, endpoint *config.Endpoint, targetType string, isStreaming bool, toolContext map[string]*augment.ToolContext) {
+func (s *Server) proxyToUpstream(
+	w http.ResponseWriter,
+	r *http.Request,
+	transformedRequest []byte,
+	endpoint *config.Endpoint,
+	targetType string,
+	isStreaming bool,
+	toolContext map[string]*augment.ToolContext,
+	originalRequest []byte,
+	transformerName string,
+	startTime time.Time,
+	clientFormat string,
+) {
 	// Build upstream URL.
 	path := augment.TargetPath(targetType)
 	upstreamURL := strings.TrimSuffix(endpoint.APIUrl, "/") + path
 
 	// Create upstream request.
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(transformedRequest))
 	if err != nil {
 		logger.Error("Augment: failed to create upstream request: %v", err)
 		s.writeErrorResponse(w, "Failed to create upstream request", isStreaming)
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if isStreaming {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       clientFormat,
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         statusCode,
+				Duration:           time.Since(startTime),
+				IsStreaming:        isStreaming,
+				Error:              err.Error(),
+				OriginalRequest:    originalRequest,
+				TransformedRequest: transformedRequest,
+			})
+		}
 		return
 	}
 
@@ -347,7 +529,7 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, body []
 			Stream bool                     `json:"stream"`
 			Tools  []map[string]interface{} `json:"tools"`
 		}
-		if err := json.Unmarshal(body, &reqBody); err == nil {
+		if err := json.Unmarshal(transformedRequest, &reqBody); err == nil {
 			tools = reqBody.Tools
 		}
 		betas := convert.BuildClaudeCliBetas(tools)
@@ -368,20 +550,95 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, body []
 	if err != nil {
 		logger.Error("Augment: upstream request failed: %v", err)
 		s.writeErrorResponse(w, "Upstream request failed", isStreaming)
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if isStreaming {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       clientFormat,
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         statusCode,
+				Duration:           time.Since(startTime),
+				IsStreaming:        isStreaming,
+				Error:              err.Error(),
+				OriginalRequest:    originalRequest,
+				TransformedRequest: transformedRequest,
+			})
+		}
 		return
 	}
 	defer resp.Body.Close()
 
+	recordEnabled := s.trafficRecorder != nil && s.trafficRecorder.IsRecording()
 	// Handle response.
 	if isStreaming {
-		s.handleStreamingResponse(w, resp, targetType, toolContext)
+		ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, recordEnabled)
+		if recordEnabled {
+			log := &proxy.TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        clientFormat,
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				IsStreaming:         true,
+				OriginalRequest:     originalRequest,
+				TransformedRequest:  transformedRequest,
+				OriginalResponse:    ndjson,
+				TransformedResponse: ndjson,
+			}
+			if convErr != nil {
+				log.Error = convErr.Error()
+			}
+			s.trafficRecorder.Record(log)
+		} else if convErr != nil {
+			logger.Error("Augment: SSE conversion error: %v", convErr)
+		}
 	} else {
-		s.handleNonStreamingResponse(w, resp)
+		originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp)
+		if recordEnabled {
+			log := &proxy.TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        clientFormat,
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				IsStreaming:         false,
+				OriginalRequest:     originalRequest,
+				TransformedRequest:  transformedRequest,
+				OriginalResponse:    originalResp,
+				TransformedResponse: transformedResp,
+			}
+			if convErr != nil {
+				log.Error = convErr.Error()
+			}
+			// If transform read failed, handleNonStreamingResponse likely wrote 500.
+			// In that case, resp.StatusCode still reflects upstream; preserve it in the log.
+			s.trafficRecorder.Record(log)
+		} else if convErr != nil {
+			logger.Error("Augment: response conversion error: %v", convErr)
+		}
 	}
 }
 
 // handleStreamingResponse handles SSE streaming responses and converts to NDJSON.
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, targetType string, toolContext map[string]*augment.ToolContext) {
+func (s *Server) handleStreamingResponse(
+	w http.ResponseWriter,
+	resp *http.Response,
+	targetType string,
+	toolContext map[string]*augment.ToolContext,
+	captureNDJSON bool,
+) ([]byte, error) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -390,33 +647,44 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, resp *http.Respo
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		logger.Error("Augment: response writer does not support flushing")
-		return
+		return nil, fmt.Errorf("augment: response writer does not support flushing")
+	}
+
+	var outBytes []byte
+	var capture *limitedBuffer
+	writer := io.Writer(w)
+	if captureNDJSON {
+		capture = newLimitedBuffer(proxy.MaxBodySize + 1)
+		writer = &teeCapture{w: w, cap: capture}
 	}
 
 	// Convert SSE to NDJSON on the fly.
-	if err := augment.StreamConvertSSEToNDJSON(resp.Body, w, targetType, toolContext); err != nil {
-		logger.Error("Augment: SSE conversion error: %v", err)
-	}
+	err := augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
 	flusher.Flush()
+	if capture != nil {
+		outBytes = capture.Bytes()
+	}
+	return outBytes, err
 }
 
 // handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
 // Augment clients expect NDJSON even for non-streaming responses.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) {
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) (originalResp []byte, transformedResp []byte, err error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Augment: failed to read upstream response: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, nil, err
 	}
+	originalResp = body
 
 	// If upstream returned an error status, pass through as JSON.
 	if resp.StatusCode >= 400 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(body)
-		return
+		return originalResp, originalResp, nil
 	}
 
 	// Convert the JSON response to a single NDJSON chunk with text + stop_reason.
@@ -425,6 +693,8 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 
+	// Build NDJSON in memory so we can both write and (optionally) record it.
+	var out bytes.Buffer
 	if text != "" {
 		textChunk := map[string]interface{}{
 			"text":                  text,
@@ -434,8 +704,8 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 			"nodes":                 []interface{}{},
 		}
 		line, _ := json.Marshal(textChunk)
-		w.Write(line)
-		w.Write([]byte("\n"))
+		out.Write(line)
+		out.Write([]byte("\n"))
 	}
 
 	// Final chunk with stop_reason.
@@ -448,8 +718,19 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 		"stop_reason":           1, // END_TURN
 	}
 	line, _ := json.Marshal(finalChunk)
-	w.Write(line)
-	w.Write([]byte("\n"))
+	out.Write(line)
+	out.Write([]byte("\n"))
+
+	transformedResp = out.Bytes()
+	w.Write(transformedResp)
+	return originalResp, transformedResp, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // extractTextFromResponse extracts text content from Claude or OpenAI JSON responses.
@@ -522,30 +803,30 @@ type ModelInfo struct {
 // fetchClaudeModels fetches model list from Claude API.
 func (s *Server) fetchClaudeModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
 	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
-	
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("x-api-key", endpoint.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
-	
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result struct {
 		Data []struct {
 			ID          string    `json:"id"`
@@ -553,11 +834,11 @@ func (s *Server) fetchClaudeModels(endpoint *config.Endpoint) ([]ModelInfo, erro
 			CreatedAt   time.Time `json:"created_at"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	
+
 	models := make([]ModelInfo, 0, len(result.Data))
 	for _, m := range result.Data {
 		models = append(models, ModelInfo{
@@ -566,47 +847,47 @@ func (s *Server) fetchClaudeModels(endpoint *config.Endpoint) ([]ModelInfo, erro
 			CreatedAt:   m.CreatedAt,
 		})
 	}
-	
+
 	return models, nil
 }
 
 // fetchOpenAIModels fetches model list from OpenAI-compatible API.
 func (s *Server) fetchOpenAIModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
 	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
-	
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
-	
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result struct {
 		Data []struct {
 			ID      string `json:"id"`
 			Created int64  `json:"created"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	
+
 	models := make([]ModelInfo, 0, len(result.Data))
 	for _, m := range result.Data {
 		models = append(models, ModelInfo{
@@ -615,64 +896,64 @@ func (s *Server) fetchOpenAIModels(endpoint *config.Endpoint) ([]ModelInfo, erro
 			CreatedAt:   time.Unix(m.Created, 0),
 		})
 	}
-	
+
 	return models, nil
 }
 
 // fetchGeminiModels fetches model list from Gemini API.
 func (s *Server) fetchGeminiModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
 	url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + endpoint.APIKey
-	
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
-	
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result struct {
 		Models []struct {
 			Name        string `json:"name"`
 			DisplayName string `json:"displayName"`
 		} `json:"models"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	
+
 	models := make([]ModelInfo, 0, len(result.Models))
 	for _, m := range result.Models {
 		// Extract model ID from "models/gemini-pro" format
 		modelID := strings.TrimPrefix(m.Name, "models/")
-		
+
 		models = append(models, ModelInfo{
 			ID:          modelID,
 			DisplayName: m.DisplayName,
 			CreatedAt:   time.Now(), // Gemini doesn't provide creation time
 		})
 	}
-	
+
 	return models, nil
 }
 
 // convertToAugmentFormat converts model list to Augment-compatible format.
 func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) map[string]interface{} {
 	result := make(map[string]interface{})
-	
+
 	for i, model := range models {
 		// Generate short name from model ID
 		shortName := model.ID
@@ -682,10 +963,10 @@ func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) m
 				shortName = parts[0]
 			}
 		}
-		
+
 		// Determine priority (lower number = higher priority)
 		priority := i + 1
-		
+
 		// Create model entry in Augment-compatible format
 		modelEntry := map[string]interface{}{
 			"displayName":   model.ID,
@@ -694,10 +975,10 @@ func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) m
 			"priority":      priority,
 			"isLegacyModel": false,
 		}
-		
+
 		result[model.ID] = modelEntry
 	}
-	
+
 	return result
 }
 
@@ -705,7 +986,7 @@ func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) m
 func (s *Server) fetchModelsFromEndpoint(endpoint *config.Endpoint, targetType string) (map[string]interface{}, error) {
 	var models []ModelInfo
 	var err error
-	
+
 	switch targetType {
 	case "claude", "cli":
 		models, err = s.fetchClaudeModels(endpoint)
@@ -721,15 +1002,15 @@ func (s *Server) fetchModelsFromEndpoint(endpoint *config.Endpoint, targetType s
 	default:
 		return nil, fmt.Errorf("unsupported target type: %s", targetType)
 	}
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if len(models) == 0 {
 		return nil, fmt.Errorf("no models returned from endpoint")
 	}
-	
+
 	return s.convertToAugmentFormat(models, targetType), nil
 }
 
@@ -772,7 +1053,7 @@ func (s *Server) handleGetModels(w http.ResponseWriter, r *http.Request) {
 	// Try to fetch models dynamically from endpoint
 	targetType, endpoint := s.selectTarget()
 	var models map[string]interface{}
-	
+
 	if endpoint != nil {
 		logger.Debug("Augment: attempting to fetch models from endpoint (type: %s)", targetType)
 		fetchedModels, err := s.fetchModelsFromEndpoint(endpoint, targetType)
