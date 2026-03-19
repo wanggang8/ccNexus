@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -493,8 +494,8 @@ func (s *Server) proxyToUpstream(
 	path := augment.TargetPath(targetType)
 	upstreamURL := strings.TrimSuffix(endpoint.APIUrl, "/") + path
 
-	// Create upstream request.
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(transformedRequest))
+	// Create upstream request with proper headers
+	req, err := s.createUpstreamRequest(r.Context(), http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
 	if err != nil {
 		logger.Error("Augment: failed to create upstream request: %v", err)
 		s.writeErrorResponse(w, "Failed to create upstream request", isStreaming)
@@ -521,34 +522,51 @@ func (s *Server) proxyToUpstream(
 		return
 	}
 
-	// Set headers.
-	if targetType == "cli" {
-		// CLI mode: use full CLI headers (includes auth, beta, user-agent, stainless-*)
-		var tools []map[string]interface{}
-		var reqBody struct {
-			Stream bool                     `json:"stream"`
-			Tools  []map[string]interface{} `json:"tools"`
+	// Log request details for debugging
+	logger.Debug("Augment: sending request to %s (%.1f KB)", upstreamURL, float64(len(transformedRequest))/1024)
+
+	// Execute request with retry logic
+	maxRetries := 2
+	var lastErr error
+	var resp *http.Response
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			logger.Warn("Augment: retrying request to %s (attempt %d/%d)", upstreamURL, attempt, maxRetries)
+			time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff: 1s, 2s
+
+			// Create new context for retry to avoid original request timeout
+			retryCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			// Recreate request for retry (http.Request cannot be reused)
+			req, lastErr = s.createUpstreamRequest(retryCtx, http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
+			if lastErr != nil {
+				logger.Error("Augment: failed to create retry request: %v", lastErr)
+				break
+			}
 		}
-		if err := json.Unmarshal(transformedRequest, &reqBody); err == nil {
-			tools = reqBody.Tools
+
+		requestStart := time.Now()
+		resp, lastErr = s.httpClient.Do(req)
+		requestDuration := time.Since(requestStart)
+
+		if lastErr == nil {
+			logger.Debug("Augment: request succeeded in %v", requestDuration)
+			break // Success
 		}
-		betas := convert.BuildClaudeCliBetas(tools)
-		cliHeaders := convert.BuildClaudeCliHeaders(endpoint.APIKey, betas, reqBody.Stream)
-		for k, v := range cliHeaders {
-			req.Header.Set(k, v)
+
+		// Check if error is retryable
+		if !isRetryableError(lastErr) {
+			logger.Error("Augment: non-retryable error to %s: %v", upstreamURL, lastErr)
+			break
 		}
-	} else {
-		req.Header.Set("Content-Type", "application/json")
-		authHeaders := augment.BuildAuthHeaders(targetType, endpoint.APIKey)
-		for k, v := range authHeaders {
-			req.Header.Set(k, v)
-		}
+
+		logger.Warn("Augment: retryable error to %s (attempt %d/%d): %v", upstreamURL, attempt, maxRetries, lastErr)
 	}
 
-	// Execute request.
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		logger.Error("Augment: upstream request failed: %v", err)
+	if lastErr != nil {
+		logger.Error("Augment: upstream request failed after %d attempts: %v", maxRetries+1, lastErr)
 		s.writeErrorResponse(w, "Upstream request failed", isStreaming)
 		if s.trafficRecorder != nil {
 			statusCode := http.StatusInternalServerError
@@ -565,7 +583,7 @@ func (s *Server) proxyToUpstream(
 				StatusCode:         statusCode,
 				Duration:           time.Since(startTime),
 				IsStreaming:        isStreaming,
-				Error:              err.Error(),
+				Error:              lastErr.Error(),
 				OriginalRequest:    originalRequest,
 				TransformedRequest: transformedRequest,
 			})
@@ -573,6 +591,9 @@ func (s *Server) proxyToUpstream(
 		return
 	}
 	defer resp.Body.Close()
+
+	// Log successful response details
+	logger.Debug("Augment: received response from %s: status=%d", upstreamURL, resp.StatusCode)
 
 	recordEnabled := s.trafficRecorder != nil && s.trafficRecorder.IsRecording()
 	// Handle response.
@@ -1149,4 +1170,71 @@ func (s *Server) handleGetLoginToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(token)
 	logger.Debug("Augment: returned login token")
+}
+
+// isRetryableError checks if an error should trigger a retry
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Network-level errors that are typically temporary
+	if strings.Contains(errStr, "EOF") {
+		return true // Connection closed by remote server
+	}
+	if strings.Contains(errStr, "connection reset") {
+		return true // Connection reset
+	}
+	if strings.Contains(errStr, "broken pipe") {
+		return true // Broken pipe
+	}
+	if strings.Contains(errStr, "timeout") {
+		return true // Timeout
+	}
+	if strings.Contains(errStr, "temporary") {
+		return true // Temporary failure
+	}
+
+	// Check for specific error types
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Temporary() || netErr.Timeout()
+	}
+
+	return false
+}
+
+// createUpstreamRequest creates an HTTP request with proper headers for the target type
+func (s *Server) createUpstreamRequest(ctx context.Context, method, url string, body []byte, targetType string, endpoint *config.Endpoint) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// Set headers based on target type
+	if targetType == "cli" {
+		// CLI mode: use full CLI headers (includes auth, beta, user-agent, stainless-*)
+		var tools []map[string]interface{}
+		var reqBody struct {
+			Stream bool                     `json:"stream"`
+			Tools  []map[string]interface{} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &reqBody); err == nil {
+			tools = reqBody.Tools
+		}
+		betas := convert.BuildClaudeCliBetas(tools)
+		cliHeaders := convert.BuildClaudeCliHeaders(endpoint.APIKey, betas, reqBody.Stream)
+		for k, v := range cliHeaders {
+			req.Header.Set(k, v)
+		}
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		authHeaders := augment.BuildAuthHeaders(targetType, endpoint.APIKey)
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
+	return req, nil
 }
