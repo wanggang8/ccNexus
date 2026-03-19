@@ -1180,7 +1180,7 @@ func (a *App) initAugmentServer(configDir string, cfg *config.Config) {
 		keyPath = defaultKeyPath
 	}
 
-	srv, err := server.New(cfg, keyPath, a.proxy.GetTrafficRecorder())
+	srv, err := server.New(cfg, keyPath, a.proxy.GetTrafficRecorder(), a.proxy.GetStats())
 	if err != nil {
 		logger.Warn("Failed to create Augment server: %v", err)
 		return

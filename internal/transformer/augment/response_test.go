@@ -51,7 +51,7 @@ func TestStreamConvertClaude_TextDeltaToNDJSONText(t *testing.T) {
 		"data: {\"type\":\"message_stop\"}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -73,7 +73,7 @@ func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 		"data: {\"type\":\"content_block_stop\"}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -131,7 +131,7 @@ func TestStreamConvertOpenAI_ToolCallsFinishEmitNodes(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -177,7 +177,7 @@ func TestStreamConvertClaude_StopReasonMapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sse := "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"" + tt.stopReason + "\"}}\n\n"
 			var b strings.Builder
-			if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+			if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 				t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 			}
 			lines := readNDJSONLines(t, b.String())
@@ -206,7 +206,7 @@ func TestStreamConvertOpenAI_FinishReasonMapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sse := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + tt.finishReason + "\"}]}\n\n"
 			var b strings.Builder
-			if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+			if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 				t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 			}
 			lines := readNDJSONLines(t, b.String())
@@ -227,7 +227,7 @@ func TestStreamConvertClaude_TokenUsageNode(t *testing.T) {
 		"data: {\"type\":\"message_stop\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -266,7 +266,7 @@ func TestStreamConvertOpenAI_TokenUsageNode(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":80,\"completion_tokens\":40,\"total_tokens\":120}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -310,7 +310,7 @@ func TestStreamConvertClaude_MCPFieldsInToolUse(t *testing.T) {
 	}
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", toolCtx); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", toolCtx); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -368,7 +368,7 @@ func TestStreamConvertOpenAI_MCPFieldsInToolUse(t *testing.T) {
 	}
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", toolCtx); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", toolCtx); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -443,7 +443,7 @@ func TestStreamConvertClaude_ThinkingDelta(t *testing.T) {
 		"data: {\"type\":\"message_stop\"}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -476,7 +476,7 @@ func TestStreamConvertOpenAI_UsageBeforeFinish(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -514,7 +514,7 @@ func TestStreamConvertOpenAI_MultipleToolCalls(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -542,7 +542,7 @@ func TestStreamConvertOpenAI_ToolUseStartStructure(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -589,7 +589,7 @@ func TestStreamConvertClaude_EmitSingleFinalTokenUsageNode(t *testing.T) {
 		"data: {\"type\":\"message_stop\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -613,7 +613,7 @@ func TestStreamConvertClaude_MessageStartUsageMerged(t *testing.T) {
 		"data: {\"type\":\"message_stop\",\"usage\":{\"output_tokens\":20}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -640,7 +640,7 @@ func TestStreamConvertOpenAI_ChoicesEmptyUsageCaptured(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -664,7 +664,7 @@ func TestStreamConvertOpenAI_EmitSingleFinalTokenUsageNode(t *testing.T) {
 		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":6}}\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
@@ -714,7 +714,7 @@ func TestStreamConvertOpenAI_OutputUsageFallbackToEstimateWhenTooSmall(t *testin
 		"data: " + string(finishChunk) + "\n\n"
 
 	var b strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, b.String())
