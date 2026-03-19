@@ -30,6 +30,7 @@ type Server struct {
 	config          *config.Config
 	decryptor       *decrypt.Decryptor
 	trafficRecorder *proxy.TrafficRecorder
+	stats           *proxy.Stats
 	httpServer      *http.Server
 	httpClient      *http.Client
 	mu              sync.RWMutex
@@ -109,7 +110,7 @@ func (t *teeCapture) Flush() {
 }
 
 // New creates a new Augment server instance.
-func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder) (*Server, error) {
+func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
 	dec, err := decrypt.New(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("augment server: failed to create decryptor: %w", err)
@@ -135,6 +136,7 @@ func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.Traff
 		config:          cfg,
 		decryptor:       dec,
 		trafficRecorder: trafficRecorder,
+		stats:           stats,
 		httpClient:      httpClient,
 	}, nil
 }
@@ -598,7 +600,13 @@ func (s *Server) proxyToUpstream(
 	recordEnabled := s.trafficRecorder != nil && s.trafficRecorder.IsRecording()
 	// Handle response.
 	if isStreaming {
-		ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, recordEnabled)
+		inputTokens, outputTokens, ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, recordEnabled)
+		if s.stats != nil && convErr == nil {
+			s.stats.RecordRequest(endpoint.Name)
+			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+		} else if s.stats != nil && convErr != nil {
+			s.stats.RecordError(endpoint.Name)
+		}
 		if recordEnabled {
 			log := &proxy.TrafficLog{
 				Timestamp:           startTime,
@@ -609,21 +617,33 @@ func (s *Server) proxyToUpstream(
 				Path:                r.URL.Path,
 				StatusCode:          resp.StatusCode,
 				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
 				IsStreaming:         true,
 				OriginalRequest:     originalRequest,
 				TransformedRequest:  transformedRequest,
 				OriginalResponse:    ndjson,
 				TransformedResponse: ndjson,
 			}
-			if convErr != nil {
-				log.Error = convErr.Error()
+			// Only set error if the HTTP request actually failed
+			if resp.StatusCode >= 400 {
+				log.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			} else if convErr != nil {
+				// Log conversion errors but don't mark the request as failed
+				logger.Warn("Augment: SSE conversion warning: %v", convErr)
 			}
 			s.trafficRecorder.Record(log)
 		} else if convErr != nil {
 			logger.Error("Augment: SSE conversion error: %v", convErr)
 		}
 	} else {
-		originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp)
+		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp)
+		if s.stats != nil && convErr == nil {
+			s.stats.RecordRequest(endpoint.Name)
+			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+		} else if s.stats != nil && convErr != nil {
+			s.stats.RecordError(endpoint.Name)
+		}
 		if recordEnabled {
 			log := &proxy.TrafficLog{
 				Timestamp:           startTime,
@@ -634,17 +654,21 @@ func (s *Server) proxyToUpstream(
 				Path:                r.URL.Path,
 				StatusCode:          resp.StatusCode,
 				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
 				IsStreaming:         false,
 				OriginalRequest:     originalRequest,
 				TransformedRequest:  transformedRequest,
 				OriginalResponse:    originalResp,
 				TransformedResponse: transformedResp,
 			}
-			if convErr != nil {
-				log.Error = convErr.Error()
+			// Only set error if the HTTP request actually failed
+			if resp.StatusCode >= 400 {
+				log.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			} else if convErr != nil {
+				// Log conversion errors but don't mark the request as failed
+				logger.Warn("Augment: response conversion warning: %v", convErr)
 			}
-			// If transform read failed, handleNonStreamingResponse likely wrote 500.
-			// In that case, resp.StatusCode still reflects upstream; preserve it in the log.
 			s.trafficRecorder.Record(log)
 		} else if convErr != nil {
 			logger.Error("Augment: response conversion error: %v", convErr)
@@ -659,7 +683,7 @@ func (s *Server) handleStreamingResponse(
 	targetType string,
 	toolContext map[string]*augment.ToolContext,
 	captureNDJSON bool,
-) ([]byte, error) {
+) (inputTokens, outputTokens int, outBytes []byte, err error) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -668,10 +692,9 @@ func (s *Server) handleStreamingResponse(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		logger.Error("Augment: response writer does not support flushing")
-		return nil, fmt.Errorf("augment: response writer does not support flushing")
+		return 0, 0, nil, fmt.Errorf("augment: response writer does not support flushing")
 	}
 
-	var outBytes []byte
 	var capture *limitedBuffer
 	writer := io.Writer(w)
 	if captureNDJSON {
@@ -680,32 +703,35 @@ func (s *Server) handleStreamingResponse(
 	}
 
 	// Convert SSE to NDJSON on the fly.
-	err := augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
+	inputTokens, outputTokens, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
 	flusher.Flush()
 	if capture != nil {
 		outBytes = capture.Bytes()
 	}
-	return outBytes, err
+	return inputTokens, outputTokens, outBytes, err
 }
 
 // handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
 // Augment clients expect NDJSON even for non-streaming responses.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) (originalResp []byte, transformedResp []byte, err error) {
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Augment: failed to read upstream response: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		return nil, nil, err
+		return 0, 0, nil, nil, err
 	}
 	originalResp = body
+
+	// Extract token usage from the response.
+	inputTokens, outputTokens = extractTokenUsageFromResponse(body)
 
 	// If upstream returned an error status, pass through as JSON.
 	if resp.StatusCode >= 400 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(body)
-		return originalResp, originalResp, nil
+		return inputTokens, outputTokens, originalResp, originalResp, nil
 	}
 
 	// Convert the JSON response to a single NDJSON chunk with text + stop_reason.
@@ -744,7 +770,7 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 
 	transformedResp = out.Bytes()
 	w.Write(transformedResp)
-	return originalResp, transformedResp, nil
+	return inputTokens, outputTokens, originalResp, transformedResp, nil
 }
 
 func min(a, b int) int {
@@ -788,6 +814,53 @@ func extractTextFromResponse(body []byte) string {
 	}
 
 	return ""
+}
+
+// extractTokenUsageFromResponse extracts token usage from Claude or OpenAI JSON responses.
+func extractTokenUsageFromResponse(body []byte) (inputTokens, outputTokens int) {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, 0
+	}
+
+	// Try Claude format: usage.input_tokens/output_tokens
+	if usage, ok := resp["usage"].(map[string]interface{}); ok {
+		inputTokens = parseIntFromMap(usage, "input_tokens")
+		outputTokens = parseIntFromMap(usage, "output_tokens")
+		if inputTokens > 0 || outputTokens > 0 {
+			return inputTokens, outputTokens
+		}
+	}
+
+	// Try OpenAI format: usage.prompt_tokens/completion_tokens
+	if usage, ok := resp["usage"].(map[string]interface{}); ok {
+		promptTokens := parseIntFromMap(usage, "prompt_tokens")
+		completionTokens := parseIntFromMap(usage, "completion_tokens")
+		if promptTokens > 0 || completionTokens > 0 {
+			return promptTokens, completionTokens
+		}
+	}
+
+	return 0, 0
+}
+
+// parseIntFromMap parses an int from a map under multiple possible keys.
+func parseIntFromMap(m map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if val, ok := m[key]; ok {
+			switch v := val.(type) {
+			case int:
+				return v
+			case float64:
+				return int(v)
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					return int(i)
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // writeErrorResponse writes an error response in Augment format.

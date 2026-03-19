@@ -50,7 +50,7 @@ const (
 // expected by the Augment plugin. Returns the converted bytes and any error.
 func ConvertSSEToNDJSON(sseData []byte, targetType string, toolCtx map[string]*ToolContext) ([]byte, error) {
 	var out strings.Builder
-	if err := StreamConvertSSEToNDJSON(strings.NewReader(string(sseData)), &out, targetType, toolCtx); err != nil {
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(string(sseData)), &out, targetType, toolCtx); err != nil {
 		return nil, err
 	}
 	return []byte(out.String()), nil
@@ -58,14 +58,15 @@ func ConvertSSEToNDJSON(sseData []byte, targetType string, toolCtx map[string]*T
 
 // StreamConvertSSEToNDJSON converts an SSE stream to NDJSON in a streaming fashion.
 // It reads from r and writes converted NDJSON lines to w.
-func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolCtx map[string]*ToolContext) error {
+// Returns inputTokens, outputTokens, and any error.
+func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	switch targetType {
 	case "claude", "cli":
 		return streamConvertClaudeSSE(r, w, toolCtx)
 	case "openai", "openai2":
 		return streamConvertOpenAISSE(r, w, toolCtx)
 	default:
-		return fmt.Errorf("augment response: unsupported target type %q", targetType)
+		return 0, 0, fmt.Errorf("augment response: unsupported target type %q", targetType)
 	}
 }
 
@@ -105,7 +106,7 @@ func newBaseChunk(text string) map[string]interface{} {
 	}
 }
 
-func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) error {
+func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	scanner := bufio.NewScanner(r)
 	var lastEventType string
 	var buf toolUseBuffer
@@ -298,7 +299,18 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 	}
 
-	return scanner.Err()
+	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
+	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	inputTokens, outputTokens := 0, 0
+	if tokenUsage != nil {
+		if v, ok := tokenUsage["input_tokens"].(int); ok {
+			inputTokens = v
+		}
+		if v, ok := tokenUsage["output_tokens"].(int); ok {
+			outputTokens = v
+		}
+	}
+	return inputTokens, outputTokens, scanner.Err()
 }
 
 // mapClaudeStopReason maps Claude stop_reason to Augment stop_reason constants.
@@ -592,7 +604,7 @@ type openAIToolCallAccum struct {
 	started bool // Track if TOOL_USE_START has been emitted
 }
 
-func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) error {
+func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	scanner := bufio.NewScanner(r)
 	nextNodeID := 1
 
@@ -782,5 +794,17 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	}
 
 	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
-	return scanner.Err()
+
+	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
+	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	inputTokens, outputTokens := 0, 0
+	if tokenUsage != nil {
+		if v, ok := tokenUsage["input_tokens"].(int); ok {
+			inputTokens = v
+		}
+		if v, ok := tokenUsage["output_tokens"].(int); ok {
+			outputTokens = v
+		}
+	}
+	return inputTokens, outputTokens, scanner.Err()
 }
