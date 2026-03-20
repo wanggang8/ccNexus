@@ -181,6 +181,22 @@ type ActiveToolCall struct {
 	OutputIndex int
 }
 
+// ResponseOutputItemState tracks a single Responses output item across stream events.
+type ResponseOutputItemState struct {
+	Type          string
+	OutputIndex   int
+	LocalIndex    int
+	HasLocalIndex bool
+	ItemID        string
+	CallID        string
+	Name          string
+	Role          string
+	Arguments     string
+	DoneArguments string
+	Status        string
+	Completed     bool
+}
+
 // StreamContext holds the state for a single streaming response
 // This allows multiple concurrent streams to be processed independently
 type StreamContext struct {
@@ -193,6 +209,8 @@ type StreamContext struct {
 	ModelName            string
 	InputTokens          int
 	OutputTokens         int
+	TotalTokens          int
+	HasAuthoritativeTotalTokens bool
 	ContentIndex         int
 	ThinkingIndex        int // Index for thinking content block
 	ToolIndex            int // Current tool_use content block index (from OpenAI)
@@ -211,6 +229,10 @@ type StreamContext struct {
 	// Track all active tool calls for multi-tool-call streaming (OpenAI→OpenAI2)
 	ActiveToolCalls []ActiveToolCall // All tool calls accumulated during streaming
 	IncludeUsage    bool             // Whether OpenAI-compatible streaming should emit usage chunk
+	// Responses API item tracking
+	ResponseOutputItems      map[int]*ResponseOutputItemState
+	ResponseOutputItemLookup map[string]*ResponseOutputItemState
+	NextResponseOutputIndex  int
 	// <think> tag handling for streaming text
 	InThinkingTag       bool   // Track if we are inside a <think> tag
 	ThinkingBuffer      string // Buffer for trailing partial tag detection
@@ -233,6 +255,8 @@ func NewStreamContext() *StreamContext {
 		ModelName:            "",
 		InputTokens:          0,
 		OutputTokens:         0,
+		TotalTokens:          0,
+		HasAuthoritativeTotalTokens: false,
 		ContentIndex:         0,
 		ThinkingIndex:        0,
 		ToolIndex:            0,
@@ -244,6 +268,9 @@ func NewStreamContext() *StreamContext {
 		ToolCallIDMap:        make(map[string]string),
 		ToolCallCounter:      0,
 		IncludeUsage:         false,
+		ResponseOutputItems:      make(map[int]*ResponseOutputItemState),
+		ResponseOutputItemLookup: make(map[string]*ResponseOutputItemState),
+		NextResponseOutputIndex:  0,
 		InThinkingTag:        false,
 		ThinkingBuffer:       "",
 		PendingThinkingText:  "",
@@ -396,6 +423,7 @@ type OpenAI2OutputItem struct {
 	Type    string               `json:"type"` // "message", "function_call"
 	ID      string               `json:"id,omitempty"`
 	Role    string               `json:"role,omitempty"`
+	Status  string               `json:"status,omitempty"`
 	Content []OpenAI2ContentPart `json:"content,omitempty"`
 	// Function call fields
 	Name      string `json:"name,omitempty"`
@@ -420,8 +448,10 @@ type OpenAI2Response struct {
 type OpenAI2StreamEvent struct {
 	Type         string              `json:"type"` // "response.created", "response.output_item.added", "response.content_part.delta", etc.
 	Response     *OpenAI2Response    `json:"response,omitempty"`
-	OutputIndex  int                 `json:"output_index,omitempty"`
-	ContentIndex int                 `json:"content_index,omitempty"`
+	OutputIndex  *int                `json:"output_index,omitempty"`
+	ContentIndex *int                `json:"content_index,omitempty"`
+	ItemID       string              `json:"item_id,omitempty"`
+	Arguments    string              `json:"arguments,omitempty"`
 	Item         *OpenAI2OutputItem  `json:"item,omitempty"`
 	Part         *OpenAI2ContentPart `json:"part,omitempty"`
 	Delta        string              `json:"delta,omitempty"` // Direct string for text delta

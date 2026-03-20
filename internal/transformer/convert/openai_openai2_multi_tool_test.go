@@ -221,6 +221,20 @@ func TestOpenAIStreamToOpenAI2_UsageInCompletion(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamToOpenAI2_PreservesAuthoritativeTotalTokens(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	chunk := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":99}}`
+	result, err := OpenAIStreamToOpenAI2([]byte(chunk), ctx)
+	if err != nil {
+		t.Fatalf("OpenAIStreamToOpenAI2 failed: %v", err)
+	}
+
+	if !strings.Contains(string(result), `"total_tokens":99`) {
+		t.Fatalf("expected authoritative total_tokens=99, got: %s", string(result))
+	}
+}
+
 // ========== OpenAI2StreamToOpenAI multi-tool tests ==========
 
 func TestOpenAI2StreamToOpenAI_MultipleToolCalls(t *testing.T) {
@@ -248,8 +262,8 @@ func TestOpenAI2StreamToOpenAI_MultipleToolCalls(t *testing.T) {
 	delta1 := choices1[0].(map[string]interface{})["delta"].(map[string]interface{})
 	toolCalls1 := delta1["tool_calls"].([]interface{})
 	tc1 := toolCalls1[0].(map[string]interface{})
-	if tc1["id"] != "call_1" {
-		t.Errorf("Expected tool call ID 'call_1', got %v", tc1["id"])
+	if tc1["index"] != float64(0) {
+		t.Errorf("Expected first tool call index 0, got %v", tc1["index"])
 	}
 
 	// Tool 2
@@ -274,6 +288,26 @@ func TestOpenAI2StreamToOpenAI_MultipleToolCalls(t *testing.T) {
 	choice := choices[0].(map[string]interface{})
 	if choice["finish_reason"] != "tool_calls" {
 		t.Errorf("Expected finish_reason 'tool_calls', got %v", choice["finish_reason"])
+	}
+}
+
+func TestOpenAI2StreamToOpenAI_UsesDoneArgumentsForFinalToolCall(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.created","response":{"id":"resp_done"}}`), ctx, "gpt-4")
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_done","name":"read_file"}}`), ctx, "gpt-4")
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":"}`), ctx, "gpt-4")
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"path\":\"/tmp/a\"}"}`), ctx, "gpt-4")
+
+	out, err := OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call_done","name":"read_file"}}`), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToOpenAI failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected output for output_item.done")
+	}
+	if !strings.Contains(string(out), `{\"path\":\"/tmp/a\"}`) {
+		t.Fatalf("expected final arguments from done event, got: %s", string(out))
 	}
 }
 

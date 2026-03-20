@@ -82,41 +82,38 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	var outputContent []map[string]interface{}
-	var functionCalls []map[string]interface{}
+	var output []map[string]interface{}
+	var messageParts []map[string]interface{}
+	flushMessage := func() {
+		output = appendOpenAI2MessageItem(output, "assistant", messageParts)
+		messageParts = nil
+	}
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
 		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
-				outputContent = append(outputContent, map[string]interface{}{
-					"type": "output_text",
-					"text": part.Text,
-				})
-			}
 			if part.FunctionCall != nil {
+				flushMessage()
 				args, _ := json.Marshal(part.FunctionCall.Args)
 				callID := GenerateToolCallID(part.FunctionCall.Name)
-				functionCalls = append(functionCalls, map[string]interface{}{
+				output = append(output, map[string]interface{}{
 					"type":      "function_call",
 					"id":        callID,
 					"call_id":   callID,
 					"name":      part.FunctionCall.Name,
 					"arguments": string(args),
+					"status":    "completed",
+				})
+			}
+			if part.Text != "" {
+				messageParts = append(messageParts, map[string]interface{}{
+					"type": "output_text",
+					"text": part.Text,
 				})
 			}
 		}
 	}
-
-	var output []map[string]interface{}
-	if len(outputContent) > 0 {
-		output = append(output, map[string]interface{}{
-			"type":    "message",
-			"role":    "assistant",
-			"content": outputContent,
-		})
-	}
-	output = append(output, functionCalls...)
+	flushMessage()
 
 	var usage map[string]interface{}
 	if resp.UsageMetadata != nil {
@@ -153,16 +150,22 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if ctx.ContentBlockStarted {
 				accText := ctx.ContentText
 				ctx.ContentText = ""
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
-				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+				messageIndex := 0
+				for _, item := range orderedResponseOutputItems(ctx) {
+					if item != nil && item.Type == "message" {
+						messageIndex = item.OutputIndex
+						break
+					}
+				}
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": messageIndex, "content_index": 0, "text": accText})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": messageIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
+				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": messageIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
-			totalTokens := ctx.InputTokens + ctx.OutputTokens
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
+					"usage": currentResponsesUsage(ctx),
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -213,33 +216,53 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	candidate := resp.Candidates[0]
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
+			var messageItem *transformer.ResponseOutputItemState
+			for _, item := range orderedResponseOutputItems(ctx) {
+				if item != nil && item.Type == "message" {
+					messageItem = item
+					break
+				}
+			}
+			if messageItem == nil {
+				messageItem = registerResponseOutputItem(ctx, &transformer.ResponseOutputItemState{
+					Type:        "message",
+					OutputIndex: nextResponseOutputIndex(ctx),
+					Role:        "assistant",
+					Status:      "in_progress",
+				})
+			}
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": 0,
+					"type": "response.output_item.added", "output_index": messageItem.OutputIndex,
 					"item": map[string]interface{}{"type": "message", "role": "assistant", "status": "in_progress", "content": []interface{}{}},
 				})
 				writeEvent(map[string]interface{}{
-					"type": "response.content_part.added", "output_index": 0, "content_index": 0,
+					"type": "response.content_part.added", "output_index": messageItem.OutputIndex, "content_index": 0,
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
 			ctx.ContentText += part.Text
-			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": part.Text})
+			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": messageItem.OutputIndex, "content_index": 0, "delta": part.Text})
 		}
 		if part.FunctionCall != nil {
 			args, _ := json.Marshal(part.FunctionCall.Args)
 			callID := fmt.Sprintf("call_%d", ctx.ToolCallCounter)
 			ctx.ToolCallCounter++
-			outputIndex := ctx.ToolCallCounter
+			toolItem := resolveOrCreateResponseFunctionItem(ctx, nil, callID, callID, part.FunctionCall.Name)
+			toolItem.Arguments = string(args)
+			toolItem.DoneArguments = string(args)
+			toolItem.Status = "completed"
+			toolItem.Completed = true
+			updateResponseOutputItemLookup(ctx, toolItem)
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.added", "output_index": outputIndex,
+				"type": "response.output_item.added", "output_index": toolItem.OutputIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": "", "status": "in_progress"},
 			})
-			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.delta", "output_index": outputIndex, "delta": string(args)})
-			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": outputIndex, "arguments": string(args)})
+			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.delta", "output_index": toolItem.OutputIndex, "delta": string(args)})
+			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": toolItem.OutputIndex, "arguments": string(args)})
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.done", "output_index": outputIndex,
+				"type": "response.output_item.done", "output_index": toolItem.OutputIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": string(args), "status": "completed"},
 			})
 		}
@@ -250,20 +273,24 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		if ctx.ContentBlockStarted {
 			accText := ctx.ContentText
 			ctx.ContentText = ""
-			writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
-			writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
-			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+			for _, item := range orderedResponseOutputItems(ctx) {
+				if item != nil && item.Type == "message" {
+					writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": item.OutputIndex, "content_index": 0, "text": accText})
+					writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": item.OutputIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
+					writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": item.OutputIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+					item.Status = "completed"
+					item.Completed = true
+					updateResponseOutputItemLookup(ctx, item)
+					break
+				}
+			}
 			ctx.ContentBlockStarted = false
-		}
-		totalTokens := ctx.InputTokens + ctx.OutputTokens
-		if resp.UsageMetadata != nil && resp.UsageMetadata.TotalTokenCount > 0 {
-			totalTokens = resp.UsageMetadata.TotalTokenCount
 		}
 		writeEvent(map[string]interface{}{
 			"type": "response.completed",
 			"response": map[string]interface{}{
 				"id": ctx.MessageID, "object": "response", "status": "completed",
-				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
+				"usage": currentResponsesUsage(ctx),
 			},
 		})
 		result.WriteString("data: [DONE]\n\n")
@@ -299,31 +326,81 @@ func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte
 
 	case "response.output_item.added":
 		if evt.Item != nil && evt.Item.Type == "function_call" {
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Arguments != "" {
+				item.Arguments = evt.Item.Arguments
+			}
 			ctx.ToolBlockStarted = true
-			ctx.CurrentToolID = evt.Item.CallID
-			ctx.CurrentToolName = evt.Item.Name
-			ctx.ToolArguments = ""
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = item.Arguments
+			updateResponseOutputItemLookup(ctx, item)
 		}
 		return nil, nil
 
 	case "response.function_call_arguments.delta":
-		if ctx.ToolBlockStarted {
-			ctx.ToolArguments += evt.Delta
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil {
+			item.Arguments += evt.Delta
+			ctx.ToolArguments = item.Arguments
+			updateResponseOutputItemLookup(ctx, item)
+		}
+		return nil, nil
+
+	case "response.function_call_arguments.done":
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil {
+			item.DoneArguments = evt.Arguments
+			if evt.Arguments != "" {
+				item.Arguments = evt.Arguments
+				ctx.ToolArguments = evt.Arguments
+			}
+			updateResponseOutputItemLookup(ctx, item)
 		}
 		return nil, nil
 
 	case "response.output_item.done":
-		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Arguments != "" && item.DoneArguments == "" {
+				item.Arguments = evt.Item.Arguments
+			}
+			item.Completed = true
+			item.Status = "completed"
+			finalArgs := effectiveResponseItemArguments(item, evt.Item.Arguments)
 			ctx.ToolBlockStarted = false
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = finalArgs
+			updateResponseOutputItemLookup(ctx, item)
+
 			var args map[string]interface{}
-			if err := json.Unmarshal([]byte(ctx.ToolArguments), &args); err != nil {
+			if err := json.Unmarshal([]byte(finalArgs), &args); err != nil {
 				logger.Warn("Failed to parse tool arguments: %v", err)
-				args = map[string]interface{}{"raw": ctx.ToolArguments}
+				args = map[string]interface{}{"raw": finalArgs}
 			}
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{
-						{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
+						{"functionCall": map[string]interface{}{"name": item.Name, "args": args}},
 					}}},
 				},
 			}

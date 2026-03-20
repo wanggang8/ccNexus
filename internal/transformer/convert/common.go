@@ -139,16 +139,24 @@ func syncGeminiUsageMetadata(resp *transformer.GeminiResponse, ctx *transformer.
 	if resp.UsageMetadata.CandidatesTokenCount > 0 {
 		ctx.OutputTokens = resp.UsageMetadata.CandidatesTokenCount
 	}
+	if resp.UsageMetadata.TotalTokenCount > 0 {
+		ctx.TotalTokens = resp.UsageMetadata.TotalTokenCount
+		ctx.HasAuthoritativeTotalTokens = true
+	}
 }
 
 func currentOpenAIUsage(ctx *transformer.StreamContext) map[string]interface{} {
-	if ctx == nil || (ctx.InputTokens == 0 && ctx.OutputTokens == 0) {
+	if ctx == nil || (ctx.InputTokens == 0 && ctx.OutputTokens == 0 && ctx.TotalTokens == 0) {
 		return nil
+	}
+	total := ctx.InputTokens + ctx.OutputTokens
+	if ctx.HasAuthoritativeTotalTokens {
+		total = ctx.TotalTokens
 	}
 	return map[string]interface{}{
 		"prompt_tokens":     ctx.InputTokens,
 		"completion_tokens": ctx.OutputTokens,
-		"total_tokens":      ctx.InputTokens + ctx.OutputTokens,
+		"total_tokens":      total,
 	}
 }
 
@@ -160,6 +168,233 @@ func currentClaudeUsage(ctx *transformer.StreamContext) map[string]interface{} {
 		"input_tokens":  ctx.InputTokens,
 		"output_tokens": ctx.OutputTokens,
 	}
+}
+
+func syncOpenAIUsage(promptTokens, completionTokens, totalTokens int, ctx *transformer.StreamContext) {
+	if ctx == nil {
+		return
+	}
+	if promptTokens > 0 {
+		ctx.InputTokens = promptTokens
+	}
+	if completionTokens > 0 {
+		ctx.OutputTokens = completionTokens
+	}
+	if totalTokens > 0 {
+		ctx.TotalTokens = totalTokens
+		ctx.HasAuthoritativeTotalTokens = true
+	}
+}
+
+func currentResponsesUsage(ctx *transformer.StreamContext) map[string]interface{} {
+	if ctx == nil {
+		return map[string]interface{}{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+	}
+	total := ctx.InputTokens + ctx.OutputTokens
+	if ctx.HasAuthoritativeTotalTokens {
+		total = ctx.TotalTokens
+	}
+	return map[string]interface{}{
+		"input_tokens":  ctx.InputTokens,
+		"output_tokens": ctx.OutputTokens,
+		"total_tokens":  total,
+	}
+}
+
+func ensureResponseOutputItemMaps(ctx *transformer.StreamContext) {
+	if ctx == nil {
+		return
+	}
+	if ctx.ResponseOutputItems == nil {
+		ctx.ResponseOutputItems = make(map[int]*transformer.ResponseOutputItemState)
+	}
+	if ctx.ResponseOutputItemLookup == nil {
+		ctx.ResponseOutputItemLookup = make(map[string]*transformer.ResponseOutputItemState)
+	}
+}
+
+func responseItemLookupKeys(item *transformer.ResponseOutputItemState) []string {
+	if item == nil {
+		return nil
+	}
+	var keys []string
+	if item.ItemID != "" {
+		keys = append(keys, "item:"+item.ItemID)
+	}
+	if item.CallID != "" {
+		keys = append(keys, "call:"+item.CallID)
+	}
+	if item.OutputIndex >= 0 {
+		keys = append(keys, fmt.Sprintf("idx:%d", item.OutputIndex))
+	}
+	return keys
+}
+
+func registerResponseOutputItem(ctx *transformer.StreamContext, item *transformer.ResponseOutputItemState) *transformer.ResponseOutputItemState {
+	if ctx == nil || item == nil {
+		return item
+	}
+	ensureResponseOutputItemMaps(ctx)
+	ctx.ResponseOutputItems[item.OutputIndex] = item
+	for _, key := range responseItemLookupKeys(item) {
+		ctx.ResponseOutputItemLookup[key] = item
+	}
+	if item.OutputIndex >= ctx.NextResponseOutputIndex {
+		ctx.NextResponseOutputIndex = item.OutputIndex + 1
+	}
+	return item
+}
+
+func updateResponseOutputItemLookup(ctx *transformer.StreamContext, item *transformer.ResponseOutputItemState) {
+	if ctx == nil || item == nil {
+		return
+	}
+	ensureResponseOutputItemMaps(ctx)
+	ctx.ResponseOutputItems[item.OutputIndex] = item
+	for _, key := range responseItemLookupKeys(item) {
+		ctx.ResponseOutputItemLookup[key] = item
+	}
+}
+
+func bindResponseOutputItemAlias(ctx *transformer.StreamContext, alias string, item *transformer.ResponseOutputItemState) {
+	if ctx == nil || item == nil || alias == "" {
+		return
+	}
+	ensureResponseOutputItemMaps(ctx)
+	ctx.ResponseOutputItemLookup[alias] = item
+}
+
+func resolveResponseOutputItem(ctx *transformer.StreamContext, outputIndex *int, itemID, callID string) *transformer.ResponseOutputItemState {
+	if ctx == nil {
+		return nil
+	}
+	ensureResponseOutputItemMaps(ctx)
+	if itemID != "" {
+		if item, ok := ctx.ResponseOutputItemLookup["item:"+itemID]; ok {
+			return item
+		}
+	}
+	if callID != "" {
+		if item, ok := ctx.ResponseOutputItemLookup["call:"+callID]; ok {
+			return item
+		}
+	}
+	if outputIndex != nil {
+		if item, ok := ctx.ResponseOutputItems[*outputIndex]; ok {
+			return item
+		}
+		if item, ok := ctx.ResponseOutputItemLookup[fmt.Sprintf("idx:%d", *outputIndex)]; ok {
+			return item
+		}
+	}
+	return nil
+}
+
+func nextResponseOutputIndex(ctx *transformer.StreamContext) int {
+	ensureResponseOutputItemMaps(ctx)
+	idx := ctx.NextResponseOutputIndex
+	ctx.NextResponseOutputIndex++
+	return idx
+}
+
+func orderedResponseOutputItems(ctx *transformer.StreamContext) []*transformer.ResponseOutputItemState {
+	if ctx == nil {
+		return nil
+	}
+	ensureResponseOutputItemMaps(ctx)
+	items := make([]*transformer.ResponseOutputItemState, 0, len(ctx.ResponseOutputItems))
+	for idx := 0; idx < ctx.NextResponseOutputIndex; idx++ {
+		if item, ok := ctx.ResponseOutputItems[idx]; ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func effectiveResponseItemArguments(item *transformer.ResponseOutputItemState, fallback string) string {
+	if item != nil {
+		if item.DoneArguments != "" {
+			return item.DoneArguments
+		}
+		if item.Arguments != "" {
+			return item.Arguments
+		}
+	}
+	return fallback
+}
+
+func resolveOrCreateResponseFunctionItem(ctx *transformer.StreamContext, outputIndex *int, itemID, callID, name string) *transformer.ResponseOutputItemState {
+	item := resolveResponseOutputItem(ctx, outputIndex, itemID, callID)
+	if item != nil {
+		if itemID != "" && item.ItemID == "" {
+			item.ItemID = itemID
+		}
+		if callID != "" && item.CallID == "" {
+			item.CallID = callID
+		}
+		if name != "" && item.Name == "" {
+			item.Name = name
+		}
+		if item.Type == "" {
+			item.Type = "function_call"
+		}
+		updateResponseOutputItemLookup(ctx, item)
+		return item
+	}
+	idx := nextResponseOutputIndex(ctx)
+	if outputIndex != nil {
+		idx = *outputIndex
+		if idx >= ctx.NextResponseOutputIndex {
+			ctx.NextResponseOutputIndex = idx + 1
+		}
+	}
+	item = &transformer.ResponseOutputItemState{
+		Type:        "function_call",
+		OutputIndex: idx,
+		ItemID:      itemID,
+		CallID:      callID,
+		Name:        name,
+		Status:      "in_progress",
+	}
+	return registerResponseOutputItem(ctx, item)
+}
+
+func currentResponseFunctionItem(ctx *transformer.StreamContext) *transformer.ResponseOutputItemState {
+	if ctx == nil {
+		return nil
+	}
+	if item := resolveResponseOutputItem(ctx, nil, "", ctx.CurrentToolID); item != nil {
+		return item
+	}
+	for _, item := range orderedResponseOutputItems(ctx) {
+		if item != nil && item.Type == "function_call" && !item.Completed {
+			return item
+		}
+	}
+	return nil
+}
+
+func flattenOpenAI2ResponseOutput(parts []map[string]interface{}) []map[string]interface{} {
+	output := make([]map[string]interface{}, 0, len(parts))
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		output = append(output, part)
+	}
+	return output
+}
+
+func appendOpenAI2MessageItem(output []map[string]interface{}, role string, parts []map[string]interface{}) []map[string]interface{} {
+	if len(parts) == 0 {
+		return output
+	}
+	return append(output, map[string]interface{}{
+		"type":    "message",
+		"role":    role,
+		"status":  "completed",
+		"content": parts,
+	})
 }
 
 // extractSystemText extracts text from Claude system prompt

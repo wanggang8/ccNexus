@@ -397,15 +397,22 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if ctx.ContentBlockStarted {
 				accText := ctx.ContentText
 				ctx.ContentText = ""
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
-				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+				messageIndex := 0
+				for _, item := range orderedResponseOutputItems(ctx) {
+					if item != nil && item.Type == "message" {
+						messageIndex = item.OutputIndex
+						break
+					}
+				}
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": messageIndex, "content_index": 0, "text": accText})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": messageIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
+				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": messageIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
+					"usage": currentResponsesUsage(ctx),
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -431,12 +438,7 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	}
 
 	if chunk.Usage != nil {
-		if chunk.Usage.PromptTokens > 0 {
-			ctx.InputTokens = chunk.Usage.PromptTokens
-		}
-		if chunk.Usage.CompletionTokens > 0 {
-			ctx.OutputTokens = chunk.Usage.CompletionTokens
-		}
+		syncOpenAIUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.TotalTokens, ctx)
 	}
 
 	var result strings.Builder
@@ -460,19 +462,34 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 		// Handle text content
 		if delta.Content != "" {
+			var messageItem *transformer.ResponseOutputItemState
+			for _, item := range orderedResponseOutputItems(ctx) {
+				if item != nil && item.Type == "message" {
+					messageItem = item
+					break
+				}
+			}
+			if messageItem == nil {
+				messageItem = registerResponseOutputItem(ctx, &transformer.ResponseOutputItemState{
+					Type:        "message",
+					OutputIndex: nextResponseOutputIndex(ctx),
+					Role:        "assistant",
+					Status:      "in_progress",
+				})
+			}
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": 0,
+					"type": "response.output_item.added", "output_index": messageItem.OutputIndex,
 					"item": map[string]interface{}{"type": "message", "role": "assistant", "status": "in_progress", "content": []interface{}{}},
 				})
 				writeEvent(map[string]interface{}{
-					"type": "response.content_part.added", "output_index": 0, "content_index": 0,
+					"type": "response.content_part.added", "output_index": messageItem.OutputIndex, "content_index": 0,
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
 			ctx.ContentText += delta.Content
-			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": delta.Content})
+			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": messageItem.OutputIndex, "content_index": 0, "delta": delta.Content})
 		}
 
 		// Handle tool calls
@@ -481,20 +498,21 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
-			// M1: output_index starts after the text message (if any)
-			textOffset := 0
-			if ctx.ContentBlockStarted {
-				textOffset = 1
+			alias := fmt.Sprintf("openai-tool:%d", idx)
+			item := resolveResponseOutputItem(ctx, nil, "", "")
+			if ctx.ResponseOutputItemLookup != nil {
+				item = ctx.ResponseOutputItemLookup[alias]
 			}
-			outputIndex := idx + textOffset
-
-			// New tool call (has ID)
-			if tc.ID != "" {
-				ctx.ToolCallCounter++
-				ctx.CurrentToolID = tc.ID
-				ctx.CurrentToolName = tc.Function.Name
-				ctx.ToolArguments = ""
-				// Track this tool call for multi-tool-call completion
+			if item == nil {
+				outputIndex := nextResponseOutputIndex(ctx)
+				item = registerResponseOutputItem(ctx, &transformer.ResponseOutputItemState{
+					Type:        "function_call",
+					OutputIndex: outputIndex,
+					CallID:      tc.ID,
+					Name:        tc.Function.Name,
+					Status:      "in_progress",
+				})
+				bindResponseOutputItemAlias(ctx, alias, item)
 				ctx.ActiveToolCalls = append(ctx.ActiveToolCalls, transformer.ActiveToolCall{
 					ID:          tc.ID,
 					Name:        tc.Function.Name,
@@ -506,20 +524,32 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 					"item": map[string]interface{}{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": "", "status": "in_progress"},
 				})
 			}
-			// Accumulate arguments
+			if tc.ID != "" && item.CallID == "" {
+				item.CallID = tc.ID
+			}
+			if tc.Function.Name != "" && item.Name == "" {
+				item.Name = tc.Function.Name
+			}
+			ctx.CurrentToolID = item.CallID
+			ctx.CurrentToolName = item.Name
+			// Keep legacy fields in sync for existing tests/compatibility.
 			if tc.Function.Arguments != "" {
-				ctx.ToolArguments += tc.Function.Arguments
-				// Update the matching active tool call
+				item.Arguments += tc.Function.Arguments
+				ctx.ToolArguments = item.Arguments
 				for i := range ctx.ActiveToolCalls {
-					if ctx.ActiveToolCalls[i].ID == ctx.CurrentToolID {
-						ctx.ActiveToolCalls[i].Arguments += tc.Function.Arguments
+					if ctx.ActiveToolCalls[i].OutputIndex == item.OutputIndex || (item.CallID != "" && ctx.ActiveToolCalls[i].ID == item.CallID) {
+						ctx.ActiveToolCalls[i].ID = item.CallID
+						ctx.ActiveToolCalls[i].Name = item.Name
+						ctx.ActiveToolCalls[i].Arguments = item.Arguments
+						ctx.ActiveToolCalls[i].OutputIndex = item.OutputIndex
 						break
 					}
 				}
 				writeEvent(map[string]interface{}{
-					"type": "response.function_call_arguments.delta", "output_index": outputIndex, "delta": tc.Function.Arguments,
+					"type": "response.function_call_arguments.delta", "output_index": item.OutputIndex, "delta": tc.Function.Arguments,
 				})
 			}
+			updateResponseOutputItemLookup(ctx, item)
 		}
 
 		// Handle finish
@@ -527,26 +557,51 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if ctx.ContentBlockStarted {
 				accText := ctx.ContentText
 				ctx.ContentText = ""
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": accText})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
-				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+				for _, item := range orderedResponseOutputItems(ctx) {
+					if item != nil && item.Type == "message" {
+						writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": item.OutputIndex, "content_index": 0, "text": accText})
+						writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": item.OutputIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
+						writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": item.OutputIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+						item.Status = "completed"
+						item.Completed = true
+						updateResponseOutputItemLookup(ctx, item)
+						break
+					}
+				}
 				ctx.ContentBlockStarted = false
 			}
-			// Complete ALL active tool calls, not just the last one
-			if *finishReason == "tool_calls" && len(ctx.ActiveToolCalls) > 0 {
-				for _, atc := range ctx.ActiveToolCalls {
-					writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": atc.OutputIndex, "arguments": atc.Arguments})
+			if *finishReason == "tool_calls" {
+				for _, item := range orderedResponseOutputItems(ctx) {
+					if item == nil || item.Type != "function_call" || item.Completed {
+						continue
+					}
+					finalArgs := effectiveResponseItemArguments(item, item.Arguments)
+					item.DoneArguments = finalArgs
+					item.Arguments = finalArgs
+					item.Status = "completed"
+					item.Completed = true
+					for i := range ctx.ActiveToolCalls {
+						if ctx.ActiveToolCalls[i].OutputIndex == item.OutputIndex || (item.CallID != "" && ctx.ActiveToolCalls[i].ID == item.CallID) {
+							ctx.ActiveToolCalls[i].ID = item.CallID
+							ctx.ActiveToolCalls[i].Name = item.Name
+							ctx.ActiveToolCalls[i].Arguments = finalArgs
+							ctx.ActiveToolCalls[i].OutputIndex = item.OutputIndex
+							break
+						}
+					}
+					writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": item.OutputIndex, "arguments": finalArgs})
 					writeEvent(map[string]interface{}{
-						"type": "response.output_item.done", "output_index": atc.OutputIndex,
-						"item": map[string]interface{}{"type": "function_call", "call_id": atc.ID, "name": atc.Name, "arguments": atc.Arguments, "status": "completed"},
+						"type": "response.output_item.done", "output_index": item.OutputIndex,
+						"item": map[string]interface{}{"type": "function_call", "call_id": item.CallID, "name": item.Name, "arguments": finalArgs, "status": "completed"},
 					})
+					updateResponseOutputItemLookup(ctx, item)
 				}
 			}
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
+					"usage": currentResponsesUsage(ctx),
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -587,52 +642,98 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 
 	case "response.output_item.added":
 		if evt.Item != nil && evt.Item.Type == "function_call" {
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Status != "" {
+				item.Status = evt.Item.Status
+			}
+			if evt.Item.Arguments != "" {
+				item.Arguments = evt.Item.Arguments
+			}
+			if !item.HasLocalIndex {
+				item.LocalIndex = ctx.ToolIndex
+				item.HasLocalIndex = true
+				ctx.ToolIndex = item.LocalIndex + 1
+			}
 			ctx.ToolBlockStarted = true
-			ctx.CurrentToolID = evt.Item.CallID
-			ctx.CurrentToolName = evt.Item.Name
-			ctx.ToolArguments = ""
-			ctx.ToolIndex++
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = item.Arguments
+			updateResponseOutputItemLookup(ctx, item)
 		}
 		return nil, nil
 
 	case "response.function_call_arguments.delta":
-		if ctx.ToolBlockStarted {
-			ctx.ToolArguments += evt.Delta
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil {
+			item.Arguments += evt.Delta
+			ctx.ToolArguments = item.Arguments
+			updateResponseOutputItemLookup(ctx, item)
+		}
+		return nil, nil
+
+	case "response.function_call_arguments.done":
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil {
+			item.DoneArguments = evt.Arguments
+			if evt.Arguments != "" {
+				item.Arguments = evt.Arguments
+				ctx.ToolArguments = evt.Arguments
+			}
+			updateResponseOutputItemLookup(ctx, item)
 		}
 		return nil, nil
 
 	case "response.output_item.done":
-		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Arguments != "" && item.DoneArguments == "" {
+				item.Arguments = evt.Item.Arguments
+			}
+			item.Completed = true
+			item.Status = "completed"
+			finalArgs := effectiveResponseItemArguments(item, evt.Item.Arguments)
 			ctx.ToolBlockStarted = false
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = finalArgs
+			updateResponseOutputItemLookup(ctx, item)
 			return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-				{"index": ctx.ToolIndex, "id": ctx.CurrentToolID, "type": "function",
-					"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ctx.ToolArguments}},
+				{"index": item.LocalIndex, "id": ctx.CurrentToolID, "type": "function",
+					"function": map[string]interface{}{"name": item.Name, "arguments": finalArgs}},
 			}, "")
 		}
 		return nil, nil
 
 	case "response.completed":
 		if evt.Response != nil {
-			if evt.Response.Usage.InputTokens > 0 {
-				ctx.InputTokens = evt.Response.Usage.InputTokens
-			}
-			if evt.Response.Usage.OutputTokens > 0 {
-				ctx.OutputTokens = evt.Response.Usage.OutputTokens
-			}
+			syncOpenAIUsage(evt.Response.Usage.InputTokens, evt.Response.Usage.OutputTokens, evt.Response.Usage.TotalTokens, ctx)
 		}
 		finishReason := "stop"
-		if ctx.CurrentToolID != "" {
-			finishReason = "tool_calls"
+		for _, item := range orderedResponseOutputItems(ctx) {
+			if item != nil && item.Type == "function_call" {
+				finishReason = "tool_calls"
+				break
+			}
 		}
-		usage := map[string]interface{}{
-			"prompt_tokens":     ctx.InputTokens,
-			"completion_tokens": ctx.OutputTokens,
-			"total_tokens":      ctx.InputTokens + ctx.OutputTokens,
-		}
-		if evt.Response != nil && evt.Response.Usage.TotalTokens > 0 {
-			usage["total_tokens"] = evt.Response.Usage.TotalTokens
-		}
-		return buildOpenAIChunkWithUsage(ctx.MessageID, model, "", nil, finishReason, usage)
+		return buildOpenAIChunkWithUsage(ctx.MessageID, model, "", nil, finishReason, currentOpenAIUsage(ctx))
 	}
 
 	return nil, nil

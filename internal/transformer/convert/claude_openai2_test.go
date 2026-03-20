@@ -507,6 +507,40 @@ func TestClaudeRespToOpenAI2_WithThinking(t *testing.T) {
 	}
 }
 
+func TestClaudeRespToOpenAI2_PreservesContentOrder(t *testing.T) {
+	claudeResp := `{
+		"id": "msg_order",
+		"type": "message",
+		"role": "assistant",
+		"content": [
+			{"type": "tool_use", "id": "toolu_early", "name": "read_file", "input": {"path": "/tmp/a"}},
+			{"type": "text", "text": "Done."}
+		],
+		"model": "claude-sonnet-4-20250514",
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+
+	result, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Resp map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Resp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	output := openai2Resp["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("Expected 2 output items, got %d", len(output))
+	}
+	first := output[0].(map[string]interface{})
+	if first["type"] != "function_call" {
+		t.Fatalf("expected first output item to preserve tool order, got %#v", first)
+	}
+}
+
 func TestClaudeRespToOpenAI2_InvalidJSON(t *testing.T) {
 	_, err := ClaudeRespToOpenAI2([]byte("not valid json"))
 	if err == nil {
@@ -669,6 +703,37 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use"
 	}
 	if !strings.Contains(resultStr, "function_call") {
 		t.Errorf("Expected 'function_call' in result, got '%s'", resultStr)
+	}
+}
+
+func TestClaudeStreamToOpenAI2_UsesStableOutputIndexes(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+
+	textStart := `event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}
+
+`
+	toolStart := `event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
+
+`
+
+	out1, err := ClaudeStreamToOpenAI2([]byte(textStart), ctx)
+	if err != nil {
+		t.Fatalf("text start failed: %v", err)
+	}
+	out2, err := ClaudeStreamToOpenAI2([]byte(toolStart), ctx)
+	if err != nil {
+		t.Fatalf("tool start failed: %v", err)
+	}
+
+	combined := string(out1) + string(out2)
+	if !strings.Contains(combined, `"output_index":0`) {
+		t.Fatalf("expected first emitted item to use stable index 0, got: %s", combined)
+	}
+	if !strings.Contains(combined, `"output_index":1`) {
+		t.Fatalf("expected second emitted item to use stable index 1, got: %s", combined)
 	}
 }
 

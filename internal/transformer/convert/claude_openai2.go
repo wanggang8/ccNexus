@@ -211,8 +211,12 @@ func ClaudeRespToOpenAI2(claudeResp []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	var outputContent []map[string]interface{}
-	var functionCalls []map[string]interface{}
+	var output []map[string]interface{}
+	var messageParts []map[string]interface{}
+	flushMessage := func() {
+		output = appendOpenAI2MessageItem(output, "assistant", messageParts)
+		messageParts = nil
+	}
 
 	for _, block := range resp.Content {
 		blockMap, ok := block.(map[string]interface{})
@@ -221,34 +225,26 @@ func ClaudeRespToOpenAI2(claudeResp []byte) ([]byte, error) {
 		}
 		switch blockMap["type"] {
 		case "text":
-			outputContent = append(outputContent, map[string]interface{}{
+			messageParts = append(messageParts, map[string]interface{}{
 				"type": "output_text",
 				"text": blockMap["text"],
 			})
 		case "thinking":
-			// Skip thinking blocks in response
 			continue
 		case "tool_use":
+			flushMessage()
 			args, _ := json.Marshal(blockMap["input"])
-			functionCalls = append(functionCalls, map[string]interface{}{
+			output = append(output, map[string]interface{}{
 				"type":      "function_call",
 				"id":        blockMap["id"],
 				"call_id":   blockMap["id"],
 				"name":      blockMap["name"],
 				"arguments": string(args),
+				"status":    "completed",
 			})
 		}
 	}
-
-	var output []map[string]interface{}
-	if len(outputContent) > 0 {
-		output = append(output, map[string]interface{}{
-			"type":    "message",
-			"role":    "assistant",
-			"content": outputContent,
-		})
-	}
-	output = append(output, functionCalls...)
+	flushMessage()
 
 	openai2Resp := map[string]interface{}{
 		"id":     resp.ID,
@@ -379,35 +375,49 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 		switch block["type"] {
 		case "text":
+			itemID := fmt.Sprintf("msg_%s_%d", ctx.MessageID, blockIdx)
+			messageItem := &transformer.ResponseOutputItemState{
+				Type:        "message",
+				OutputIndex: nextResponseOutputIndex(ctx),
+				ItemID:      itemID,
+				Role:        "assistant",
+				Status:      "in_progress",
+			}
+			registerResponseOutputItem(ctx, messageItem)
+			bindResponseOutputItemAlias(ctx, fmt.Sprintf("claude-block:%d", blockIdx), messageItem)
 			ctx.ContentBlockStarted = true
-			ctx.ContentIndex = blockIdx
-			// output_item.added
+			ctx.ContentIndex = messageItem.OutputIndex
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.added", "output_index": blockIdx,
+				"type": "response.output_item.added", "output_index": messageItem.OutputIndex,
 				"item": map[string]interface{}{
-					"type": "message", "id": fmt.Sprintf("msg_%s_%d", ctx.MessageID, blockIdx),
+					"type": "message", "id": itemID,
 					"role": "assistant", "status": "in_progress", "content": []interface{}{},
 				},
 			})
-			// content_part.added
 			writeEvent(map[string]interface{}{
-				"type": "response.content_part.added", "output_index": blockIdx, "content_index": 0,
+				"type": "response.content_part.added", "output_index": messageItem.OutputIndex, "content_index": 0,
 				"part": map[string]interface{}{"type": "output_text", "text": ""},
 			})
 		case "tool_use":
+			callID, _ := block["id"].(string)
+			name, _ := block["name"].(string)
+			toolItem := resolveOrCreateResponseFunctionItem(ctx, nil, callID, callID, name)
+			toolItem.Status = "in_progress"
+			bindResponseOutputItemAlias(ctx, fmt.Sprintf("claude-block:%d", blockIdx), toolItem)
 			ctx.ToolBlockStarted = true
-			ctx.ToolIndex = blockIdx
-			ctx.CurrentToolID, _ = block["id"].(string)
-			ctx.CurrentToolName, _ = block["name"].(string)
-			// output_item.added for function_call
+			ctx.ToolIndex = toolItem.OutputIndex
+			ctx.CurrentToolID = toolItem.CallID
+			ctx.CurrentToolName = toolItem.Name
+			ctx.ToolArguments = toolItem.Arguments
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.added", "output_index": blockIdx,
+				"type": "response.output_item.added", "output_index": toolItem.OutputIndex,
 				"item": map[string]interface{}{
-					"type": "function_call", "id": ctx.CurrentToolID,
-					"call_id": ctx.CurrentToolID, "name": ctx.CurrentToolName,
+					"type": "function_call", "id": toolItem.ItemID,
+					"call_id": toolItem.CallID, "name": toolItem.Name,
 					"arguments": "", "status": "in_progress",
 				},
 			})
+			updateResponseOutputItemLookup(ctx, toolItem)
 		}
 
 	case "content_block_delta":
@@ -426,6 +436,11 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		case "input_json_delta":
 			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
+			if item := resolveResponseOutputItem(ctx, nil, "", ctx.CurrentToolID); item != nil {
+				item.Arguments += partial
+				ctx.ToolIndex = item.OutputIndex
+				updateResponseOutputItemLookup(ctx, item)
+			}
 			writeEvent(map[string]interface{}{
 				"type":         "response.function_call_arguments.delta",
 				"output_index": ctx.ToolIndex, "delta": partial,
@@ -435,41 +450,51 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	case "content_block_stop":
 		idx, _ := data["index"].(float64)
 		blockIdx := int(idx)
+		alias := fmt.Sprintf("claude-block:%d", blockIdx)
+		item := resolveResponseOutputItem(ctx, nil, "", "")
+		if ctx.ResponseOutputItemLookup != nil {
+			item = ctx.ResponseOutputItemLookup[alias]
+		}
 
-		if ctx.ToolBlockStarted && blockIdx == ctx.ToolIndex {
-			// function_call_arguments.done
+		if ctx.ToolBlockStarted && item != nil && item.Type == "function_call" {
+			finalArgs := effectiveResponseItemArguments(item, ctx.ToolArguments)
+			item.DoneArguments = finalArgs
+			item.Arguments = finalArgs
+			item.Status = "completed"
+			item.Completed = true
+			updateResponseOutputItemLookup(ctx, item)
 			writeEvent(map[string]interface{}{
 				"type":         "response.function_call_arguments.done",
-				"output_index": blockIdx, "arguments": ctx.ToolArguments,
+				"output_index": item.OutputIndex, "arguments": finalArgs,
 			})
-			// output_item.done for function_call
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.done", "output_index": blockIdx,
+				"type": "response.output_item.done", "output_index": item.OutputIndex,
 				"item": map[string]interface{}{
-					"type": "function_call", "id": ctx.CurrentToolID,
-					"call_id": ctx.CurrentToolID, "name": ctx.CurrentToolName,
-					"arguments": ctx.ToolArguments, "status": "completed",
+					"type": "function_call", "id": item.ItemID,
+					"call_id": item.CallID, "name": item.Name,
+					"arguments": finalArgs, "status": "completed",
 				},
 			})
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
-		} else if ctx.ContentBlockStarted && blockIdx == ctx.ContentIndex {
+		} else if ctx.ContentBlockStarted && item != nil && item.Type == "message" {
 			accumulatedText := ctx.ContentText
 			ctx.ContentText = ""
+			item.Status = "completed"
+			item.Completed = true
+			updateResponseOutputItemLookup(ctx, item)
 			writeEvent(map[string]interface{}{
-				"type": "response.output_text.done", "output_index": blockIdx, "content_index": 0,
+				"type": "response.output_text.done", "output_index": item.OutputIndex, "content_index": 0,
 				"text": accumulatedText,
 			})
-			// content_part.done
 			writeEvent(map[string]interface{}{
-				"type": "response.content_part.done", "output_index": blockIdx, "content_index": 0,
+				"type": "response.content_part.done", "output_index": item.OutputIndex, "content_index": 0,
 				"part": map[string]interface{}{"type": "output_text", "text": accumulatedText},
 			})
-			// output_item.done
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.done", "output_index": blockIdx,
+				"type": "response.output_item.done", "output_index": item.OutputIndex,
 				"item": map[string]interface{}{
-					"type": "message", "id": fmt.Sprintf("msg_%s_%d", ctx.MessageID, blockIdx),
+					"type": "message", "id": item.ItemID,
 					"role": "assistant", "status": "completed",
 				},
 			})
@@ -488,10 +513,7 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			"type": "response.completed",
 			"response": map[string]interface{}{
 				"id": ctx.MessageID, "object": "response", "status": "completed",
-				"usage": map[string]interface{}{
-					"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens,
-					"total_tokens": ctx.InputTokens + ctx.OutputTokens,
-				},
+				"usage": currentResponsesUsage(ctx),
 			},
 		})
 		result.WriteString("data: [DONE]\n\n")
@@ -525,8 +547,11 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 			}
 			if !ctx.FinishReasonSent {
 				stopReason := "end_turn"
-				if ctx.ToolIndex > 0 || ctx.CurrentToolID != "" {
-					stopReason = "tool_use"
+				for _, item := range orderedResponseOutputItems(ctx) {
+					if item != nil && item.Type == "function_call" {
+						stopReason = "tool_use"
+						break
+					}
 				}
 				result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 					"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
@@ -551,12 +576,7 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 	case "response.created":
 		if evt.Response != nil {
 			ctx.MessageID = evt.Response.ID
-			if evt.Response.Usage.InputTokens > 0 {
-				ctx.InputTokens = evt.Response.Usage.InputTokens
-			}
-			if evt.Response.Usage.OutputTokens > 0 {
-				ctx.OutputTokens = evt.Response.Usage.OutputTokens
-			}
+			syncOpenAIUsage(evt.Response.Usage.InputTokens, evt.Response.Usage.OutputTokens, evt.Response.Usage.TotalTokens, ctx)
 		}
 		result = append(result, buildClaudeEvent("message_start", map[string]interface{}{
 			"message": map[string]interface{}{
@@ -600,50 +620,95 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ThinkingIndex})...)
 				ctx.ThinkingBlockStarted = false
 			}
-			// Close text block if open
 			if ctx.ContentBlockStarted {
 				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ContentIndex})...)
 				ctx.ContentBlockStarted = false
 				ctx.ContentIndex++
 			}
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Arguments != "" {
+				item.Arguments = evt.Item.Arguments
+			}
 			ctx.ToolBlockStarted = true
 			ctx.ToolIndex = ctx.ContentIndex
-			ctx.CurrentToolID = evt.Item.CallID
+			ctx.CurrentToolID = item.CallID
 			if ctx.CurrentToolID == "" {
-				ctx.CurrentToolID = evt.Item.ID
+				ctx.CurrentToolID = item.ItemID
 			}
-			ctx.CurrentToolName = evt.Item.Name
-			ctx.ToolArguments = ""
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = item.Arguments
 			result = append(result, buildClaudeEvent("content_block_start", map[string]interface{}{
 				"index": ctx.ToolIndex, "content_block": map[string]interface{}{
 					"type": "tool_use", "id": ctx.CurrentToolID, "name": ctx.CurrentToolName, "input": map[string]interface{}{},
 				},
 			})...)
+			updateResponseOutputItemLookup(ctx, item)
 		}
 
 	case "response.function_call_arguments.delta":
-		if ctx.ToolBlockStarted {
-			ctx.ToolArguments += evt.Delta
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil && ctx.ToolBlockStarted {
+			item.Arguments += evt.Delta
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = item.Arguments
 			result = append(result, buildClaudeEvent("content_block_delta", map[string]interface{}{
 				"index": ctx.ToolIndex, "delta": map[string]interface{}{"type": "input_json_delta", "partial_json": evt.Delta},
 			})...)
+			updateResponseOutputItemLookup(ctx, item)
+		}
+
+	case "response.function_call_arguments.done":
+		item := resolveResponseOutputItem(ctx, evt.OutputIndex, evt.ItemID, "")
+		if item == nil {
+			item = currentResponseFunctionItem(ctx)
+		}
+		if item != nil {
+			item.DoneArguments = evt.Arguments
+			if evt.Arguments != "" {
+				item.Arguments = evt.Arguments
+				ctx.ToolArguments = evt.Arguments
+			}
+			updateResponseOutputItemLookup(ctx, item)
 		}
 
 	case "response.output_item.done":
-		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
-			result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
-			ctx.ToolBlockStarted = false
-			ctx.ContentIndex++
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			item := resolveOrCreateResponseFunctionItem(ctx, evt.OutputIndex, evt.ItemID, evt.Item.CallID, evt.Item.Name)
+			if evt.Item.ID != "" && item.ItemID == "" {
+				item.ItemID = evt.Item.ID
+			}
+			if evt.Item.Arguments != "" && item.DoneArguments == "" {
+				item.Arguments = evt.Item.Arguments
+			}
+			item.Completed = true
+			item.Status = "completed"
+			ctx.CurrentToolID = item.CallID
+			if ctx.CurrentToolID == "" {
+				ctx.CurrentToolID = item.ItemID
+			}
+			ctx.CurrentToolName = item.Name
+			ctx.ToolArguments = effectiveResponseItemArguments(item, evt.Item.Arguments)
+			updateResponseOutputItemLookup(ctx, item)
+			if ctx.ToolBlockStarted {
+				result = append(result, buildClaudeEvent("content_block_stop", map[string]interface{}{"index": ctx.ToolIndex})...)
+				ctx.ToolBlockStarted = false
+				ctx.ContentIndex++
+			}
 		}
 
 	case "response.completed":
 		if evt.Response != nil {
-			if evt.Response.Usage.InputTokens > 0 {
-				ctx.InputTokens = evt.Response.Usage.InputTokens
-			}
-			if evt.Response.Usage.OutputTokens > 0 {
-				ctx.OutputTokens = evt.Response.Usage.OutputTokens
-			}
+			syncOpenAIUsage(evt.Response.Usage.InputTokens, evt.Response.Usage.OutputTokens, evt.Response.Usage.TotalTokens, ctx)
 		}
 		emitText, emitThinking := makeThinkEmitters(ctx, &result)
 		flushThinkTaggedStream(ctx, emitText, emitThinking)
@@ -656,8 +721,11 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 			ctx.ContentBlockStarted = false
 		}
 		stopReason := "end_turn"
-		if ctx.ToolIndex > 0 || ctx.CurrentToolID != "" {
-			stopReason = "tool_use"
+		for _, item := range orderedResponseOutputItems(ctx) {
+			if item != nil && item.Type == "function_call" {
+				stopReason = "tool_use"
+				break
+			}
 		}
 		result = append(result, buildClaudeEvent("message_delta", map[string]interface{}{
 			"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},

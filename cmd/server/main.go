@@ -76,7 +76,9 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- p.StartWithMux(mux, api.CORSMiddleware)
+		errCh <- p.StartWithMux(mux, func(next http.Handler) http.Handler {
+			return routeAllowlistMiddleware(api.CORSMiddleware(next))
+		})
 	}()
 
 	logger.Info("ccNexus headless API listening on :%d (data dir: %s, db: %s)", cfg.GetPort(), dataDir, dbPath)
