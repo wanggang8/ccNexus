@@ -2,6 +2,7 @@ package augment
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // toOpenAIRequest converts an AugmentRequest to an OpenAI Chat Completions API request body.
@@ -31,11 +32,11 @@ func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	var messages []map[string]interface{}
 
-	// System message from user_guidelines.
-	if ar.UserGuidelines != "" {
+	// System message from workspace_guidelines -> user_guidelines -> context(lang/path).
+	if systemText := buildCommonSystemText(ar); systemText != "" {
 		messages = append(messages, map[string]interface{}{
 			"role":    "system",
-			"content": ar.UserGuidelines,
+			"content": systemText,
 		})
 	}
 
@@ -45,15 +46,17 @@ func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	}
 
 	// Current turn.
-	appendOpenAICurrentTurn(&messages, ar.Nodes, ar.Message, ar.Images)
+	appendOpenAICurrentTurn(&messages, ar.EffectiveCurrentNodes(), ar.Message, ar.Images, ar.EffectiveContext())
 
 	return messages
 }
 
 func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistoryEntry) {
+	requestNodes := entry.EffectiveRequestNodes()
+
 	// User side.
-	if len(entry.RequestNodes) > 0 {
-		appendOpenAINodesAsUser(msgs, entry.RequestNodes, entry.RequestMessage, nil)
+	if len(requestNodes) > 0 {
+		appendOpenAINodesAsUser(msgs, requestNodes, entry.RequestMessage, nil, nil)
 	} else if entry.RequestMessage != "" {
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": entry.RequestMessage})
 	}
@@ -62,25 +65,17 @@ func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	appendOpenAIResponseNodes(msgs, entry.ResponseText, entry.ResponseNodes)
 }
 
-func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string) {
-	if len(nodes) == 0 {
-		if message != "" || len(images) > 0 {
-			msg := map[string]interface{}{"role": "user", "content": message}
-			appendOpenAITopLevelImages(msg, images)
-			*msgs = append(*msgs, msg)
-		}
-		return
-	}
-	appendOpenAINodesAsUser(msgs, nodes, message, images)
+func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string, ctx *ContextBlock) {
+	appendOpenAINodesAsUser(msgs, nodes, message, images, ctx)
 }
 
-func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string) {
+func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string, ctx *ContextBlock) {
 	// Tool results (type=1) → tool role messages.
 	// OpenAI requires that tool messages are preceded by an assistant message with tool_calls.
 	// Check if the last message already has matching tool_calls; if not, synthesize one.
-	if toolResults := extractToolResults(nodes); len(toolResults) > 0 {
+	if toolResults := extractToolResultNodes(nodes); len(toolResults) > 0 {
 		if !lastMessageHasToolCalls(*msgs, toolResults) {
-			// L6: Build tool_use_id→name map from response nodes (type=5) in the same node set
+			// Build tool_use_id→name map from response nodes (type=5) in the same node set.
 			toolIDToName := make(map[string]string)
 			for _, n := range nodes {
 				if n.Type == 5 && n.ToolUse != nil {
@@ -89,12 +84,13 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 			}
 			var syntheticToolCalls []map[string]interface{}
 			for _, tr := range toolResults {
-				funcName := toolIDToName[tr.ToolUseID]
+				toolID := tr.EffectiveToolUseID()
+				funcName := toolIDToName[toolID]
 				if funcName == "" {
 					funcName = "unknown_tool"
 				}
 				syntheticToolCalls = append(syntheticToolCalls, map[string]interface{}{
-					"id":   tr.ToolUseID,
+					"id":   toolID,
 					"type": "function",
 					"function": map[string]interface{}{
 						"name":      funcName,
@@ -111,23 +107,14 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 		for _, tr := range toolResults {
 			*msgs = append(*msgs, map[string]interface{}{
 				"role":         "tool",
-				"tool_call_id": tr.ToolUseID,
-				"content":      tr.Content,
+				"tool_call_id": tr.EffectiveToolUseID(),
+				"content":      buildOpenAIToolResultContent(tr),
 			})
 		}
 	}
 
 	// Text + IDE state + images → user message.
-	// Prefer text extracted from nodes; fall back to the plain-text message field.
-	text := extractText(nodes)
-	if text == "" {
-		text = fallbackText
-	}
-	ideState := extractIdeState(nodes)
-	if ideState != "" && !ideStateDuplicate(*msgs, ideState) {
-		text += "\n\n[ide_state]\n" + ideState
-	}
-
+	text := buildUserPromptText(*msgs, nodes, fallbackText, ctx)
 	imageBlocks := extractImageBlocks(nodes)
 
 	if text != "" || len(imageBlocks) > 0 || len(topImages) > 0 {
@@ -238,9 +225,30 @@ func buildOpenAITools(defs []ToolDefinition) []map[string]interface{} {
 	return tools
 }
 
+func buildOpenAIToolResultContent(tr *ToolResultNode) interface{} {
+	if tr == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(tr.ContentNodes))
+	for _, node := range tr.ContentNodes {
+		switch node.EffectiveType() {
+		case "text":
+			if text := strings.TrimSpace(node.EffectiveText()); text != "" {
+				parts = append(parts, text)
+			}
+		case "image":
+			parts = append(parts, buildOpenAIToolResultImageFallbackText(&node))
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
+	}
+	return tr.EffectiveContent()
+}
+
 // lastMessageHasToolCalls checks if the last assistant message already contains tool_calls
 // matching the given tool results. This avoids inserting a duplicate synthetic assistant message.
-func lastMessageHasToolCalls(msgs []map[string]interface{}, results []toolResult) bool {
+func lastMessageHasToolCalls(msgs []map[string]interface{}, results []*ToolResultNode) bool {
 	if len(msgs) == 0 {
 		return false
 	}
@@ -248,18 +256,36 @@ func lastMessageHasToolCalls(msgs []map[string]interface{}, results []toolResult
 	if last["role"] != "assistant" {
 		return false
 	}
-	tcs, ok := last["tool_calls"].([]map[string]interface{})
+	rawToolCalls, ok := last["tool_calls"].([]interface{})
 	if !ok {
+		if typedToolCalls, ok := last["tool_calls"].([]map[string]interface{}); ok {
+			ids := make(map[string]bool, len(typedToolCalls))
+			for _, tc := range typedToolCalls {
+				if id, ok := tc["id"].(string); ok {
+					ids[id] = true
+				}
+			}
+			for _, tr := range results {
+				if !ids[tr.EffectiveToolUseID()] {
+					return false
+				}
+			}
+			return true
+		}
 		return false
 	}
-	ids := make(map[string]bool, len(tcs))
-	for _, tc := range tcs {
+	ids := make(map[string]bool, len(rawToolCalls))
+	for _, raw := range rawToolCalls {
+		tc, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
 		if id, ok := tc["id"].(string); ok {
 			ids[id] = true
 		}
 	}
 	for _, tr := range results {
-		if !ids[tr.ToolUseID] {
+		if !ids[tr.EffectiveToolUseID()] {
 			return false
 		}
 	}

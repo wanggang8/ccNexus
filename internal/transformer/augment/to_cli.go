@@ -90,9 +90,9 @@ func initCLIMetadata() {
 func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 	initCLIMetadata()
 
-	messages := buildClaudeMessages(ar)
+	messages, currentMessageCount := buildClaudeMessagesWithCurrentCount(ar)
 	tools := buildClaudeTools(ar.EffectiveTools())
-	system := buildCliSystem(ar.UserGuidelines)
+	system := buildCliSystem(ar)
 	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
 	// Prompt Caching — three levels (tools → system → last history message).
@@ -102,7 +102,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 	if len(system) > 0 {
 		setClaudeCacheControlBlock(system[0])
 	}
-	if histEnd := len(messages) - countCurrentMessages(ar); histEnd > 0 {
+	if histEnd := len(messages) - currentMessageCount; histEnd > 0 {
 		addCacheControlToMessage(messages[histEnd-1])
 	}
 
@@ -132,7 +132,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 }
 
 // buildCliSystem builds the system content array with CLI-specific prompt.
-func buildCliSystem(userGuidelines string) []map[string]interface{} {
+func buildCliSystem(ar *AugmentRequest) []map[string]interface{} {
 	system := []map[string]interface{}{
 		{
 			"type":          "text",
@@ -141,10 +141,10 @@ func buildCliSystem(userGuidelines string) []map[string]interface{} {
 		},
 	}
 
-	if userGuidelines != "" {
+	if commonText := buildCommonSystemText(ar); commonText != "" {
 		system = append(system, map[string]interface{}{
 			"type": "text",
-			"text": userGuidelines,
+			"text": commonText,
 		})
 	}
 

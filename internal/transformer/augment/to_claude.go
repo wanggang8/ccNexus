@@ -3,6 +3,7 @@ package augment
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -10,9 +11,9 @@ import (
 // The same format is used for both "claude" and "cli" target types; the server
 // layer adds the extra anthropic-beta headers required by the CLI variant.
 func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
-	messages := buildClaudeMessages(ar)
+	messages, currentMessageCount := buildClaudeMessagesWithCurrentCount(ar)
 	tools := buildClaudeTools(ar.EffectiveTools())
-	system := buildClaudeSystem(ar.UserGuidelines)
+	system := buildClaudeSystem(ar)
 	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
 	// Prompt Caching — three levels (tools → system → last history message).
@@ -22,7 +23,7 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 	if len(system) > 0 {
 		setClaudeCacheControlBlock(system[0])
 	}
-	if histEnd := len(messages) - countCurrentMessages(ar); histEnd > 0 {
+	if histEnd := len(messages) - currentMessageCount; histEnd > 0 {
 		addCacheControlToMessage(messages[histEnd-1])
 	}
 
@@ -47,20 +48,28 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 
 // buildClaudeMessages converts chat history + current turn to Claude messages.
 func buildClaudeMessages(ar *AugmentRequest) []map[string]interface{} {
+	messages, _ := buildClaudeMessagesWithCurrentCount(ar)
+	return messages
+}
+
+func buildClaudeMessagesWithCurrentCount(ar *AugmentRequest) ([]map[string]interface{}, int) {
 	var messages []map[string]interface{}
 
 	for _, entry := range ar.ChatHistory {
 		appendClaudeHistoryEntry(&messages, &entry)
 	}
-	appendClaudeCurrentTurn(&messages, ar.Nodes, ar.Message, ar.Images)
+	currentStart := len(messages)
+	appendClaudeCurrentTurn(&messages, ar.EffectiveCurrentNodes(), ar.Message, ar.Images, ar.EffectiveContext())
 
-	return messages
+	return messages, len(messages) - currentStart
 }
 
 func appendClaudeHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistoryEntry) {
+	requestNodes := entry.EffectiveRequestNodes()
+
 	// User side
-	if len(entry.RequestNodes) > 0 {
-		appendClaudeNodesAsUser(msgs, entry.RequestNodes, entry.RequestMessage, nil)
+	if len(requestNodes) > 0 {
+		appendClaudeNodesAsUser(msgs, requestNodes, entry.RequestMessage, nil, nil)
 	} else if entry.RequestMessage != "" {
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": entry.RequestMessage})
 	}
@@ -69,29 +78,24 @@ func appendClaudeHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	appendClaudeResponseNodes(msgs, entry.ResponseText, entry.ResponseNodes)
 }
 
-func appendClaudeCurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string) {
-	if len(nodes) == 0 {
-		if message != "" || len(images) > 0 {
-			msg := map[string]interface{}{"role": "user", "content": message}
-			appendTopLevelImages(msg, images)
-			*msgs = append(*msgs, msg)
-		}
-		return
-	}
-	appendClaudeNodesAsUser(msgs, nodes, message, images)
+func appendClaudeCurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string, ctx *ContextBlock) {
+	appendClaudeNodesAsUser(msgs, nodes, message, images, ctx)
 }
 
-func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string) {
+func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string, ctx *ContextBlock) {
 	// tool_result (type=1) must be a separate user message.
-	if toolResults := extractToolResults(nodes); len(toolResults) > 0 {
+	if toolResults := extractToolResultNodes(nodes); len(toolResults) > 0 {
 		content := make([]map[string]interface{}, 0, len(toolResults))
 		for _, tr := range toolResults {
 			block := map[string]interface{}{
 				"type":        "tool_result",
-				"tool_use_id": tr.ToolUseID,
-				"content":     tr.Content,
+				"tool_use_id": tr.EffectiveToolUseID(),
+				"content":     buildClaudeToolResultContent(tr),
 			}
-			if len(tr.Content) >= minCacheSizeBytes {
+			if tr.IsError {
+				block["is_error"] = true
+			}
+			if contentText, ok := block["content"].(string); ok && len(contentText) >= minCacheSizeBytes {
 				block["cache_control"] = map[string]interface{}{"type": "ephemeral"}
 			}
 			content = append(content, block)
@@ -99,23 +103,11 @@ func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
 	}
 
-	// Text + IDE state + images.
-	// Prefer text extracted from nodes; fall back to the plain-text message field.
-	text := extractText(nodes)
-	if text == "" {
-		text = fallbackText
-	}
-	ideState := extractIdeState(nodes)
-	if ideState != "" && !ideStateDuplicate(*msgs, ideState) {
-		text += "\n\n[ide_state]\n" + ideState
-	}
-
+	text := buildUserPromptText(*msgs, nodes, fallbackText, ctx)
 	imageBlocks := extractImageBlocks(nodes)
 
 	imageParts := make([]map[string]interface{}, 0, len(imageBlocks)+len(topImages))
-	for _, img := range imageBlocks {
-		imageParts = append(imageParts, img)
-	}
+	imageParts = append(imageParts, imageBlocks...)
 	for _, raw := range topImages {
 		if block := buildClaudeImageBlock(raw, defaultImageMediaType); block != nil {
 			imageParts = append(imageParts, block)
@@ -154,9 +146,11 @@ func appendClaudeResponseNodes(msgs *[]map[string]interface{}, text string, node
 	for _, n := range nodes {
 		switch n.Type {
 		case 0:
-			if n.TextNode != nil && n.TextNode.Content != "" {
-				content = append(content, map[string]interface{}{"type": "text", "text": n.TextNode.Content})
-				hasTextBlock = true
+			if n.TextNode != nil {
+				if nodeText := n.TextNode.EffectiveContent(); nodeText != "" {
+					content = append(content, map[string]interface{}{"type": "text", "text": nodeText})
+					hasTextBlock = true
+				}
 			}
 		case 8:
 			if n.Thinking != nil {
@@ -212,12 +206,12 @@ func buildClaudeTools(defs []ToolDefinition) []map[string]interface{} {
 }
 
 // buildClaudeSystem builds the system content array.
-func buildClaudeSystem(userGuidelines string) []map[string]interface{} {
-	var system []map[string]interface{}
-	if userGuidelines != "" {
-		system = append(system, map[string]interface{}{"type": "text", "text": userGuidelines})
+func buildClaudeSystem(ar *AugmentRequest) []map[string]interface{} {
+	systemText := buildCommonSystemText(ar)
+	if systemText == "" {
+		return nil
 	}
-	return system
+	return []map[string]interface{}{{"type": "text", "text": systemText}}
 }
 
 // --- cache control helpers ---
@@ -253,58 +247,259 @@ func addCacheControlToMessage(msg map[string]interface{}) {
 	}
 }
 
-// countCurrentMessages returns the number of messages added by the current turn
-// (used to find the boundary between history and current turn for cache marking).
+// countCurrentMessages returns the exact number of messages added by the current
+// turn by reusing the same message construction path as the real request build.
 func countCurrentMessages(ar *AugmentRequest) int {
-	if len(ar.Nodes) == 0 && ar.Message == "" {
+	if ar == nil {
 		return 0
 	}
-	count := 0
-	nodes := ar.Nodes
-	if len(extractToolResults(nodes)) > 0 {
-		count++ // separate tool_result message
-	}
-	text := ar.Message
-	if text == "" {
-		text = extractText(nodes)
-	}
-	ideState := extractIdeState(nodes)
-	imageBlocks := extractImageBlocks(nodes)
-	if text != "" || ideState != "" || len(imageBlocks) > 0 || len(ar.Images) > 0 {
-		count++
-	}
-	return count
+	_, currentCount := buildClaudeMessagesWithCurrentCount(ar)
+	return currentCount
 }
 
 // --- shared node extraction helpers ---
-
-type toolResult struct {
-	ToolUseID string
-	Content   string
-}
-
-func extractToolResults(nodes []Node) []toolResult {
-	var out []toolResult
-	for _, n := range nodes {
-		if n.Type == 1 && n.ToolResultNode != nil {
-			out = append(out, toolResult{
-				ToolUseID: n.ToolResultNode.ToolUseID,
-				Content:   n.ToolResultNode.Content,
-			})
-		}
-	}
-	return out
-}
 
 // minCacheSizeBytes is the minimum content size (in bytes) to apply cache_control.
 // Claude's prompt caching has a 125% write cost, requiring at least 2 requests to break even.
 // We use 2048 bytes (~1024 tokens) as the threshold for economic caching.
 const minCacheSizeBytes = 2048
 
+func buildCommonSystemText(ar *AugmentRequest) string {
+	if ar == nil {
+		return ""
+	}
+	var sections []string
+	if text := strings.TrimSpace(ar.WorkspaceGuidelines); text != "" {
+		sections = append(sections, text)
+	}
+	if text := strings.TrimSpace(ar.UserGuidelines); text != "" {
+		sections = append(sections, text)
+	}
+	if contextText := buildSystemContextText(ar.EffectiveContext()); contextText != "" {
+		sections = append(sections, contextText)
+	}
+	return joinPromptSections(sections...)
+}
+
+func buildSystemContextText(ctx *ContextBlock) string {
+	if ctx == nil {
+		return ""
+	}
+	lines := []string{"[context]"}
+	if text := strings.TrimSpace(ctx.Path); text != "" {
+		lines = append(lines, fmt.Sprintf("path=%s", text))
+	}
+	if text := strings.TrimSpace(ctx.Lang); text != "" {
+		lines = append(lines, fmt.Sprintf("lang=%s", text))
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildUserContextSections(ctx *ContextBlock) []string {
+	if ctx == nil {
+		return nil
+	}
+	sections := make([]string, 0, 4)
+	if text := strings.TrimSpace(ctx.Prefix); text != "" {
+		sections = append(sections, "[prefix]\n"+text)
+	}
+	if text := strings.TrimSpace(ctx.SelectedCode); text != "" {
+		sections = append(sections, "[selected_code]\n"+text)
+	}
+	if text := strings.TrimSpace(ctx.Suffix); text != "" {
+		sections = append(sections, "[suffix]\n"+text)
+	}
+	if text := strings.TrimSpace(ctx.Diff); text != "" {
+		sections = append(sections, "[diff]\n"+text)
+	}
+	return sections
+}
+
+func buildUserPromptText(existingMessages []map[string]interface{}, nodes []Node, fallbackText string, ctx *ContextBlock) string {
+	var sections []string
+	textSections := extractTextSections(nodes)
+	if len(textSections) > 0 {
+		sections = append(sections, textSections...)
+	} else if text := strings.TrimSpace(fallbackText); text != "" {
+		sections = append(sections, text)
+	}
+	sections = append(sections, extractHistorySummarySections(nodes)...)
+	sections = append(sections, buildUserContextSections(ctx)...)
+	if ideState := extractIdeState(nodes); ideState != "" && !ideStateDuplicate(existingMessages, ideState) {
+		sections = append(sections, "[ide_state]\n"+ideState)
+	}
+	return joinPromptSections(sections...)
+}
+
+func extractTextSections(nodes []Node) []string {
+	var out []string
+	for _, n := range nodes {
+		if n.Type == 0 && n.TextNode != nil {
+			if text := strings.TrimSpace(n.TextNode.EffectiveContent()); text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
+
+func extractHistorySummarySections(nodes []Node) []string {
+	var out []string
+	for _, n := range nodes {
+		if n.Type == 10 && n.HistorySummary != nil {
+			if text := formatHistorySummaryPrompt(n.HistorySummary); text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
+
+func formatHistorySummaryPrompt(node *HistorySummaryNode) string {
+	if node == nil {
+		return ""
+	}
+	lines := []string{"[history_summary]"}
+	if text := strings.TrimSpace(node.Text); text != "" {
+		lines = append(lines, text)
+	}
+	if text := strings.TrimSpace(node.SummaryText); text != "" {
+		lines = append(lines, fmt.Sprintf("summary_text=%s", text))
+	} else if text := strings.TrimSpace(node.SummaryTextAlt); text != "" {
+		lines = append(lines, fmt.Sprintf("summary_text=%s", text))
+	}
+	if text := strings.TrimSpace(node.SummarizationRequestID); text != "" {
+		lines = append(lines, fmt.Sprintf("summarization_request_id=%s", text))
+	} else if text := strings.TrimSpace(node.SummarizationRequestIDAlt); text != "" {
+		lines = append(lines, fmt.Sprintf("summarization_request_id=%s", text))
+	}
+	if n := node.HistoryBeginningDroppedNumExchanges; n > 0 {
+		lines = append(lines, fmt.Sprintf("history_beginning_dropped_num_exchanges=%d", n))
+	} else if n := node.HistoryBeginningDroppedNumExchangesAlt; n > 0 {
+		lines = append(lines, fmt.Sprintf("history_beginning_dropped_num_exchanges=%d", n))
+	}
+	if text := strings.TrimSpace(node.HistoryMiddleAbridgedText); text != "" {
+		lines = append(lines, fmt.Sprintf("history_middle_abridged_text=%s", text))
+	} else if text := strings.TrimSpace(node.HistoryMiddleAbridgedTextAlt); text != "" {
+		lines = append(lines, fmt.Sprintf("history_middle_abridged_text=%s", text))
+	}
+	if text := strings.TrimSpace(node.MessageTemplate); text != "" {
+		lines = append(lines, fmt.Sprintf("message_template=%s", text))
+	} else if text := strings.TrimSpace(node.MessageTemplateAlt); text != "" {
+		lines = append(lines, fmt.Sprintf("message_template=%s", text))
+	}
+	if len(node.HistoryEnd) > 0 {
+		lines = append(lines, formatHistoryEndLines(node.HistoryEnd)...)
+	} else if len(node.HistoryEndAlt) > 0 {
+		lines = append(lines, formatHistoryEndLines(node.HistoryEndAlt)...)
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatHistoryEndLines(historyEnd []map[string]interface{}) []string {
+	if len(historyEnd) == 0 {
+		return nil
+	}
+	lines := []string{"history_end="}
+	for _, item := range historyEnd {
+		lines = append(lines, "  "+stableJSON(item))
+	}
+	return lines
+}
+
+func joinPromptSections(sections ...string) string {
+	filtered := make([]string, 0, len(sections))
+	for _, section := range sections {
+		if text := strings.TrimSpace(section); text != "" {
+			filtered = append(filtered, text)
+		}
+	}
+	return strings.Join(filtered, "\n\n")
+}
+
+func stableJSON(v interface{}) string {
+	data, err := json.Marshal(normalizeJSONValue(v))
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func normalizeJSONValue(v interface{}) interface{} {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(value))
+		for k := range value {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		normalized := make(map[string]interface{}, len(value))
+		for _, k := range keys {
+			normalized[k] = normalizeJSONValue(value[k])
+		}
+		return normalized
+	case []interface{}:
+		normalized := make([]interface{}, len(value))
+		for i, item := range value {
+			normalized[i] = normalizeJSONValue(item)
+		}
+		return normalized
+	case []map[string]interface{}:
+		normalized := make([]interface{}, len(value))
+		for i, item := range value {
+			normalized[i] = normalizeJSONValue(item)
+		}
+		return normalized
+	default:
+		return value
+	}
+}
+
+func extractToolResultNodes(nodes []Node) []*ToolResultNode {
+	var out []*ToolResultNode
+	for _, n := range nodes {
+		if n.Type == 1 && n.ToolResultNode != nil {
+			out = append(out, n.ToolResultNode)
+		}
+	}
+	return out
+}
+
+func buildClaudeToolResultContent(tr *ToolResultNode) interface{} {
+	if tr == nil {
+		return ""
+	}
+	content := make([]map[string]interface{}, 0, len(tr.ContentNodes))
+	for _, node := range tr.ContentNodes {
+		switch node.EffectiveType() {
+		case "text":
+			if text := strings.TrimSpace(node.EffectiveText()); text != "" {
+				content = append(content, map[string]interface{}{"type": "text", "text": text})
+			}
+		case "image":
+			if block := buildClaudeImageFromToolResultContentNode(&node); block != nil {
+				content = append(content, block)
+			}
+		}
+	}
+	if len(content) > 0 {
+		return content
+	}
+	return tr.EffectiveContent()
+}
+
 func extractText(nodes []Node) string {
 	for _, n := range nodes {
 		if n.Type == 0 && n.TextNode != nil {
-			return n.TextNode.Content
+			if text := n.TextNode.EffectiveContent(); text != "" {
+				return text
+			}
 		}
 	}
 	return ""
@@ -384,6 +579,16 @@ func ideStateDuplicate(msgs []map[string]interface{}, ideState string) bool {
 			}
 		case []map[string]interface{}:
 			for _, block := range c {
+				if text, _ := block["text"].(string); strings.Contains(text, needle) {
+					return true
+				}
+			}
+		case []interface{}:
+			for _, raw := range c {
+				block, ok := raw.(map[string]interface{})
+				if !ok {
+					continue
+				}
 				if text, _ := block["text"].(string); strings.Contains(text, needle) {
 					return true
 				}

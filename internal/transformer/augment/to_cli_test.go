@@ -9,11 +9,16 @@ func TestToCliRequest(t *testing.T) {
 	// Test basic CLI request conversion
 	stream := true
 	ar := &AugmentRequest{
-		Model:          "claude-sonnet-4-5-20250929",
-		MaxTokens:      4096,
-		Stream:         &stream,
-		Message:        "Hello",
-		UserGuidelines: "You are a helpful assistant",
+		Model:               "claude-sonnet-4-5-20250929",
+		MaxTokens:           4096,
+		Stream:              &stream,
+		Message:             "Hello",
+		WorkspaceGuidelines: "Follow workspace conventions.",
+		UserGuidelines:      "You are a helpful assistant",
+		Context: &ContextBlock{
+			Path: "internal/transformer/augment/to_cli.go",
+			Lang: "go",
+		},
 	}
 
 	result, err := toCliRequest(ar)
@@ -64,6 +69,17 @@ func TestToCliRequest(t *testing.T) {
 
 	if text != "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK." {
 		t.Errorf("Unexpected system prompt: %s", text)
+	}
+
+	if len(system) < 2 {
+		t.Fatal("expected CLI common system block")
+	}
+	commonText, ok := system[1].(map[string]interface{})["text"].(string)
+	if !ok {
+		t.Fatal("common system text missing")
+	}
+	if commonText != "Follow workspace conventions.\n\nYou are a helpful assistant\n\n[context]\npath=internal/transformer/augment/to_cli.go\nlang=go" {
+		t.Errorf("unexpected common system prompt: %s", commonText)
 	}
 
 	t.Logf("CLI request generated successfully with user_id: %s", userID)

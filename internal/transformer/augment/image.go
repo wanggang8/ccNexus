@@ -65,6 +65,53 @@ func splitDataURLBase64(raw string) (data, mediaType string, ok bool) {
 	return data, mediaType, true
 }
 
+func effectiveToolResultContentNodeMediaType(node *ToolResultContentNode) string {
+	if node == nil {
+		return ""
+	}
+	if mediaType := strings.TrimSpace(node.MediaType); mediaType != "" {
+		return mediaType
+	}
+	if node.ImageContent != nil {
+		return strings.TrimSpace(node.ImageContent.EffectiveMediaType())
+	}
+	return ""
+}
+
+func effectiveToolResultContentNodeData(node *ToolResultContentNode) string {
+	if node == nil {
+		return ""
+	}
+	if data := strings.TrimSpace(node.Data); data != "" {
+		return data
+	}
+	if node.ImageContent != nil {
+		return strings.TrimSpace(node.ImageContent.EffectiveData())
+	}
+	return ""
+}
+
+func buildClaudeImageFromToolResultContentNode(node *ToolResultContentNode) map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+	return buildClaudeImageBlock(
+		effectiveToolResultContentNodeData(node),
+		effectiveToolResultContentNodeMediaType(node),
+	)
+}
+
+func buildOpenAIToolResultImageFallbackText(node *ToolResultContentNode) string {
+	if node == nil {
+		return "[tool_result_image]"
+	}
+	mediaType := effectiveToolResultContentNodeMediaType(node)
+	if mediaType == "" {
+		mediaType = defaultImageMediaType
+	}
+	return "[tool_result_image]\nmedia_type=" + mediaType
+}
+
 // buildTextImageContent returns either a plain string, or a multimodal content
 // array when images are present. When the text is empty, the content array will
 // contain only image blocks.
