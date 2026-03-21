@@ -1,0 +1,256 @@
+{
+  "endpoints": [
+    {
+      "apiKey": "sk-9BUrUlV5xVBgu5D01vyRH4ql8WSEZ59iuSO9PuVcAKCvTRy0",
+      "apiUrl": "https://anyrouter.top",
+      "enabled": false,
+      "model": "claude-haiku-4-5-20251001",
+      "name": "Anyrouter-git—签到",
+      "remark": "https://anyrouter.top",
+      "transformer": "cli"
+    },
+    {
+      "apiKey": "sk-lu2MpgEUzgGBOC5tYBrEgMuRb5UMNRY4H5rAIwOVJtbZDpwA",
+      "apiUrl": "https://api.codemirror.codes",
+      "enabled": false,
+      "model": "claude-sonnet-4-5-20250929",
+      "name": "code router",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "sk-O6yOSI8VLwbv3U7dAbafDFrJhpOlFVd1F2Xengkvu76mbVOU",
+      "apiUrl": "https://wzw.de5.net",
+      "enabled": false,
+      "model": "claude-sonnet-4-5-20250929",
+      "name": "WONG公益站—签到",
+      "remark": "",
+      "transformer": "cli"
+    },
+    {
+      "apiKey": "sk-kVKBnmEp5SCmCc1UXV04ZJbceB2lhcGpqxwgwpw1kMRknELT",
+      "apiUrl": "https://x666.me",
+      "enabled": false,
+      "model": "claude-sonnet-4-5",
+      "name": "薄荷公益-签到",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "sk-2X23gTZTGRY0VFumGhNDycs0opmgH7MOcn3YQmrssygTatJS",
+      "apiUrl": "https://elysiver.h-e.top",
+      "enabled": false,
+      "model": "claude-4.5-sonnet-2cc",
+      "name": "Elysiver公益站—签到",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "90d4b8394fd64e62b06a4764eaf86d0f.Z1W8XQSMeIIjvNjU",
+      "apiUrl": "https://open.bigmodel.cn/api/anthropic",
+      "enabled": false,
+      "model": "glm-4.7",
+      "name": "智普GLM",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "sk-senp8LrjC8WQkOw_XwId4P_WyzqiXuy-bNonsiHbwifphXt4mIwaDyi8B-0",
+      "apiUrl": "https://windhub.cc/claude",
+      "enabled": false,
+      "model": "claude-opus-4-6",
+      "name": "WindHub福利站",
+      "remark": "",
+      "transformer": "cli"
+    },
+    {
+      "apiKey": "sk-a29af4c1134376eccde7c5e36ed642d9",
+      "apiUrl": "https://claude.colin1112.tech",
+      "enabled": true,
+      "model": "gpt-5.4",
+      "name": "codex5.4野不一定能用",
+      "remark": "",
+      "transformer": "openai2"
+    },
+    {
+      "apiKey": "sk-MH1sR7oJ6fs6Y0QnA",
+      "apiUrl": "http://35.221.227.53:8317",
+      "enabled": true,
+      "model": "gpt-5.4-mini",
+      "name": "codex5.4野",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "sk-4b9fafeb75b20843f35cf1d03b5af1ae2eaba335e45f70d3f5d5703ca01ac4a5",
+      "apiUrl": "https://sub.jlypx.de",
+      "enabled": true,
+      "model": "gpt-5.4-mini",
+      "name": "codex5.2",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "codex_c57d974d476dd409cf3f2b91af9956bb72cb1dc4de2c56fb",
+      "apiUrl": "https://codex.xxworld.org",
+      "enabled": true,
+      "model": "gpt-5.4-mini",
+      "name": "codex-2.5-100",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "sk-5Ih2QyI9CwOeZpg7guKpQJcwtxWfUDfl1bm7ULdpLViyryNx",
+      "apiUrl": "https://api.925214.xyz",
+      "enabled": false,
+      "model": "gpt-5.4",
+      "name": "codex",
+      "remark": "restrain公益站--签到",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "sk-U0dVPwPSx110SiDIB4ZphSLsXivkh5WiAFpP29whn7JcWysw",
+      "apiUrl": "https://api.livedless.com",
+      "enabled": false,
+      "model": "gpt-5.3-codex",
+      "name": "livedless",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "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",
+      "apiUrl": "https://integrate.api.nvidia.com",
+      "enabled": false,
+      "model": "moonshotai/kimi-k2.5",
+      "name": "英伟达kimi2.5",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "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",
+      "apiUrl": "https://integrate.api.nvidia.com",
+      "enabled": false,
+      "model": "z-ai/glm4.7",
+      "name": "英伟达glm4.7",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "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",
+      "apiUrl": "https://integrate.api.nvidia.com",
+      "enabled": false,
+      "model": "minimaxai/minimax-m2.1",
+      "name": "英伟达minimax2.1",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "sk-NTA4LTEyNTk5MTk0NDU5LTE3NzMzODMzNzA3ODY=",
+      "apiUrl": "https://api.scnet.cn/api/llm",
+      "enabled": false,
+      "model": "MiniMax-M2.5-ZD",
+      "name": "超算互联网",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "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",
+      "apiUrl": "https://integrate.api.nvidia.com",
+      "enabled": false,
+      "model": "z-ai/glm5",
+      "name": "英伟达GLM5",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "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",
+      "apiUrl": "https://integrate.api.nvidia.com",
+      "enabled": false,
+      "model": "minimaxai/minimax-m2.5",
+      "name": "英伟达",
+      "remark": "",
+      "transformer": "openai"
+    },
+    {
+      "apiKey": "sk-DDPJkuvP3lHVTXuM7oKpErqX6oD2fPom95im9eNF7qtbQuCX",
+      "apiUrl": "https://openai.api-test.us.ci",
+      "enabled": false,
+      "model": "claude-sonnet-4-5-20250929",
+      "name": "openai.api-test.us.ci",
+      "remark": "",
+      "transformer": "cli"
+    },
+    {
+      "apiKey": "sk-4pknMdDeaJFBR1UbOkCgh0VDf6XBHtyILrkX8plqxUMMuoO7",
+      "apiUrl": "https://runanytime.hxi.me",
+      "enabled": false,
+      "model": "claude-sonnet-4-6",
+      "name": "随时跑路",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "dfdf",
+      "apiUrl": "https://www.supercnm.top",
+      "enabled": false,
+      "model": "claude-sonnet-4.5",
+      "name": "kiro",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "dfdf",
+      "apiUrl": "http://141.98.197.39:8999",
+      "enabled": false,
+      "model": "claude-sonnet-4.5",
+      "name": "kiro1",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "dsfsdf",
+      "apiUrl": "http://152.53.55.97:8080",
+      "enabled": false,
+      "model": "claude-sonnet-4.5",
+      "name": "kiro6",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "sk-tkXNptPuy0iYrlU_7zuHR5KDM5KgmJua5APNbUmeIVkBU2zoqEJpJk_xdag",
+      "apiUrl": "https://code.claudex.us.ci/claude",
+      "enabled": false,
+      "model": "claude-sonnet-4-6-thinking",
+      "name": "Code.claude.us—签到",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "dfdfd",
+      "apiUrl": "http://154.64.231.204:8080",
+      "enabled": false,
+      "model": "claude-sonnet-4.5",
+      "name": "kiro8",
+      "remark": "",
+      "transformer": "claude"
+    },
+    {
+      "apiKey": "sk-ReCGVJDluWXPnhRugrTS63MnoUhtl9OS11gAApZKzVjhr0qA",
+      "apiUrl": "https://anyrouter.top",
+      "enabled": false,
+      "model": "claude-haiku-4-5-20251001",
+      "name": "xxxxx-anyrouter",
+      "remark": "",
+      "transformer": "cli"
+    },
+    {
+      "apiKey": "sk-5XE1Ch5aQr83Qnap3Z08Csu8kHcN17ljj91ElwuhJGykTsD3",
+      "apiUrl": "https://api.kxaug.xyz",
+      "enabled": false,
+      "model": "claude-sonnet-4-5-20250929",
+      "name": "kxaug--签到",
+      "remark": "",
+      "transformer": "claude"
+    }
+  ]
+}

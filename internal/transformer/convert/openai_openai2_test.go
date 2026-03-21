@@ -173,6 +173,52 @@ func TestOpenAIReqToOpenAI2_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestOpenAIReqToOpenAI2_DropsUnsupportedParametersExplicitly(t *testing.T) {
+	openaiReq := `{
+		"model": "gpt-4.1",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": false,
+		"functions": [{"name": "legacy_func"}],
+		"function_call": {"name": "legacy_func"},
+		"logprobs": true,
+		"thinking": {"type": "enabled", "budget_tokens": 2048},
+		"enable_thinking": true,
+		"budget_tokens": 2048
+	}`
+
+	result, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(result, &got); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if got["model"] != "gpt-4o" {
+		t.Fatalf("expected model override gpt-4o, got %#v", got["model"])
+	}
+	if _, ok := got["functions"]; ok {
+		t.Fatalf("expected legacy functions to be dropped, got %#v", got["functions"])
+	}
+	if _, ok := got["function_call"]; ok {
+		t.Fatalf("expected legacy function_call to be dropped, got %#v", got["function_call"])
+	}
+	if _, ok := got["logprobs"]; ok {
+		t.Fatalf("expected logprobs to be dropped, got %#v", got["logprobs"])
+	}
+	if _, ok := got["thinking"]; ok {
+		t.Fatalf("expected thinking to be dropped, got %#v", got["thinking"])
+	}
+	if _, ok := got["enable_thinking"]; ok {
+		t.Fatalf("expected enable_thinking to be dropped, got %#v", got["enable_thinking"])
+	}
+	if _, ok := got["budget_tokens"]; ok {
+		t.Fatalf("expected budget_tokens to be dropped, got %#v", got["budget_tokens"])
+	}
+}
+
 // --- OpenAI2ReqToOpenAI ---
 
 func TestOpenAI2ReqToOpenAI_Basic(t *testing.T) {

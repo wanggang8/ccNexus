@@ -525,6 +525,55 @@ func TestOpenAIRespToOpenAI2_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAI2StreamToOpenAI_CompletedUsageWithoutAuthoritativeTotalSumsTokens(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.created","response":{"id":"resp_usage"}}`), ctx, "gpt-4")
+	completed, err := OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.completed","response":{"id":"resp_usage","status":"completed","usage":{"input_tokens":7,"output_tokens":11,"total_tokens":0}}}`), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("response.completed failed: %v", err)
+	}
+	if completed == nil {
+		t.Fatal("expected output for response.completed event")
+	}
+	if !strings.Contains(string(completed), `"total_tokens":18`) {
+		t.Fatalf("expected summed total_tokens=18 when authoritative total is missing, got %s", string(completed))
+	}
+}
+
+func TestOpenAI2StreamToOpenAI_OutputItemDoneWithoutOutputIndexStillEmitsToolCall(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.created","response":{"id":"resp_no_index"}}`), ctx, "gpt-4")
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_no_index","name":"read_file"}}`), ctx, "gpt-4")
+	_, _ = OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.function_call_arguments.done","arguments":"{\"path\":\"/tmp/no-index\"}"}`), ctx, "gpt-4")
+
+	out, err := OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_no_index","name":"read_file"}}`), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("output_item.done failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected output even when output_index is missing")
+	}
+
+	_, jsonStr := ParseSSE(out)
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &chunk); err != nil {
+		t.Fatalf("failed to unmarshal output chunk: %v", err)
+	}
+
+	choices := chunk["choices"].([]interface{})
+	delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
+	toolCalls := delta["tool_calls"].([]interface{})
+	tc := toolCalls[0].(map[string]interface{})
+	if tc["id"] != "call_no_index" {
+		t.Fatalf("expected tool call id call_no_index, got %#v", tc["id"])
+	}
+	if tc["index"] != float64(0) {
+		t.Fatalf("expected synthesized tool call index 0, got %#v", tc["index"])
+	}
+}
+
 func TestOpenAI2RespToOpenAI_MultipleToolCalls(t *testing.T) {
 	resp := `{
 		"id":"resp_1",

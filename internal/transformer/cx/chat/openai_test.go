@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 func TestOpenAITransformer_Name(t *testing.T) {
@@ -189,6 +190,90 @@ func TestOpenAITransformer_TransformRequest_StripsInternalThinkingFields(t *test
 }
 
 // ========== Response Tests ==========
+
+func TestNormalizeOpenAISSE_ToolCallMissingType_IsFilled(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	chunk := []byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}}]}`)
+
+	result, err := normalizeOpenAISSE(chunk, ctx)
+	if err != nil {
+		t.Fatalf("normalizeOpenAISSE failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected normalized SSE chunk, got nil")
+	}
+
+	_, payload := convert.ParseSSE(result)
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("failed to unmarshal normalized payload: %v", err)
+	}
+
+	choices := got["choices"].([]interface{})
+	delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
+	toolCalls := delta["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+
+	if toolCall["id"] != "call_123" {
+		t.Fatalf("expected tool call id preserved, got %#v", toolCall["id"])
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected missing type to be normalized to function, got %#v", toolCall["type"])
+	}
+}
+
+func TestNormalizeOpenAISSE_DuplicateDone_IsIgnored(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	first, err := normalizeOpenAISSE([]byte("data: [DONE]\n\n"), ctx)
+	if err != nil {
+		t.Fatalf("first DONE normalize failed: %v", err)
+	}
+	if string(first) != "data: [DONE]\n\n" {
+		t.Fatalf("expected first DONE passthrough, got %q", string(first))
+	}
+
+	second, err := normalizeOpenAISSE([]byte("data: [DONE]\n\n"), ctx)
+	if err != nil {
+		t.Fatalf("second DONE normalize failed: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("expected duplicate DONE to be ignored, got %q", string(second))
+	}
+}
+
+func TestNormalizeOpenAISSE_ToolCallWithoutIndex_UsesZeroAndFillsType(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	chunk := []byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_no_index","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}}]}`)
+
+	result, err := normalizeOpenAISSE(chunk, ctx)
+	if err != nil {
+		t.Fatalf("normalizeOpenAISSE failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected normalized SSE chunk, got nil")
+	}
+
+	_, payload := convert.ParseSSE(result)
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("failed to unmarshal normalized payload: %v", err)
+	}
+
+	choices := got["choices"].([]interface{})
+	delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
+	toolCalls := delta["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+
+	if toolCall["index"] != float64(0) {
+		t.Fatalf("expected missing index to normalize to 0, got %#v", toolCall["index"])
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected missing type to normalize to function, got %#v", toolCall["type"])
+	}
+}
 
 func TestOpenAITransformer_TransformResponse_Passthrough(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4")

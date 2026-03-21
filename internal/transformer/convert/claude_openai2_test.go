@@ -286,6 +286,36 @@ func TestOpenAI2ReqToClaude_WithImagesAndEnableThinking(t *testing.T) {
 	}
 }
 
+func TestOpenAI2ReqToClaude_WithThinkingStringAliasOn(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": "Hello",
+		"thinking": "on",
+		"max_output_tokens": 12
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	thinking, ok := claudeReq["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking config, got %#v", claudeReq["thinking"])
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type=enabled, got %#v", thinking["type"])
+	}
+	if thinking["budget_tokens"] != float64(11) {
+		t.Fatalf("expected budget_tokens=11, got %#v", thinking["budget_tokens"])
+	}
+}
+
 func TestOpenAI2ReqToClaude_WithFunctionCall(t *testing.T) {
 	openai2Req := `{
 		"model": "gpt-4o",
@@ -549,6 +579,41 @@ func TestClaudeRespToOpenAI2_InvalidJSON(t *testing.T) {
 }
 
 // --- OpenAI2RespToClaude ---
+
+func TestOpenAI2RespToClaude_UnknownOutputItemType_IsIgnored(t *testing.T) {
+	openai2Resp := `{
+		"id": "resp_unknown",
+		"object": "response",
+		"status": "completed",
+		"output": [
+			{"type": "vendor_custom_type", "value": "ignored"},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello!"}]}
+		],
+		"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+	}`
+
+	result, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	if err != nil {
+		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
+	}
+
+	var claudeResp map[string]interface{}
+	if err := json.Unmarshal(result, &claudeResp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	content := claudeResp["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("expected unknown item to be ignored and only one text block to remain, got %#v", content)
+	}
+	block := content[0].(map[string]interface{})
+	if block["type"] != "text" || block["text"] != "Hello!" {
+		t.Fatalf("unexpected Claude content block after ignoring unknown item: %#v", block)
+	}
+	if claudeResp["stop_reason"] != "end_turn" {
+		t.Fatalf("expected stop_reason end_turn, got %#v", claudeResp["stop_reason"])
+	}
+}
 
 func TestOpenAI2RespToClaude_Basic(t *testing.T) {
 	openai2Resp := `{
@@ -868,6 +933,50 @@ func TestOpenAI2StreamToClaude_Done(t *testing.T) {
 	}
 }
 
+func TestOpenAI2StreamToClaude_UnknownEventType_IsIgnored(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_unknown"
+
+	result, err := OpenAI2StreamToClaude([]byte(`data: {"type":"response.vendor_custom","payload":"ignored"}`), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected unknown event type to be ignored, got %s", string(result))
+	}
+}
+
+func TestOpenAI2StreamToClaude_UsesPayloadTypeWithoutEventLine(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_payload_type"
+
+	result, err := OpenAI2StreamToClaude([]byte(`data: {"type":"response.completed","response":{"id":"resp_payload_type","status":"completed"}}`), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected response.completed payload without event line to be processed")
+	}
+	if !strings.Contains(string(result), "message_stop") {
+		t.Fatalf("expected message_stop in result, got %s", string(result))
+	}
+}
+
+func TestOpenAI2StreamToClaude_DoneWithoutPriorStateStillStops(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	result, err := OpenAI2StreamToClaude([]byte("data: [DONE]"), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected DONE to emit message_stop even without prior state")
+	}
+	if !strings.Contains(string(result), "message_stop") {
+		t.Fatalf("expected message_stop in DONE result, got %s", string(result))
+	}
+}
+
 func TestOpenAI2StreamToClaude_Empty(t *testing.T) {
 	ctx := transformer.NewStreamContext()
 
@@ -1008,6 +1117,101 @@ func TestClaudeReqToOpenAI2PreservesToolChain(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAI2InputToClaude_FunctionCallOutputFlushesPendingToolUses(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": `{"path":"/tmp/a"}`},
+		map[string]interface{}{"type": "function_call_output", "call_id": "call_1", "output": "file content"},
+	}
+
+	messages := convertOpenAI2InputToClaude(input)
+	if len(messages) != 2 {
+		t.Fatalf("expected assistant tool_use and user tool_result messages, got %#v", messages)
+	}
+
+	assistant := messages[0]
+	if assistant["role"] != "assistant" {
+		t.Fatalf("expected first message role assistant, got %#v", assistant["role"])
+	}
+	assistantContent := assistant["content"].([]map[string]interface{})
+	if len(assistantContent) != 1 || assistantContent[0]["type"] != "tool_use" {
+		t.Fatalf("expected first message to contain one tool_use, got %#v", assistantContent)
+	}
+
+	user := messages[1]
+	if user["role"] != "user" {
+		t.Fatalf("expected second message role user, got %#v", user["role"])
+	}
+	userContent := user["content"].([]map[string]interface{})
+	if len(userContent) != 1 || userContent[0]["type"] != "tool_result" {
+		t.Fatalf("expected second message to contain one tool_result, got %#v", userContent)
+	}
+}
+
+func TestOpenAI2RespToClaude_FunctionCallInvalidArgumentsFallsBackToEmptyObject(t *testing.T) {
+	openai2Resp := `{
+		"id":"resp_invalid_args",
+		"object":"response",
+		"status":"completed",
+		"output":[{"type":"function_call","call_id":"call_invalid","name":"Write","arguments":"{not-json"}],
+		"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+	}`
+
+	claudeRespBytes, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	if err != nil {
+		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
+	}
+
+	var claudeResp map[string]interface{}
+	if err := json.Unmarshal(claudeRespBytes, &claudeResp); err != nil {
+		t.Fatalf("unmarshal claude resp failed: %v", err)
+	}
+
+	content, ok := claudeResp["content"].([]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("unexpected content: %#v", claudeResp["content"])
+	}
+	toolUse := content[0].(map[string]interface{})
+	input, ok := toolUse["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected fallback input object, got %#v", toolUse["input"])
+	}
+	if len(input) != 0 {
+		t.Fatalf("expected empty object fallback for invalid arguments, got %#v", input)
+	}
+}
+
+func TestOpenAI2RespToClaude_FunctionCallMissingCallIDAndIDUsesEmptyID(t *testing.T) {
+	openai2Resp := `{
+		"id":"resp_missing_ids",
+		"object":"response",
+		"status":"completed",
+		"output":[{"type":"function_call","name":"Write","arguments":"{}"}],
+		"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+	}`
+
+	claudeRespBytes, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	if err != nil {
+		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
+	}
+
+	var claudeResp map[string]interface{}
+	if err := json.Unmarshal(claudeRespBytes, &claudeResp); err != nil {
+		t.Fatalf("unmarshal claude resp failed: %v", err)
+	}
+
+	content, ok := claudeResp["content"].([]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("unexpected content: %#v", claudeResp["content"])
+	}
+	toolUse := content[0].(map[string]interface{})
+	if toolUse["type"] != "tool_use" {
+		t.Fatalf("expected tool_use type, got %#v", toolUse["type"])
+	}
+	if toolUse["id"] != "" {
+		t.Fatalf("expected empty string id when neither call_id nor id exists, got %#v", toolUse["id"])
+	}
+}
+
 func TestOpenAI2RespToClaudeFallbackToItemID(t *testing.T) {
 	openai2Resp := `{
 		"id":"resp_1",
@@ -1041,6 +1245,42 @@ func TestOpenAI2RespToClaudeFallbackToItemID(t *testing.T) {
 	}
 	if toolUse["id"] != "fc_123" {
 		t.Fatalf("expected tool_use id from item.id fallback, got %#v", toolUse["id"])
+	}
+}
+
+func TestClaudeReqToOpenAI2_StringifiesStructuredToolResultContent(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": false,
+		"messages": [
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":{"status":"ok","count":2}}]}
+		]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	input, ok := req["input"].([]interface{})
+	if !ok || len(input) != 1 {
+		t.Fatalf("expected single input item, got %#v", req["input"])
+	}
+	functionOutput := input[0].(map[string]interface{})
+	if functionOutput["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output item, got %#v", functionOutput)
+	}
+	output, ok := functionOutput["output"].(string)
+	if !ok {
+		t.Fatalf("expected tool_result output to stringify into string, got %#v", functionOutput["output"])
+	}
+	if !strings.Contains(output, `"status":"ok"`) || !strings.Contains(output, `"count":2`) {
+		t.Fatalf("unexpected stringified tool_result output: %s", output)
 	}
 }
 
