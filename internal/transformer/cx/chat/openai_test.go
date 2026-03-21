@@ -10,6 +10,27 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
+func readLogJSONLine(t *testing.T, path string, lineIndex int) []byte {
+	t.Helper()
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log failed: %v", err)
+	}
+
+	lines := strings.Split(string(payload), "\n")
+	if lineIndex < 0 || lineIndex >= len(lines) {
+		t.Fatalf("expected log %s to contain line %d, got %d lines", path, lineIndex+1, len(lines))
+	}
+
+	line := strings.TrimSpace(lines[lineIndex])
+	if line == "" {
+		t.Fatalf("expected log %s line %d to contain json payload", path, lineIndex+1)
+	}
+
+	return []byte(line)
+}
+
 func TestOpenAITransformer_Name(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4")
 	if trans.Name() != "cx_chat_openai" {
@@ -194,7 +215,7 @@ func TestOpenAITransformer_TransformRequest_NormalizesLegacyFunctionsAndFunction
 	}
 }
 
-func TestOpenAITransformer_TransformRequest_StripsInternalThinkingFields(t *testing.T) {
+func TestOpenAITransformer_TransformRequest_PreservesInternalThinkingFields(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4")
 
 	openaiReq := `{
@@ -216,14 +237,18 @@ func TestOpenAITransformer_TransformRequest_StripsInternalThinkingFields(t *test
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	if _, ok := data["thinking"]; ok {
-		t.Fatalf("expected thinking to be stripped, got %#v", data["thinking"])
+	thinking, ok := data["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking to be preserved, got %#v", data["thinking"])
 	}
-	if _, ok := data["enable_thinking"]; ok {
-		t.Fatalf("expected enable_thinking to be stripped, got %#v", data["enable_thinking"])
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type to be preserved, got %#v", thinking["type"])
 	}
-	if _, ok := data["budget_tokens"]; ok {
-		t.Fatalf("expected budget_tokens to be stripped, got %#v", data["budget_tokens"])
+	if data["enable_thinking"] != true {
+		t.Fatalf("expected enable_thinking to be preserved, got %#v", data["enable_thinking"])
+	}
+	if data["budget_tokens"] != float64(2048) {
+		t.Fatalf("expected budget_tokens to be preserved, got %#v", data["budget_tokens"])
 	}
 	if data["reasoning_effort"] != "medium" {
 		t.Fatalf("expected reasoning_effort to be preserved, got %#v", data["reasoning_effort"])
@@ -848,12 +873,7 @@ func TestOpenAITransformer_TransformRequest_ResponsesShapeNormalizesReasoningAli
 func TestOpenAITransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4o")
 
-	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/cursor-claude-request.log")
-	if err != nil {
-		t.Fatalf("read cursor claude log failed: %v", err)
-	}
-
-	result, err := trans.TransformRequest(payload)
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 2))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}
@@ -877,12 +897,7 @@ func TestOpenAITransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 func TestOpenAITransformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4o")
 
-	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log")
-	if err != nil {
-		t.Fatalf("read chatgpt5.4 log failed: %v", err)
-	}
-
-	result, err := trans.TransformRequest(payload)
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log", 0))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}
@@ -892,14 +907,130 @@ func TestOpenAITransformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
 		t.Fatalf("unmarshal transformed payload failed: %v", err)
 	}
 
-	if data["user"] == nil {
-		t.Fatalf("expected responses-like user preserved")
+	if data["user"] != "95dfaae8bbc5aaa3" {
+		t.Fatalf("expected responses-like user preserved, got %#v", data["user"])
 	}
 	if data["stream_options"] == nil {
 		t.Fatalf("expected stream_options preserved")
 	}
 	if _, ok := data["messages"].([]interface{}); !ok {
 		t.Fatalf("expected responses-like body converted to openai messages")
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_RealGPTCursorLog(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/gpt-cursor.log", 1))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["input"] != nil {
+		t.Fatalf("expected responses input to be converted away for openai target, got %#v", data["input"])
+	}
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected converted openai messages, got %#v", data["messages"])
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+	if _, ok := data["stream_options"].(map[string]interface{}); !ok {
+		t.Fatalf("expected stream_options preserved, got %#v", data["stream_options"])
+	}
+	if data["user"] != "95dfaae8bbc5aaa3" {
+		t.Fatalf("expected user preserved, got %#v", data["user"])
+	}
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning_effort preserved, got %#v", data["reasoning_effort"])
+	}
+	if _, ok := data["include"]; ok {
+		t.Fatalf("expected include to be dropped for openai target, got %#v", data["include"])
+	}
+	if _, ok := data["store"]; ok {
+		t.Fatalf("expected store to be dropped for openai target, got %#v", data["store"])
+	}
+	if _, ok := data["reasoning"]; ok {
+		t.Fatalf("expected reasoning to be dropped for openai target, got %#v", data["reasoning"])
+	}
+	tools, ok := data["tools"].([]interface{})
+	if !ok || len(tools) != 18 {
+		t.Fatalf("expected 18 converted tools for openai target, got %#v", data["tools"])
+	}
+	for i, rawTool := range tools {
+		tool := rawTool.(map[string]interface{})
+		if tool["type"] != "function" {
+			t.Fatalf("expected tool %d to be function, got %#v", i, tool)
+		}
+		fn, ok := tool["function"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected tool %d to carry function block, got %#v", i, tool)
+		}
+		if fn["name"] == "" {
+			t.Fatalf("expected tool %d name preserved, got %#v", i, fn)
+		}
+		if _, ok := fn["parameters"].(map[string]interface{}); !ok {
+			t.Fatalf("expected tool %d parameters preserved, got %#v", i, fn)
+		}
+		if strict, ok := fn["strict"].(bool); ok && strict {
+			t.Fatalf("expected tool %d strict=false preserved, got %#v", i, fn["strict"])
+		}
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_RealClaudeCursorLog_StripsClaudeOnlyTopLevelFields(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log")
+	if err != nil {
+		t.Fatalf("read claude-cursor log failed: %v", err)
+	}
+
+	lines := strings.Split(string(payload), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("expected claude-cursor log to contain transformed request line")
+	}
+
+	result, err := trans.TransformRequest([]byte(lines[2]))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	messages, ok := data["messages"].([]interface{})
+	if !ok || len(messages) == 0 {
+		t.Fatalf("expected claude-cursor body converted to openai messages, got %#v", data["messages"])
+	}
+	tools, ok := data["tools"].([]interface{})
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected claude-cursor tools converted for openai chat, got %#v", data["tools"])
+	}
+	for i, rawTool := range tools {
+		tool := rawTool.(map[string]interface{})
+		if tool["type"] != "function" {
+			t.Fatalf("expected tool %d to be function for chat target, got %#v", i, tool)
+		}
+		if _, ok := tool["function"].(map[string]interface{}); !ok {
+			t.Fatalf("expected tool %d to use function wrapper for chat target, got %#v", i, tool)
+		}
+	}
+	if _, ok := data["system"]; ok {
+		t.Fatalf("expected top-level claude system to be removed after conversion, got %#v", data["system"])
+	}
+	if _, ok := data["tool_choice"].(map[string]interface{}); ok {
+		t.Fatalf("expected openai target tool_choice to avoid claude object shape, got %#v", data["tool_choice"])
 	}
 }
 

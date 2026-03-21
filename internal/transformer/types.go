@@ -20,6 +20,7 @@ type OpenAITool struct {
 		Name        string                 `json:"name"`
 		Description string                 `json:"description,omitempty"`
 		Parameters  map[string]interface{} `json:"parameters"`
+		Strict      *bool                  `json:"strict,omitempty"`
 	} `json:"function"`
 }
 
@@ -124,6 +125,7 @@ type ClaudeTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema"`
+	Strict      *bool                  `json:"strict,omitempty"`
 }
 
 // ClaudeResponse represents a Claude API response
@@ -200,28 +202,28 @@ type ResponseOutputItemState struct {
 // StreamContext holds the state for a single streaming response
 // This allows multiple concurrent streams to be processed independently
 type StreamContext struct {
-	MessageStartSent     bool
-	ContentBlockStarted  bool
-	ThinkingBlockStarted bool // Track if thinking block has been started
-	ToolBlockStarted     bool // Track if tool_use block has been started
-	ToolBlockPending     bool // Track if tool_use block is pending (waiting for first arguments)
-	MessageID            string
-	ModelName            string
-	InputTokens          int
-	OutputTokens         int
-	TotalTokens          int
+	MessageStartSent            bool
+	ContentBlockStarted         bool
+	ThinkingBlockStarted        bool // Track if thinking block has been started
+	ToolBlockStarted            bool // Track if tool_use block has been started
+	ToolBlockPending            bool // Track if tool_use block is pending (waiting for first arguments)
+	MessageID                   string
+	ModelName                   string
+	InputTokens                 int
+	OutputTokens                int
+	TotalTokens                 int
 	HasAuthoritativeTotalTokens bool
-	ContentIndex         int
-	ThinkingIndex        int // Index for thinking content block
-	ToolIndex            int // Current tool_use content block index (from OpenAI)
-	LastToolIndex        int // Last assigned Anthropic tool block index (incremental counter)
-	FinishReasonSent     bool
-	EnableThinking       bool              // Whether thinking is enabled for this request
-	CurrentToolCall      *OpenAIToolCall   // Current tool call being processed
-	ToolCallBuffer       string            // Buffer for accumulating tool call arguments
-	State                interface{}       // V3 architecture state (openai.StreamState)
-	ToolCallIDMap        map[string]string // tool_use_id -> function_name mapping for Gemini
-	ToolCallCounter      int               // Counter for generating unique tool IDs
+	ContentIndex                int
+	ThinkingIndex               int // Index for thinking content block
+	ToolIndex                   int // Current tool_use content block index (from OpenAI)
+	LastToolIndex               int // Last assigned Anthropic tool block index (incremental counter)
+	FinishReasonSent            bool
+	EnableThinking              bool              // Whether thinking is enabled for this request
+	CurrentToolCall             *OpenAIToolCall   // Current tool call being processed
+	ToolCallBuffer              string            // Buffer for accumulating tool call arguments
+	State                       interface{}       // V3 architecture state (openai.StreamState)
+	ToolCallIDMap               map[string]string // tool_use_id -> function_name mapping for Gemini
+	ToolCallCounter             int               // Counter for generating unique tool IDs
 	// Codex transformer fields
 	CurrentToolID   string // Current tool call ID being processed
 	CurrentToolName string // Current tool call name being processed
@@ -246,37 +248,37 @@ type StreamContext struct {
 // NewStreamContext creates a new stream context with default values
 func NewStreamContext() *StreamContext {
 	return &StreamContext{
-		MessageStartSent:     false,
-		ContentBlockStarted:  false,
-		ThinkingBlockStarted: false,
-		ToolBlockStarted:     false,
-		ToolBlockPending:     false,
-		MessageID:            "",
-		ModelName:            "",
-		InputTokens:          0,
-		OutputTokens:         0,
-		TotalTokens:          0,
+		MessageStartSent:            false,
+		ContentBlockStarted:         false,
+		ThinkingBlockStarted:        false,
+		ToolBlockStarted:            false,
+		ToolBlockPending:            false,
+		MessageID:                   "",
+		ModelName:                   "",
+		InputTokens:                 0,
+		OutputTokens:                0,
+		TotalTokens:                 0,
 		HasAuthoritativeTotalTokens: false,
-		ContentIndex:         0,
-		ThinkingIndex:        0,
-		ToolIndex:            0,
-		LastToolIndex:        0,
-		FinishReasonSent:     false,
-		EnableThinking:       false,
-		CurrentToolCall:      nil,
-		ToolCallBuffer:       "",
-		ToolCallIDMap:        make(map[string]string),
-		ToolCallCounter:      0,
-		IncludeUsage:         false,
-		ResponseOutputItems:      make(map[int]*ResponseOutputItemState),
-		ResponseOutputItemLookup: make(map[string]*ResponseOutputItemState),
-		NextResponseOutputIndex:  0,
-		InThinkingTag:        false,
-		ThinkingBuffer:       "",
-		PendingThinkingText:  "",
-		ContentText:          "",
-		OpenAIStreamDone:     false,
-		OpenAIToolCalls:      make(map[int]*OpenAIToolCall),
+		ContentIndex:                0,
+		ThinkingIndex:               0,
+		ToolIndex:                   0,
+		LastToolIndex:               0,
+		FinishReasonSent:            false,
+		EnableThinking:              false,
+		CurrentToolCall:             nil,
+		ToolCallBuffer:              "",
+		ToolCallIDMap:               make(map[string]string),
+		ToolCallCounter:             0,
+		IncludeUsage:                false,
+		ResponseOutputItems:         make(map[int]*ResponseOutputItemState),
+		ResponseOutputItemLookup:    make(map[string]*ResponseOutputItemState),
+		NextResponseOutputIndex:     0,
+		InThinkingTag:               false,
+		ThinkingBuffer:              "",
+		PendingThinkingText:         "",
+		ContentText:                 "",
+		OpenAIStreamDone:            false,
+		OpenAIToolCalls:             make(map[int]*OpenAIToolCall),
 	}
 }
 
@@ -401,6 +403,7 @@ type OpenAI2Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+	Strict      *bool                  `json:"strict,omitempty"`
 }
 
 // OpenAI2Request represents an OpenAI Responses API request

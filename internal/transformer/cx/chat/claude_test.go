@@ -2,7 +2,6 @@ package chat
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -346,12 +345,7 @@ func TestClaudeTransformer_TransformRequest_OpenAIResponsesShapeUsesResponsesCon
 func TestClaudeTransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
 
-	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/cursor-claude-request.log")
-	if err != nil {
-		t.Fatalf("read cursor claude log failed: %v", err)
-	}
-
-	result, err := trans.TransformRequest(payload)
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 2))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}
@@ -364,23 +358,44 @@ func TestClaudeTransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 	if data["model"] != "claude-sonnet-4-20250514" {
 		t.Fatalf("expected model override, got %#v", data["model"])
 	}
-	if data["messages"] == nil {
-		t.Fatalf("expected Claude messages preserved")
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected Claude messages preserved, got %#v", data["messages"])
 	}
-	if data["tools"] == nil {
-		t.Fatalf("expected tools preserved")
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+	if data["system"] == "" {
+		t.Fatalf("expected system mapped from Claude log, got %#v", data["system"])
+	}
+	if _, ok := data["user"]; ok {
+		t.Fatalf("expected user dropped for Claude target, got %#v", data["user"])
+	}
+	if _, ok := data["include"]; ok {
+		t.Fatalf("expected include dropped for Claude target, got %#v", data["include"])
+	}
+	if _, ok := data["store"]; ok {
+		t.Fatalf("expected store dropped for Claude target, got %#v", data["store"])
+	}
+	if _, ok := data["stream_options"]; ok {
+		t.Fatalf("expected stream_options dropped for Claude target, got %#v", data["stream_options"])
+	}
+	tools, ok := data["tools"].([]interface{})
+	if !ok || len(tools) != 19 {
+		t.Fatalf("expected 19 Claude tools preserved, got %#v", data["tools"])
+	}
+	tool := tools[0].(map[string]interface{})
+	if tool["input_schema"] == nil {
+		t.Fatalf("expected Claude tool schema preserved, got %#v", tool)
+	}
+	if _, ok := tool["strict"]; ok {
+		t.Fatalf("expected strict to stay absent when not provided, got %#v", tool["strict"])
 	}
 }
 
 func TestClaudeTransformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
 	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
 
-	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log")
-	if err != nil {
-		t.Fatalf("read chatgpt5.4 log failed: %v", err)
-	}
-
-	result, err := trans.TransformRequest(payload)
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log", 0))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}

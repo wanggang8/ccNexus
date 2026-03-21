@@ -477,6 +477,50 @@ func TestOpenAIRespToClaudeWithMultipleThinking(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamToOpenAI_DelaysToolShellUntilFirstArgumentDelta(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+	ctx.ModelName = "gpt-4"
+
+	toolStart := `event: content_block_start
+data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
+
+`
+	argDelta := `event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"path\":\"/tmp/a\"}"}}
+
+`
+
+	out1, err := ClaudeStreamToOpenAI([]byte(toolStart), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("tool start failed: %v", err)
+	}
+	if out1 != nil {
+		t.Fatalf("expected no tool chunk before first input_json_delta, got %s", string(out1))
+	}
+	if !ctx.ToolBlockPending {
+		t.Fatal("expected tool block pending after tool_use start")
+	}
+
+	out2, err := ClaudeStreamToOpenAI([]byte(argDelta), ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("tool delta failed: %v", err)
+	}
+	resultStr := string(out2)
+	if !strings.Contains(resultStr, `"id":"toolu_1"`) {
+		t.Fatalf("expected tool shell id on first argument delta, got %s", resultStr)
+	}
+	if !strings.Contains(resultStr, `"name":"read_file"`) {
+		t.Fatalf("expected tool shell name on first argument delta, got %s", resultStr)
+	}
+	if !strings.Contains(resultStr, `"function":{"arguments":"{\"path\":\"/tmp/a\"}"}`) {
+		t.Fatalf("expected argument delta payload on first argument delta, got %s", resultStr)
+	}
+	if ctx.ToolBlockPending {
+		t.Fatal("expected tool block pending cleared after first input_json_delta")
+	}
+}
+
 func TestOpenAIStreamToClaudeWithThinking(t *testing.T) {
 	ctx := transformer.NewStreamContext()
 	ctx.ModelName = "claude-3-sonnet-20240229"
@@ -514,46 +558,31 @@ func TestOpenAIStreamToClaudeWithThinking(t *testing.T) {
 	assertContains(t, fullEvents, "\"text\":\"Hello!\"", "Expected text delta 'Hello!', but not found")
 }
 
-func TestOpenAIStreamToClaudeUsageHasDelta(t *testing.T) {
+func TestOpenAIStreamToClaudeWithReasoningContentChunkBoundary(t *testing.T) {
 	ctx := transformer.NewStreamContext()
-	ctx.ModelName = "claude-3-5-sonnet-20241022"
+	ctx.ModelName = "claude-3-sonnet-20240229"
 
-	chunk := `data: {"id":"usage-1","object":"chat.completion.chunk","created":123,"model":"gpt-4","choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
-	result, err := OpenAIStreamToClaude([]byte(chunk), ctx)
-	if err != nil {
-		t.Fatalf("OpenAIStreamToClaude failed: %v", err)
+	chunks := []string{
+		`data: {"id":"1","choices":[{"index":0,"delta":{"reasoning_content":"Thinking about"}}]}`,
+		`data: {"id":"1","choices":[{"index":0,"delta":{"reasoning_content":" the answer","content":"Final answer"},"finish_reason":"stop"}]}`,
 	}
 
-	parts := strings.Split(string(result), "\n\n")
-	found := false
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
+	var allEvents []string
+	for _, chunk := range chunks {
+		events, err := OpenAIStreamToClaude([]byte(chunk), ctx)
+		if err != nil {
+			t.Fatalf("OpenAIStreamToClaude failed: %v", err)
 		}
-		eventType, jsonData := ParseSSE([]byte(part + "\n"))
-		if eventType != "message_delta" {
-			continue
+		if events != nil {
+			allEvents = append(allEvents, string(events))
 		}
-		var payload map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonData), &payload); err != nil {
-			t.Fatalf("Failed to unmarshal message_delta: %v", err)
-		}
-		if _, ok := payload["delta"].(map[string]interface{}); !ok {
-			t.Fatalf("Expected delta object in message_delta, got %T", payload["delta"])
-		}
-		usage, ok := payload["usage"].(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected usage object in message_delta, got %T", payload["usage"])
-		}
-		if usage["input_tokens"] != float64(5) || usage["output_tokens"] != float64(7) {
-			t.Fatalf("Unexpected usage: %#v", usage)
-		}
-		found = true
 	}
 
-	if !found {
-		t.Fatal("message_delta event not found in result")
-	}
+	fullEvents := strings.Join(allEvents, "")
+	assertContains(t, fullEvents, `"type":"thinking"`, "Expected thinking block start for reasoning_content")
+	assertContains(t, fullEvents, `"thinking":"Thinking about"`, "Expected first reasoning_content delta to be preserved")
+	assertContains(t, fullEvents, `"thinking":" the answer"`, "Expected second reasoning_content delta to be preserved")
+	assertContains(t, fullEvents, `"text":"Final answer"`, "Expected final assistant text to be preserved")
 }
 
 func TestOpenAIStreamToClaudeWithThinkingSingleChunk(t *testing.T) {
@@ -697,6 +726,39 @@ func TestClaudeReqToOpenAIWithToolUseAndResult(t *testing.T) {
 	}
 	if toolMsg.Content != "ok" {
 		t.Fatalf("Unexpected tool content: %#v", toolMsg.Content)
+	}
+}
+
+func TestClaudeReqToOpenAI_PreservesToolStrictFlag(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": [
+			{"name": "read_file", "description": "Read file", "input_schema": {"type": "object"}, "strict": true}
+		]
+	}`
+
+	result, err := ClaudeReqToOpenAI([]byte(claudeReq), "gpt-4o")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq map[string]interface{}
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools, ok := openaiReq["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %#v", openaiReq["tools"])
+	}
+	tool := tools[0].(map[string]interface{})
+	fn, ok := tool["function"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected function wrapper, got %#v", tool)
+	}
+	if fn["strict"] != true {
+		t.Fatalf("expected strict=true to be preserved in function wrapper, got %#v", fn["strict"])
 	}
 }
 

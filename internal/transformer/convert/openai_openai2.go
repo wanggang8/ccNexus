@@ -10,14 +10,20 @@ import (
 
 // OpenAIReqToOpenAI2 converts OpenAI Chat request to OpenAI Responses request
 func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
+	var rawReq map[string]interface{}
+	if err := json.Unmarshal(openaiReq, &rawReq); err != nil {
+		return nil, err
+	}
 	var req transformer.OpenAIRequest
 	if err := json.Unmarshal(openaiReq, &req); err != nil {
 		return nil, err
 	}
 
 	openai2Req := map[string]interface{}{
-		"model":  model,
-		"stream": req.Stream,
+		"model": model,
+	}
+	if stream, ok := rawReq["stream"]; ok {
+		openai2Req["stream"] = stream
 	}
 
 	var input []map[string]interface{}
@@ -74,23 +80,24 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		var tools []map[string]interface{}
 		for _, tool := range req.Tools {
 			if tool.Type == "function" {
-				tools = append(tools, map[string]interface{}{
+				toolMap := map[string]interface{}{
 					"type":        "function",
 					"name":        tool.Function.Name,
 					"description": tool.Function.Description,
 					"parameters":  tool.Function.Parameters,
-				})
+				}
+				if tool.Function.Strict != nil {
+					toolMap["strict"] = *tool.Function.Strict
+				}
+				tools = append(tools, toolMap)
 			}
 		}
 		openai2Req["tools"] = tools
+	}
 
-		// Preserve explicit tool routing semantics when moving to Responses API.
+	if req.ToolChoice != nil {
 		if mapped := mapOpenAIToolChoiceToOpenAI2(req.ToolChoice); mapped != nil {
 			openai2Req["tool_choice"] = mapped
-		} else {
-			// Keep explicit default for compatibility with providers that do not
-			// treat omitted tool_choice as "auto".
-			openai2Req["tool_choice"] = "auto"
 		}
 	}
 
@@ -123,6 +130,11 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			}
 
 			itemType, _ := itemMap["type"].(string)
+			if itemType == "" {
+				if _, hasRole := itemMap["role"].(string); hasRole {
+					itemType = "message"
+				}
+			}
 			switch itemType {
 			case "message":
 				// Flush pending tool calls
@@ -203,18 +215,12 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			default:
 				continue
 			}
-			openaiReq.Tools = append(openaiReq.Tools, transformer.OpenAITool{
-				Type: "function",
-				Function: struct {
-					Name        string                 `json:"name"`
-					Description string                 `json:"description,omitempty"`
-					Parameters  map[string]interface{} `json:"parameters"`
-				}{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  params,
-				},
-			})
+			openaiTool := transformer.OpenAITool{Type: "function"}
+			openaiTool.Function.Name = tool.Name
+			openaiTool.Function.Description = tool.Description
+			openaiTool.Function.Parameters = params
+			openaiTool.Function.Strict = tool.Strict
+			openaiReq.Tools = append(openaiReq.Tools, openaiTool)
 		}
 	}
 

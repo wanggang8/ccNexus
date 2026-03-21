@@ -20,9 +20,8 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	// Parse raw map to detect explicit temperature (including 0)
 	var rawReq map[string]interface{}
 	json.Unmarshal(claudeReq, &rawReq)
-	_, hasTemperature := rawReq["temperature"]
-
 	var messages []transformer.OpenAIMessage
+
 
 	// Convert system prompt
 	if req.System != nil {
@@ -156,25 +155,16 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxTokens
 	}
-	if hasTemperature {
-		openaiReq.Temperature = &req.Temperature
-	}
 
 	// Convert tools
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
-			openaiReq.Tools = append(openaiReq.Tools, transformer.OpenAITool{
-				Type: "function",
-				Function: struct {
-					Name        string                 `json:"name"`
-					Description string                 `json:"description,omitempty"`
-					Parameters  map[string]interface{} `json:"parameters"`
-				}{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  tool.InputSchema,
-				},
-			})
+			openaiTool := transformer.OpenAITool{Type: "function"}
+			openaiTool.Function.Name = tool.Name
+			openaiTool.Function.Description = tool.Description
+			openaiTool.Function.Parameters = tool.InputSchema
+			openaiTool.Function.Strict = tool.Strict
+			openaiReq.Tools = append(openaiReq.Tools, openaiTool)
 		}
 		// Convert tool_choice
 		if req.ToolChoice != nil {
@@ -199,7 +189,9 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 
 	// Enable usage tracking for streaming
 	if req.Stream {
-		openaiReq.StreamOptions = &transformer.StreamOptions{IncludeUsage: true}
+		if _, ok := rawReq["stream_options"]; ok {
+			openaiReq.StreamOptions = &transformer.StreamOptions{IncludeUsage: true}
+		}
 	}
 
 	return json.Marshal(openaiReq)
@@ -218,11 +210,12 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	}
 
 	claudeReq := map[string]interface{}{
-		"model":      model,
-		"max_tokens": DefaultMaxTokens,
-		"stream":     false,
+		"model": model,
 	}
-	claudeMaxTokens := DefaultMaxTokens
+	if stream, ok := reqMap["stream"]; ok {
+		claudeReq["stream"] = stream
+	}
+	claudeMaxTokens := 0
 
 	if stream, ok := reqMap["stream"].(bool); ok {
 		claudeReq["stream"] = stream
@@ -236,6 +229,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 		claudeReq["max_tokens"] = maxTokensInt
 		claudeMaxTokens = maxTokensInt
 	}
+
 	if temp, ok := reqMap["temperature"].(float64); ok {
 		claudeReq["temperature"] = temp
 	}
@@ -581,13 +575,10 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			switch block["type"] {
 			case "tool_use":
 				ctx.ToolBlockStarted = true
+				ctx.ToolBlockPending = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
-				// Send initial tool call chunk with id, type, name and empty arguments
-				return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
-						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
-				}, "")
+				return nil, nil
 			case "thinking":
 				ctx.ThinkingBlockStarted = true
 			}
@@ -611,6 +602,24 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		case "input_json_delta":
 			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
+			// Send tool call shell on first arguments delta, then stream incremental arguments.
+			if ctx.ToolBlockPending {
+				chunk, err := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
+						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
+				}, "")
+				if err != nil {
+					return nil, err
+				}
+				deltaChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{"index": ctx.ToolCallCounter, "function": map[string]interface{}{"arguments": partial}},
+				}, "")
+				if err != nil {
+					return nil, err
+				}
+				ctx.ToolBlockPending = false
+				return append(chunk, deltaChunk...), nil
+			}
 			// Send incremental arguments delta
 			return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
 				{"index": ctx.ToolCallCounter, "function": map[string]interface{}{"arguments": partial}},
@@ -624,6 +633,7 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		}
 		if ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
+			ctx.ToolBlockPending = false
 			ctx.ToolArguments = ""
 			ctx.ToolCallCounter++
 		}

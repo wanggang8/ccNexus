@@ -120,9 +120,10 @@ func TestOpenAIReqToOpenAI2DefaultsToolChoiceAutoWhenToolsPresent(t *testing.T) 
 		t.Fatalf("unmarshal transformed req failed: %v", err)
 	}
 
-	if req["tool_choice"] != "auto" {
-		t.Fatalf("expected tool_choice=auto, got %#v", req["tool_choice"])
+	if req["tool_choice"] != nil {
+		t.Fatalf("expected tool_choice to stay absent when not provided, got %#v", req["tool_choice"])
 	}
+
 	if _, ok := req["store"]; ok {
 		t.Fatalf("did not expect store in generic openai2 conversion, got %#v", req["store"])
 	}
@@ -140,7 +141,8 @@ func TestOpenAIReqToOpenAI2_WithTools(t *testing.T) {
 			"function": {
 				"name": "read_file",
 				"description": "Read a file",
-				"parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+				"parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+				"strict": true
 			}
 		}]
 	}`
@@ -163,6 +165,9 @@ func TestOpenAIReqToOpenAI2_WithTools(t *testing.T) {
 	tool := tools[0].(map[string]interface{})
 	if tool["name"] != "read_file" {
 		t.Errorf("Expected tool name 'read_file', got '%v'", tool["name"])
+	}
+	if tool["strict"] != true {
+		t.Fatalf("expected strict=true to be preserved, got %#v", tool["strict"])
 	}
 }
 
@@ -394,6 +399,91 @@ func TestOpenAI2ReqToOpenAI_WithCustomTool(t *testing.T) {
 	// Custom tool should be converted to function with input parameter
 	if openaiReq.Tools[0].Function.Name != "apply_patch" {
 		t.Errorf("Expected tool name 'apply_patch', got '%v'", openaiReq.Tools[0].Function.Name)
+	}
+}
+
+func TestOpenAI2ReqToOpenAI_PreservesToolStrictFlag(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": "Hello",
+		"tools": [
+			{"type": "function", "name": "read_file", "description": "Read file", "parameters": {"type": "object"}, "strict": true}
+		]
+	}`
+
+	result, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq map[string]interface{}
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools, ok := openaiReq["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %#v", openaiReq["tools"])
+	}
+	tool := tools[0].(map[string]interface{})
+	fn, ok := tool["function"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected function wrapper, got %#v", tool)
+	}
+	if fn["strict"] != true {
+		t.Fatalf("expected strict=true to be preserved in function wrapper, got %#v", fn["strict"])
+	}
+}
+
+func TestOpenAI2ReqToOpenAI_CursorStyleInputWithoutTypedMessage(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": [
+			{"role": "system", "content": "You are GPT-5.4."},
+			{"role": "user", "content": "Hello"}
+		],
+		"tools": [
+			{"type": "function", "name": "ReadFile", "description": "Read file", "parameters": {"type": "object"}},
+			{"type": "custom", "name": "ApplyPatch", "description": "Apply patch"}
+		]
+	}`
+
+	result, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4o")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq map[string]interface{}
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages, ok := openaiReq["messages"].([]interface{})
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected cursor-style input to convert into 2 chat messages, got %#v", openaiReq["messages"])
+	}
+
+	first := messages[0].(map[string]interface{})
+	if first["role"] != "system" || first["content"] != "You are GPT-5.4." {
+		t.Fatalf("unexpected first message: %#v", first)
+	}
+
+	tools, ok := openaiReq["tools"].([]interface{})
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected tools converted for chat target, got %#v", openaiReq["tools"])
+	}
+	for i, rawTool := range tools {
+		tool := rawTool.(map[string]interface{})
+		if tool["type"] != "function" {
+			t.Fatalf("expected tool %d type=function, got %#v", i, tool)
+		}
+		if _, ok := tool["function"].(map[string]interface{}); !ok {
+			t.Fatalf("expected tool %d to use chat function wrapper, got %#v", i, tool)
+		}
+	}
+
+	if _, ok := openaiReq["input"]; ok {
+		t.Fatalf("expected chat target to drop responses input, got %#v", openaiReq["input"])
 	}
 }
 

@@ -60,11 +60,15 @@ func OpenAI2ReqToGemini(openai2Req []byte, model string) ([]byte, error) {
 			default:
 				continue
 			}
-			funcDecls = append(funcDecls, map[string]interface{}{
+			funcDecl := map[string]interface{}{
 				"name":        tool.Name,
 				"description": tool.Description,
 				"parameters":  cleanSchemaForGemini(params),
-			})
+			}
+			if tool.Strict != nil {
+				funcDecl["strict"] = *tool.Strict
+			}
+			funcDecls = append(funcDecls, funcDecl)
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}

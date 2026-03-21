@@ -55,6 +55,37 @@ func TestOpenAI2ReqToGemini_WithImages(t *testing.T) {
 	}
 }
 
+func TestOpenAI2ReqToGemini_PreservesToolStrictFlag(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": "Hello",
+		"tools": [
+			{"type": "function", "name": "read_file", "description": "Read file", "parameters": {"type": "object"}, "strict": true}
+		]
+	}`
+
+	result, err := OpenAI2ReqToGemini([]byte(openai2Req), "gemini-1.5-pro")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToGemini failed: %v", err)
+	}
+
+	var geminiReq map[string]interface{}
+	if err := json.Unmarshal(result, &geminiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools, ok := geminiReq["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool group, got %#v", geminiReq["tools"])
+	}
+	group := tools[0].(map[string]interface{})
+	decls := group["functionDeclarations"].([]interface{})
+	decl := decls[0].(map[string]interface{})
+	if decl["strict"] != true {
+		t.Fatalf("expected strict=true to be preserved, got %#v", decl["strict"])
+	}
+}
+
 func TestGeminiRespToOpenAI2_PreservesPartOrder(t *testing.T) {
 	geminiResp := `{
 		"candidates": [{

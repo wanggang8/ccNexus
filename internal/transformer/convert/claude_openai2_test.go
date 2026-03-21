@@ -161,6 +161,59 @@ func TestClaudeReqToOpenAI2_InvalidJSON(t *testing.T) {
 
 // --- OpenAI2ReqToClaude ---
 
+func TestOpenAI2ReqToClaude_WithCursorStyleBareMessagesPreservesSystemAndText(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"instructions": "You are GPT-5.4.",
+		"input": [
+			{"role": "system", "content": "System line."},
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "Hi!"}
+		],
+		"tools": [
+			{"type": "function", "name": "ReadFile", "description": "Read file", "parameters": {"type": "object"}}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if claudeReq["system"] != "You are GPT-5.4.\nSystem line." {
+		t.Fatalf("expected system text to preserve instructions and bare system message, got %#v", claudeReq["system"])
+	}
+
+	messages, ok := claudeReq["messages"].([]interface{})
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", claudeReq["messages"])
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 non-system messages, got %#v", messages)
+	}
+
+	first := messages[0].(map[string]interface{})
+	if first["role"] != "user" {
+		t.Fatalf("expected first preserved message to be user, got %#v", first)
+	}
+	if first["content"] != "Hello" {
+		t.Fatalf("expected first user message content to be preserved, got %#v", first["content"])
+	}
+
+	second := messages[1].(map[string]interface{})
+	if second["role"] != "assistant" {
+		t.Fatalf("expected second preserved message to be assistant, got %#v", second)
+	}
+	if second["content"] != "Hi!" {
+		t.Fatalf("expected assistant text to be preserved, got %#v", second["content"])
+	}
+}
+
 func TestOpenAI2ReqToClaude_Basic(t *testing.T) {
 	openai2Req := `{
 		"model": "gpt-4o",
@@ -398,6 +451,35 @@ func TestOpenAI2ReqToClaude_WithCustomTool(t *testing.T) {
 	tools := claudeReq["tools"].([]interface{})
 	if len(tools) != 1 {
 		t.Fatalf("Expected 1 tool, got %d", len(tools))
+	}
+}
+
+func TestOpenAI2ReqToClaude_PreservesToolStrictFlag(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": "Hello",
+		"tools": [
+			{"type": "function", "name": "read_file", "description": "Read file", "parameters": {"type": "object"}, "strict": true}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools, ok := claudeReq["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %#v", claudeReq["tools"])
+	}
+	tool := tools[0].(map[string]interface{})
+	if tool["strict"] != true {
+		t.Fatalf("expected strict=true to be preserved, got %#v", tool["strict"])
 	}
 }
 
@@ -762,12 +844,52 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use"
 		t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
 	}
 
-	resultStr := string(result)
-	if !strings.Contains(resultStr, "response.output_item.added") {
-		t.Errorf("Expected 'response.output_item.added' event, got '%s'", resultStr)
+	if result != nil {
+		t.Fatalf("expected no response.output_item.added before first input_json_delta, got '%s'", string(result))
 	}
-	if !strings.Contains(resultStr, "function_call") {
-		t.Errorf("Expected 'function_call' in result, got '%s'", resultStr)
+	if !ctx.ToolBlockStarted {
+		t.Fatal("expected tool block to remain started after tool_use block start")
+	}
+	if !ctx.ToolBlockPending {
+		t.Fatal("expected tool block to remain pending before first input_json_delta")
+	}
+}
+
+func TestClaudeStreamToOpenAI2_ToolUseEmitsAddedOnFirstArgumentDelta(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "msg_1"
+
+	toolStart := `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
+
+`
+	argDelta := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"/tmp/a\"}"}}
+
+`
+
+	out1, err := ClaudeStreamToOpenAI2([]byte(toolStart), ctx)
+	if err != nil {
+		t.Fatalf("tool start failed: %v", err)
+	}
+	if out1 != nil {
+		t.Fatalf("expected no output on tool start, got %s", string(out1))
+	}
+
+	out2, err := ClaudeStreamToOpenAI2([]byte(argDelta), ctx)
+	if err != nil {
+		t.Fatalf("argument delta failed: %v", err)
+	}
+
+	resultStr := string(out2)
+	if !strings.Contains(resultStr, "response.output_item.added") {
+		t.Fatalf("expected response.output_item.added on first input_json_delta, got %s", resultStr)
+	}
+	if !strings.Contains(resultStr, `data: {"delta":"{\"path\":\"/tmp/a\"}","output_index":0,"type":"response.function_call_arguments.delta"}`) {
+		t.Fatalf("expected response.function_call_arguments.delta payload, got %s", resultStr)
+	}
+	if ctx.ToolBlockPending {
+		t.Fatal("expected tool block pending to clear after first input_json_delta")
 	}
 }
 
@@ -783,6 +905,10 @@ data: {"type":"content_block_start","index":3,"content_block":{"type":"text","te
 data: {"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
 
 `
+	toolDelta := `event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"/tmp/a\"}"}}
+
+`
 
 	out1, err := ClaudeStreamToOpenAI2([]byte(textStart), ctx)
 	if err != nil {
@@ -792,13 +918,17 @@ data: {"type":"content_block_start","index":7,"content_block":{"type":"tool_use"
 	if err != nil {
 		t.Fatalf("tool start failed: %v", err)
 	}
+	out3, err := ClaudeStreamToOpenAI2([]byte(toolDelta), ctx)
+	if err != nil {
+		t.Fatalf("tool delta failed: %v", err)
+	}
 
-	combined := string(out1) + string(out2)
+	combined := string(out1) + string(out2) + string(out3)
 	if !strings.Contains(combined, `"output_index":0`) {
 		t.Fatalf("expected first emitted item to use stable index 0, got: %s", combined)
 	}
 	if !strings.Contains(combined, `"output_index":1`) {
-		t.Fatalf("expected second emitted item to use stable index 1, got: %s", combined)
+		t.Fatalf("expected tool item to use stable index 1 once emitted, got: %s", combined)
 	}
 }
 
@@ -916,6 +1046,33 @@ func TestOpenAI2StreamToClaude_Completed(t *testing.T) {
 	if !strings.Contains(resultStr, "message_delta") {
 		t.Errorf("Expected 'message_delta' event, got '%s'", resultStr)
 	}
+}
+
+func TestOpenAI2StreamToClaude_CompletedKeepsFinalTextDelta(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+	ctx.ModelName = "claude-sonnet-4-20250514"
+
+	chunks := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Thinking about the answer"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+	}
+
+	var allEvents []string
+	for _, chunk := range chunks {
+		events, err := OpenAI2StreamToClaude([]byte(chunk), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+		}
+		if events != nil {
+			allEvents = append(allEvents, string(events))
+		}
+	}
+
+	fullEvents := strings.Join(allEvents, "")
+	assertContains(t, fullEvents, `"text":"Thinking about the answer"`, "Expected final text delta to survive response.completed boundary")
+	assertContains(t, fullEvents, `"type":"message_stop"`, "Expected message_stop at the end of Responses stream")
 }
 
 func TestOpenAI2StreamToClaude_Done(t *testing.T) {
@@ -1117,13 +1274,60 @@ func TestClaudeReqToOpenAI2PreservesToolChain(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAI2InputToClaude_PreservesBareRoleMessages(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"role": "system", "content": "System line."},
+		map[string]interface{}{"role": "user", "content": "Hello"},
+		map[string]interface{}{"role": "assistant", "content": "Hi!"},
+	}
+
+	messages, systemPrompt := convertOpenAI2InputToClaude(input)
+	if systemPrompt != "System line." {
+		t.Fatalf("expected system prompt to be extracted, got %#v", systemPrompt)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 non-system messages, got %#v", messages)
+	}
+
+	first := messages[0]
+	if first["role"] != "user" || first["content"] != "Hello" {
+		t.Fatalf("unexpected first message: %#v", first)
+	}
+
+	second := messages[1]
+	if second["role"] != "assistant" || second["content"] != "Hi!" {
+		t.Fatalf("unexpected second message: %#v", second)
+	}
+}
+
+func TestConvertOpenAI2InputToClaude_PreservesMultiPartSystemBlocks(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"role": "system", "content": []interface{}{
+			map[string]interface{}{"type": "input_text", "text": "Line 1"},
+			map[string]interface{}{"type": "input_text", "text": "Line 2"},
+		}},
+		map[string]interface{}{"role": "user", "content": "Hello"},
+	}
+
+	messages, systemPrompt := convertOpenAI2InputToClaude(input)
+	if systemPrompt != "Line 1\nLine 2" {
+		t.Fatalf("expected multi-part system blocks to preserve line breaks, got %#v", systemPrompt)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 non-system message, got %#v", messages)
+	}
+	if messages[0]["role"] != "user" || messages[0]["content"] != "Hello" {
+		t.Fatalf("unexpected preserved message: %#v", messages[0])
+	}
+}
+
 func TestConvertOpenAI2InputToClaude_FunctionCallOutputFlushesPendingToolUses(t *testing.T) {
 	input := []interface{}{
 		map[string]interface{}{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": `{"path":"/tmp/a"}`},
 		map[string]interface{}{"type": "function_call_output", "call_id": "call_1", "output": "file content"},
 	}
 
-	messages := convertOpenAI2InputToClaude(input)
+	messages, _ := convertOpenAI2InputToClaude(input)
 	if len(messages) != 2 {
 		t.Fatalf("expected assistant tool_use and user tool_result messages, got %#v", messages)
 	}
@@ -1304,7 +1508,7 @@ func TestClaudeReqToOpenAI2MapsToolChoiceAnyToRequired(t *testing.T) {
 	}
 
 	if req["tool_choice"] != "required" {
-		t.Fatalf("expected tool_choice=required, got %#v", req["tool_choice"])
+		t.Fatalf("expected explicit any tool_choice to map to required, got %#v", req["tool_choice"])
 	}
 	if _, ok := req["store"]; ok {
 		t.Fatalf("did not expect store in generic claude->openai2 conversion, got %#v", req["store"])
@@ -1360,8 +1564,8 @@ func TestClaudeReqToOpenAI2DefaultsToolChoiceRequiredWhenToolsPresent(t *testing
 		t.Fatalf("unmarshal transformed req failed: %v", err)
 	}
 
-	if req["tool_choice"] != "required" {
-		t.Fatalf("expected tool_choice=required, got %#v", req["tool_choice"])
+	if req["tool_choice"] != nil {
+		t.Fatalf("expected tool_choice to stay absent when not provided, got %#v", req["tool_choice"])
 	}
 }
 
@@ -1386,7 +1590,7 @@ func TestClaudeReqToOpenAI2DefaultsToolChoiceAutoAfterToolResult(t *testing.T) {
 		t.Fatalf("unmarshal transformed req failed: %v", err)
 	}
 
-	if req["tool_choice"] != "auto" {
-		t.Fatalf("expected tool_choice=auto after tool_result, got %#v", req["tool_choice"])
+	if req["tool_choice"] != nil {
+		t.Fatalf("expected tool_choice to stay absent when not provided, got %#v", req["tool_choice"])
 	}
 }
