@@ -55,11 +55,6 @@ func (t *CLITransformer) transformRequestInternal(req []byte) ([]byte, map[strin
 		data["model"] = t.model
 	}
 
-	// Ensure max_tokens is set
-	if _, ok := data["max_tokens"]; !ok {
-		data["max_tokens"] = convert.DefaultCliMaxTokens
-	}
-
 	// Inject CLI system prompt at the beginning of the system array
 	existingSystem := data["system"]
 	var systemBlocks []interface{}

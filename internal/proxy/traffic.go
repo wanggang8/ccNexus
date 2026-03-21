@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lich0821/ccNexus/internal/logger"
 )
 
 const (
@@ -13,11 +17,24 @@ const (
 	MaxTrafficLogs = 10
 	// MaxBodySize is the maximum size of request/response body to store (512KB)
 	MaxBodySize = 512 * 1024
+
+	TrafficEventTypeUnified         = "traffic"
+	TrafficEventTypeTransformError    = "transform_error"
+	TrafficEventTypeRequestBuildError = "request_build_error"
+	TrafficEventTypeRequestSendError  = "request_send_error"
+	TrafficEventTypeStreamingSuccess  = "streaming_success"
+	TrafficEventTypeStreamingError    = "streaming_error"
+	TrafficEventTypeNonStreamingError = "non_streaming_error"
+	TrafficEventTypeNonStreamingSuccess = "non_streaming_success"
+	TrafficEventTypeRetryError        = "retry_error"
+	TrafficEventTypePassthroughResponse = "passthrough_response"
 )
 
 // TrafficLog represents a single traffic log entry
 type TrafficLog struct {
 	ID                  string        `json:"id"`
+	RequestID           string        `json:"requestId"`
+	EventType           string        `json:"eventType"`
 	Timestamp           time.Time     `json:"timestamp"`
 	EndpointName        string        `json:"endpointName"`
 	ClientFormat        string        `json:"clientFormat"`
@@ -42,6 +59,8 @@ type TrafficLog struct {
 // TrafficLogSummary is a lightweight version of TrafficLog for list display
 type TrafficLogSummary struct {
 	ID              string `json:"id"`
+	RequestID       string `json:"requestId"`
+	EventType       string `json:"eventType"`
 	Timestamp       int64  `json:"timestamp"` // Unix milliseconds
 	EndpointName    string `json:"endpointName"`
 	ClientFormat    string `json:"clientFormat"`
@@ -82,6 +101,8 @@ type TrafficRecorder struct {
 	head      int // Next write position
 	count     int // Current number of logs
 	recording atomic.Bool
+	trafficMu sync.Mutex
+	trafficFile *os.File
 }
 
 // NewTrafficRecorder creates a new TrafficRecorder
@@ -93,14 +114,42 @@ func NewTrafficRecorder() *TrafficRecorder {
 	return tr
 }
 
-// SetRecording enables or disables traffic recording
+// SetRecording enables or disables in-memory traffic recording.
 func (tr *TrafficRecorder) SetRecording(enabled bool) {
 	tr.recording.Store(enabled)
 }
 
-// IsRecording returns whether traffic recording is enabled
+// IsRecording returns whether in-memory traffic recording is enabled.
 func (tr *TrafficRecorder) IsRecording() bool {
 	return tr.recording.Load()
+}
+
+// EnableFileLogging enables persisted traffic logging.
+func (tr *TrafficRecorder) EnableFileLogging(filepath string) error {
+	tr.trafficMu.Lock()
+	defer tr.trafficMu.Unlock()
+
+	if tr.trafficFile != nil {
+		_ = tr.trafficFile.Close()
+	}
+
+	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	tr.trafficFile = f
+	return nil
+}
+
+// DisableFileLogging disables persisted traffic logging.
+func (tr *TrafficRecorder) DisableFileLogging() {
+	tr.trafficMu.Lock()
+	defer tr.trafficMu.Unlock()
+
+	if tr.trafficFile != nil {
+		_ = tr.trafficFile.Close()
+		tr.trafficFile = nil
+	}
 }
 
 // Record adds a new traffic log entry
@@ -131,7 +180,52 @@ func (tr *TrafficRecorder) Record(log *TrafficLog) {
 	if tr.count < MaxTrafficLogs {
 		tr.count++
 	}
+
+	tr.writeFileLog(log)
 }
+
+func (tr *TrafficRecorder) writeFileLog(log *TrafficLog) {
+	tr.trafficMu.Lock()
+	defer tr.trafficMu.Unlock()
+
+	if tr.trafficFile == nil {
+		return
+	}
+
+	entry := map[string]interface{}{
+		"id":                 log.ID,
+		"requestId":          log.RequestID,
+		"eventType":          log.EventType,
+		"timestamp":          log.Timestamp.Format(time.RFC3339Nano),
+		"endpointName":       log.EndpointName,
+		"clientFormat":       log.ClientFormat,
+		"transformerName":    log.TransformerName,
+		"method":             log.Method,
+		"path":               log.Path,
+		"statusCode":         log.StatusCode,
+		"durationMs":         log.Duration.Milliseconds(),
+		"inputTokens":        log.InputTokens,
+		"outputTokens":       log.OutputTokens,
+		"error":              log.Error,
+		"isStreaming":        log.IsStreaming,
+		"truncated":          log.Truncated,
+		"originalRequest":    string(log.OriginalRequest),
+		"transformedRequest": string(log.TransformedRequest),
+		"originalResponse":   string(log.OriginalResponse),
+		"transformedResponse": string(log.TransformedResponse),
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		logger.Warn("Failed to marshal traffic log: %v", err)
+		return
+	}
+
+	if _, err := fmt.Fprintln(tr.trafficFile, string(data)); err != nil {
+		logger.Warn("Failed to write traffic log: %v", err)
+	}
+}
+
 
 // GetLogs returns traffic logs matching the filter (newest first)
 func (tr *TrafficRecorder) GetLogs(filter *TrafficFilter) []TrafficLogSummary {
@@ -226,6 +320,8 @@ func truncateBody(body []byte, truncated *bool) []byte {
 func toSummary(log *TrafficLog) TrafficLogSummary {
 	return TrafficLogSummary{
 		ID:              log.ID,
+		RequestID:       log.RequestID,
+		EventType:       log.EventType,
 		Timestamp:       log.Timestamp.UnixMilli(),
 		EndpointName:    log.EndpointName,
 		ClientFormat:    log.ClientFormat,

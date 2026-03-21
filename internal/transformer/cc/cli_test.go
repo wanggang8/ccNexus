@@ -268,8 +268,7 @@ func TestCLITransformer_DefaultMaxTokens(t *testing.T) {
 	var cliReq map[string]interface{}
 	json.Unmarshal(result, &cliReq)
 
-	maxTokens, ok := cliReq["max_tokens"].(float64)
-	if !ok || int(maxTokens) == 0 {
-		t.Errorf("Expected max_tokens to be set, got %v", cliReq["max_tokens"])
+	if _, ok := cliReq["max_tokens"]; ok {
+		t.Fatalf("expected max_tokens to stay absent when not provided, got %#v", cliReq["max_tokens"])
 	}
 }

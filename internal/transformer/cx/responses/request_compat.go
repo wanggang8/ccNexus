@@ -58,7 +58,13 @@ func normalizeResponsesPassthrough(req []byte, srcMap map[string]interface{}, mo
 		srcMap["model"] = model
 		changed = true
 	}
-	if len(compat.DeleteIfPresent(srcMap, "thinking", "enable_thinking", "budget_tokens")) > 0 {
+	if _, ok := srcMap["thinking"]; ok {
+		changed = true
+	}
+	if _, ok := srcMap["enable_thinking"]; ok {
+		changed = true
+	}
+	if _, ok := srcMap["budget_tokens"]; ok {
 		changed = true
 	}
 	audit := compat.ApplyResponsesFieldPolicy(srcMap, srcMap)

@@ -7,7 +7,19 @@ func ApplyOpenAIFieldPolicy(dst, src map[string]interface{}) Audit {
 		"stream_options",
 		"user",
 	)
-	DeleteIfPresent(dst, "include", "store", "reasoning", "thinking", "enable_thinking", "budget_tokens", "reasoning_content")
+	if thinking, ok := src["thinking"]; ok {
+		dst["thinking"] = thinking
+		summary = append(summary, "thinking")
+	}
+	if enableThinking, ok := src["enable_thinking"]; ok {
+		dst["enable_thinking"] = enableThinking
+		summary = append(summary, "enable_thinking")
+	}
+	if budgetTokens, ok := src["budget_tokens"]; ok {
+		dst["budget_tokens"] = budgetTokens
+		summary = append(summary, "budget_tokens")
+	}
+	DeleteIfPresent(dst, "include", "store", "reasoning", "reasoning_content")
 	if effort := ExtractResponsesReasoningEffort(src); effort != nil {
 		dst["reasoning_effort"] = effort
 		summary = append(summary, "reasoning_effort")
@@ -47,6 +59,18 @@ func ApplyResponsesFieldPolicy(dst, src map[string]interface{}) Audit {
 		dst["reasoning_effort"] = effort
 		summary = append(summary, "reasoning_effort")
 	}
-	DeleteIfPresent(dst, "stream_options", "thinking", "enable_thinking", "budget_tokens")
+	if thinking, ok := src["thinking"]; ok {
+		dst["thinking"] = thinking
+		summary = append(summary, "thinking")
+	}
+	if enableThinking, ok := src["enable_thinking"]; ok {
+		dst["enable_thinking"] = enableThinking
+		summary = append(summary, "enable_thinking")
+	}
+	if budgetTokens, ok := src["budget_tokens"]; ok {
+		dst["budget_tokens"] = budgetTokens
+		summary = append(summary, "budget_tokens")
+	}
+	DeleteIfPresent(dst, "stream_options")
 	return Audit{Changed: len(summary) > 0, Reason: "responses_field_policy", Summary: summary}
 }

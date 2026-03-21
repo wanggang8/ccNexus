@@ -117,6 +117,22 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
+	trafficLogPath := ""
+	isDevBuild := false
+	if env := runtime.Environment(ctx); strings.Contains(strings.ToLower(env.BuildType), "dev") {
+		isDevBuild = true
+	}
+
+	if isDevBuild {
+		trafficLogDir := filepath.Join(configDir, "logs")
+		if err := os.MkdirAll(trafficLogDir, 0755); err != nil {
+			logger.Warn("Failed to create traffic log directory: %v", err)
+		} else {
+			trafficLogPath = filepath.Join(trafficLogDir, "traffic.log")
+			logger.Info("Dev build detected, traffic logs will be written to %s", trafficLogPath)
+		}
+	}
+
 	dbPath := filepath.Join(configDir, "ccnexus.db")
 
 	sqliteStorage, err := storage.NewSQLiteStorage(dbPath)
@@ -153,6 +169,14 @@ func (a *App) startup(ctx context.Context) {
 
 	statsAdapter := storage.NewStatsStorageAdapter(sqliteStorage)
 	a.proxy = proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
+	if isDevBuild && trafficLogPath != "" {
+		if err := a.proxy.GetTrafficRecorder().EnableFileLogging(trafficLogPath); err != nil {
+			logger.Warn("Failed to enable traffic log file: %v", err)
+		} else {
+			a.proxy.GetTrafficRecorder().SetRecording(true)
+			logger.Info("Traffic logging enabled: %s", trafficLogPath)
+		}
+	}
 
 	a.proxy.SetOnEndpointSuccess(func(endpointName string) {
 		runtime.EventsEmit(ctx, "endpoint:success", endpointName)
@@ -202,6 +226,7 @@ func (a *App) shutdown(ctx context.Context) {
 		a.augmentServer.Stop()
 	}
 	if a.proxy != nil {
+		a.proxy.GetTrafficRecorder().DisableFileLogging()
 		a.proxy.Stop()
 	}
 	if a.storage != nil {

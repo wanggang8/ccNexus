@@ -12,8 +12,14 @@ func NormalizeOpenAIChatRequestShape(data map[string]interface{}) Audit {
 	if stripOpenAIChatCacheControl(data) {
 		summary = append(summary, "strip_cache_control")
 	}
-	if len(DeleteIfPresent(data, "thinking", "enable_thinking", "budget_tokens")) > 0 {
-		summary = append(summary, "strip_internal_thinking")
+	if _, ok := data["thinking"]; ok {
+		summary = append(summary, "keep_thinking")
+	}
+	if _, ok := data["enable_thinking"]; ok {
+		summary = append(summary, "keep_enable_thinking")
+	}
+	if _, ok := data["budget_tokens"]; ok {
+		summary = append(summary, "keep_budget_tokens")
 	}
 
 	return Audit{Changed: len(summary) > 0, Reason: "openai_chat_request_shape_normalize", Summary: summary}

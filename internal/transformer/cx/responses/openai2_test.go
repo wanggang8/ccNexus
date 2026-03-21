@@ -58,7 +58,7 @@ func TestOpenAI2Transformer_TransformRequest_ModelOverride(t *testing.T) {
 	}
 }
 
-func TestOpenAI2Transformer_TransformRequest_StripsInternalThinkingFields(t *testing.T) {
+func TestOpenAI2Transformer_TransformRequest_PreservesInternalThinkingFields(t *testing.T) {
 	trans := NewOpenAI2Transformer("gpt-4o-mini")
 
 	openai2Req := `{
@@ -83,14 +83,18 @@ func TestOpenAI2Transformer_TransformRequest_StripsInternalThinkingFields(t *tes
 	if data["model"] != "gpt-4o-mini" {
 		t.Fatalf("expected model override to remain applied, got %#v", data["model"])
 	}
-	if _, ok := data["thinking"]; ok {
-		t.Fatalf("expected thinking to be stripped, got %#v", data["thinking"])
+	thinking, ok := data["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected thinking to be preserved, got %#v", data["thinking"])
 	}
-	if _, ok := data["enable_thinking"]; ok {
-		t.Fatalf("expected enable_thinking to be stripped, got %#v", data["enable_thinking"])
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking.type to be preserved, got %#v", thinking["type"])
 	}
-	if _, ok := data["budget_tokens"]; ok {
-		t.Fatalf("expected budget_tokens to be stripped, got %#v", data["budget_tokens"])
+	if data["enable_thinking"] != true {
+		t.Fatalf("expected enable_thinking to be preserved, got %#v", data["enable_thinking"])
+	}
+	if data["budget_tokens"] != float64(2048) {
+		t.Fatalf("expected budget_tokens to be preserved, got %#v", data["budget_tokens"])
 	}
 	if data["reasoning_effort"] != "low" {
 		t.Fatalf("expected reasoning_effort to be preserved, got %#v", data["reasoning_effort"])

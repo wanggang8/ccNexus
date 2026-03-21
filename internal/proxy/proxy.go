@@ -13,6 +13,7 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -94,6 +95,17 @@ func (p *Proxy) SetOnEndpointSuccess(callback func(endpointName string)) {
 // GetTrafficRecorder returns the traffic recorder
 func (p *Proxy) GetTrafficRecorder() *TrafficRecorder {
 	return p.trafficRecorder
+}
+
+func (p *Proxy) recordTrafficLog(requestID string, log *TrafficLog) {
+	if log == nil {
+		return
+	}
+	log.RequestID = requestID
+	if log.EventType == "" {
+		log.EventType = TrafficEventTypeUnified
+	}
+	p.trafficRecorder.Record(log)
 }
 
 // Start starts the proxy server
@@ -342,6 +354,7 @@ func detectClientFormat(path string) ClientFormat {
 // handleProxy handles the main proxy logic
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	requestID := uuid.New().String()
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -460,7 +473,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for transformer error
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:       startTime,
 				EndpointName:    endpoint.Name,
 				ClientFormat:    string(clientFormat),
@@ -487,7 +500,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for transform error
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:       startTime,
 				EndpointName:    endpoint.Name,
 				ClientFormat:    string(clientFormat),
@@ -562,7 +575,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for request build error
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:          startTime,
 				EndpointName:       endpoint.Name,
 				ClientFormat:       string(clientFormat),
@@ -619,7 +632,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for request send error
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:          startTime,
 				EndpointName:       endpoint.Name,
 				ClientFormat:       string(clientFormat),
@@ -695,7 +708,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for successful streaming response
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
+				ID:                  requestID,
 				Timestamp:           startTime,
 				EndpointName:        endpoint.Name,
 				ClientFormat:        string(clientFormat),
@@ -732,7 +746,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, fmt.Sprintf(`{"error":{"message":"response transformation failed: %s","type":"proxy_error"}}`, err.Error()), http.StatusBadGateway)
 
 				// Record traffic log for failed non-streaming response
-				p.trafficRecorder.Record(&TrafficLog{
+				p.recordTrafficLog(requestID, &TrafficLog{
 					Timestamp:          startTime,
 					EndpointName:       endpoint.Name,
 					ClientFormat:       string(clientFormat),
@@ -759,7 +773,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for successful non-streaming response
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:           startTime,
 				EndpointName:        endpoint.Name,
 				ClientFormat:        string(clientFormat),
@@ -808,7 +822,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for retry error
-			p.trafficRecorder.Record(&TrafficLog{
+			p.recordTrafficLog(requestID, &TrafficLog{
 				Timestamp:          startTime,
 				EndpointName:       endpoint.Name,
 				ClientFormat:       string(clientFormat),
@@ -920,7 +934,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		w.Write(respBody)
 
 		// Record traffic log for non-200 passthrough response
-		p.trafficRecorder.Record(&TrafficLog{
+		p.recordTrafficLog(requestID, &TrafficLog{
 			Timestamp:           startTime,
 			EndpointName:        endpoint.Name,
 			ClientFormat:        string(clientFormat),
