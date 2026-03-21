@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -261,6 +262,139 @@ func TestClaudeTransformer_TransformResponse(t *testing.T) {
 	}
 	if message["content"] != "Hello!" {
 		t.Errorf("Expected content 'Hello!', got '%v'", message["content"])
+	}
+}
+
+func TestClaudeTransformer_TransformRequest_ClaudeShapePassthroughNormalize(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	claudeReq := `{
+		"model": "claude-3-5-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+		],
+		"tools": [{"name": "read_file", "description": "Read a file", "input_schema": {"type": "object"}}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "claude-sonnet-4-20250514" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if _, ok := data["system"]; !ok {
+		t.Fatalf("expected Claude-shaped body to preserve system, got %#v", data)
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+	tools := data["tools"].([]interface{})
+	tool := tools[0].(map[string]interface{})
+	if tool["input_schema"] == nil {
+		t.Fatalf("expected Claude tool schema preserved, got %#v", tool)
+	}
+}
+
+func TestClaudeTransformer_TransformRequest_OpenAIResponsesShapeUsesResponsesConverter(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	responsesReq := `{
+		"model": "gpt-5.4",
+		"instructions": "You are helpful.",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
+		],
+		"reasoning": {"effort": "medium", "summary": "auto"},
+		"user": "user-123",
+		"stream": true
+	}`
+
+	result, err := trans.TransformRequest([]byte(responsesReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "claude-sonnet-4-20250514" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["system"] != "You are helpful." {
+		t.Fatalf("expected instructions to map to Claude system, got %#v", data["system"])
+	}
+	if _, ok := data["thinking"]; !ok {
+		t.Fatalf("expected reasoning to map into Claude thinking config")
+	}
+	messages := data["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("expected one converted Claude message, got %d", len(messages))
+	}
+}
+
+func TestClaudeTransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/cursor-claude-request.log")
+	if err != nil {
+		t.Fatalf("read cursor claude log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["model"] != "claude-sonnet-4-20250514" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["messages"] == nil {
+		t.Fatalf("expected Claude messages preserved")
+	}
+	if data["tools"] == nil {
+		t.Fatalf("expected tools preserved")
+	}
+}
+
+func TestClaudeTransformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log")
+	if err != nil {
+		t.Fatalf("read chatgpt5.4 log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["system"] == nil {
+		t.Fatalf("expected system mapped from responses-like input")
+	}
+	if data["messages"] == nil {
+		t.Fatalf("expected messages converted for Claude target")
 	}
 }
 

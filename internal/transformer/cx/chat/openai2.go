@@ -20,7 +20,14 @@ func (t *OpenAI2Transformer) Name() string {
 }
 
 func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
-	return convert.OpenAIReqToOpenAI2(req, t.model)
+	return transformChatRequestByShape(
+		req,
+		t.model,
+		"openai2",
+		convert.OpenAIReqToOpenAI2,
+		convert.ClaudeReqToOpenAI2,
+		convert.OpenAIReqToOpenAI2,
+	)
 }
 
 func (t *OpenAI2Transformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

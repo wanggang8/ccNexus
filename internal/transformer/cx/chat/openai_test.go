@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -150,6 +151,46 @@ func TestOpenAITransformer_TransformRequest_KeepOpenAIFormat(t *testing.T) {
 	// Should remain OpenAI format
 	if tool["type"] != "function" {
 		t.Errorf("Expected type 'function', got '%v'", tool["type"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_NormalizesLegacyFunctionsAndFunctionCall(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4")
+
+	openaiReq := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"functions": [{"name": "legacy_func", "description": "Legacy", "parameters": {"type": "object"}}],
+		"function_call": {"name": "legacy_func"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	tools, ok := data["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected legacy functions normalized to tools, got %#v", data["tools"])
+	}
+	if _, ok := data["functions"]; ok {
+		t.Fatalf("expected legacy functions key removed, got %#v", data["functions"])
+	}
+	toolChoice, ok := data["tool_choice"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected function_call normalized to tool_choice, got %#v", data["tool_choice"])
+	}
+	fn, _ := toolChoice["function"].(map[string]interface{})
+	if toolChoice["type"] != "function" || fn["name"] != "legacy_func" {
+		t.Fatalf("unexpected tool_choice normalization result: %#v", toolChoice)
+	}
+	if _, ok := data["function_call"]; ok {
+		t.Fatalf("expected legacy function_call key removed, got %#v", data["function_call"])
 	}
 }
 
@@ -678,5 +719,215 @@ func TestOpenAITransformer_TransformResponseWithContext_DropPostDoneChunks(t *te
 	}
 	if postDoneResult != nil {
 		t.Fatalf("expected post-done chunks to be dropped, got %s", string(postDoneResult))
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_ClaudeShapeUsesClaudeConverter(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	claudeReq := `{
+		"model": "claude-4-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+		],
+		"tools": [{
+			"name": "read_file",
+			"description": "Read a file",
+			"input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+		}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata to be preserved for Claude-shaped body, got %#v", data["metadata"])
+	}
+	messages := data["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected system + user messages after Claude conversion, got %d", len(messages))
+	}
+	first := messages[0].(map[string]interface{})
+	if first["role"] != "system" {
+		t.Fatalf("expected first message to be system after Claude conversion, got %#v", first)
+	}
+	tools := data["tools"].([]interface{})
+	tool := tools[0].(map[string]interface{})
+	if tool["type"] != "function" {
+		t.Fatalf("expected Claude tools to be converted via ClaudeReqToOpenAI, got %#v", tool)
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_OpenAIResponsesShapeUsesResponsesConverter(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	responsesReq := `{
+		"model": "gpt-5.4",
+		"instructions": "You are helpful.",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
+		],
+		"reasoning": {"effort": "medium", "summary": "auto"},
+		"include": ["reasoning.encrypted_content"],
+		"stream_options": {"include_usage": true},
+		"user": "user-123"
+	}`
+
+	result, err := trans.TransformRequest([]byte(responsesReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	messages := data["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected system + user messages after OpenAI2 conversion, got %d", len(messages))
+	}
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning to map to reasoning_effort, got %#v", data["reasoning_effort"])
+	}
+	if data["stream_options"] == nil {
+		t.Fatalf("expected stream_options preserved for responses-like body")
+	}
+	if data["user"] != "user-123" {
+		t.Fatalf("expected user preserved for responses-like body, got %#v", data["user"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_ResponsesShapeNormalizesReasoningAliasWithoutOpenAIPassthrough(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	responsesReq := `{
+		"model": "gpt-5.4",
+		"input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+		"reasoning": {"effort": "medium"},
+		"reasoningContent": "Need to inspect files first.",
+		"user": "user-123"
+	}`
+
+	result, err := trans.TransformRequest([]byte(responsesReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning effort preserved, got %#v", data["reasoning_effort"])
+	}
+	if _, ok := data["reasoningContent"]; ok {
+		t.Fatalf("expected camelCase reasoningContent to be normalized away, got %#v", data["reasoningContent"])
+	}
+	if _, ok := data["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content not to be passed through to openai target, got %#v", data["reasoning_content"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/cursor-claude-request.log")
+	if err != nil {
+		t.Fatalf("read cursor claude log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected messages after Claude-shaped chat conversion, got %#v", data["messages"])
+	}
+	if _, ok := data["tools"].([]interface{}); !ok {
+		t.Fatalf("expected tools preserved, got %#v", data["tools"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log")
+	if err != nil {
+		t.Fatalf("read chatgpt5.4 log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["user"] == nil {
+		t.Fatalf("expected responses-like user preserved")
+	}
+	if data["stream_options"] == nil {
+		t.Fatalf("expected stream_options preserved")
+	}
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected responses-like body converted to openai messages")
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_OpenAIResponsesShapeCamelCaseReasoningContentPreserved(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	responsesReq := `{
+		"model": "gpt-5.4",
+		"input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+		"reasoning": {"effort": "medium"},
+		"reasoningContent": "Need to inspect files first.",
+		"user": "user-123"
+	}`
+
+	result, err := trans.TransformRequest([]byte(responsesReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning effort preserved, got %#v", data["reasoning_effort"])
+	}
+	if _, ok := data["reasoningContent"]; ok {
+		t.Fatalf("expected camelCase reasoningContent to be normalized away, got %#v", data["reasoningContent"])
 	}
 }

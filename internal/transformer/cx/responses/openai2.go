@@ -1,9 +1,8 @@
 package responses
 
 import (
-	"encoding/json"
-
 	"github.com/lich0821/ccNexus/internal/transformer"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // OpenAI2Transformer is a passthrough transformer for Codex Responses → OpenAI Responses
@@ -21,20 +20,14 @@ func (t *OpenAI2Transformer) Name() string {
 }
 
 func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
-	if t.model == "" {
-		return req, nil
-	}
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(req, &data); err != nil {
-		return req, nil
-	}
-
-	data["model"] = t.model
-	delete(data, "thinking")
-	delete(data, "enable_thinking")
-	delete(data, "budget_tokens")
-	return json.Marshal(data)
+	return transformResponsesRequestByShape(
+		req,
+		t.model,
+		"openai2",
+		func(r []byte, m string) ([]byte, error) { return r, nil },
+		convert.ClaudeReqToOpenAI2,
+		convert.OpenAIReqToOpenAI2,
+	)
 }
 
 func (t *OpenAI2Transformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

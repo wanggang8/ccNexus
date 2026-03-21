@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -266,5 +267,133 @@ func TestOpenAI2Transformer_TransformResponseWithContext_NonStreaming(t *testing
 
 	if openaiResp["object"] != "chat.completion" {
 		t.Errorf("Expected object 'chat.completion', got '%v'", openaiResp["object"])
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_ClaudeShapeUsesClaudeConverter(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	claudeReq := `{
+		"model": "claude-4-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+		],
+		"tools": [{"name": "read_file", "description": "Read a file", "input_schema": {"type": "object"}}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["instructions"] == nil {
+		t.Fatalf("expected Claude system to map to instructions")
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+	if _, ok := data["input"].([]interface{}); !ok {
+		t.Fatalf("expected Claude-shaped body to become responses input, got %#v", data["input"])
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_OpenAIResponsesShapePassthroughNormalize(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	responsesReq := `{
+		"model": "gpt-5.4",
+		"instructions": "You are helpful.",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
+		],
+		"reasoning": {"effort": "medium", "summary": "auto"},
+		"include": ["reasoning.encrypted_content"],
+		"user": "user-123",
+		"stream": true
+	}`
+
+	result, err := trans.TransformRequest([]byte(responsesReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["input"] == nil {
+		t.Fatalf("expected responses input preserved")
+	}
+	if data["reasoning"] == nil {
+		t.Fatalf("expected responses reasoning preserved")
+	}
+	if data["user"] != "user-123" {
+		t.Fatalf("expected user preserved, got %#v", data["user"])
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/cursor-claude-request.log")
+	if err != nil {
+		t.Fatalf("read cursor claude log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["input"] == nil {
+		t.Fatalf("expected Claude-shaped body converted to responses input")
+	}
+	if data["metadata"] == nil {
+		t.Fatalf("expected metadata preserved")
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_RealChatGPT54Log(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	payload, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-request.log")
+	if err != nil {
+		t.Fatalf("read chatgpt5.4 log failed: %v", err)
+	}
+
+	result, err := trans.TransformRequest(payload)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if data["input"] == nil {
+		t.Fatalf("expected responses-like input preserved")
+	}
+	if data["user"] == nil {
+		t.Fatalf("expected user preserved")
 	}
 }

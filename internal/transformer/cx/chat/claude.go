@@ -20,7 +20,14 @@ func (t *ClaudeTransformer) Name() string {
 }
 
 func (t *ClaudeTransformer) TransformRequest(req []byte) ([]byte, error) {
-	return convert.OpenAIReqToClaude(req, t.model)
+	return transformChatRequestByShape(
+		req,
+		t.model,
+		"claude",
+		convert.OpenAIReqToClaude,
+		convert.OpenAIReqToClaude,
+		convert.OpenAI2ReqToClaude,
+	)
 }
 
 func (t *ClaudeTransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

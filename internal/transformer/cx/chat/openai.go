@@ -7,6 +7,7 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
+	"github.com/lich0821/ccNexus/internal/transformer/compat"
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
@@ -25,146 +26,36 @@ func (t *OpenAITransformer) Name() string {
 }
 
 func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
+	return transformChatRequestByShape(
+		req,
+		t.model,
+		"openai",
+		transformOpenAIChatRequest,
+		convert.ClaudeReqToOpenAI,
+		convert.OpenAI2ReqToOpenAI,
+	)
+}
+
+func transformOpenAIChatRequest(req []byte, model string) ([]byte, error) {
 	var data map[string]interface{}
 	if err := json.Unmarshal(req, &data); err != nil {
 		return req, nil
 	}
 
 	// Override model if specified
-	if t.model != "" {
-		data["model"] = t.model
+	if model != "" {
+		data["model"] = model
 	}
 
-	// Fix Cursor's Claude-format messages (tool_result)
-	if messages, ok := data["messages"].([]interface{}); ok {
-		fixedMessages := make([]interface{}, 0, len(messages))
-		for _, msgInterface := range messages {
-			msg, ok := msgInterface.(map[string]interface{})
-			if !ok {
-				fixedMessages = append(fixedMessages, msgInterface)
-				continue
-			}
+	compat.NormalizeOpenAIChatCompat(data)
+	audit := compat.NormalizeOpenAIChatRequestShape(data)
 
-			// Check if message has Claude-format content blocks with tool_result
-			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
-				hasToolResult := false
-				var otherBlocks []interface{}
-				for _, item := range content {
-					if block, ok := item.(map[string]interface{}); ok {
-						if block["type"] == "tool_result" {
-							hasToolResult = true
-							fixedMessages = append(fixedMessages, map[string]interface{}{
-								"role":         "tool",
-								"tool_call_id": block["tool_use_id"],
-								"content":      block["content"],
-							})
-						} else {
-							otherBlocks = append(otherBlocks, item)
-						}
-					} else {
-						otherBlocks = append(otherBlocks, item)
-					}
-				}
-				if hasToolResult {
-					// H4: Preserve non-tool_result content blocks (text, images) as a separate message
-					if len(otherBlocks) > 0 {
-						preservedMsg := map[string]interface{}{"role": msg["role"]}
-						if len(otherBlocks) == 1 {
-							if tb, ok := otherBlocks[0].(map[string]interface{}); ok {
-								if text, ok := tb["text"].(string); ok && tb["type"] == "text" {
-									preservedMsg["content"] = text
-								} else {
-									preservedMsg["content"] = otherBlocks
-								}
-							} else {
-								preservedMsg["content"] = otherBlocks
-							}
-						} else {
-							preservedMsg["content"] = otherBlocks
-						}
-						fixedMessages = append(fixedMessages, preservedMsg)
-					}
-					continue
-				}
-			}
-
-			// Keep message as-is
-			fixedMessages = append(fixedMessages, msg)
-		}
-		data["messages"] = fixedMessages
+	if tools, ok := data["tools"].([]interface{}); ok && len(tools) > 20 {
+		logger.Warn("Large number of tools detected: %d (OpenAI recommends ≤20)", len(tools))
 	}
-
-	// Fix Cursor's Claude-format tool definitions to OpenAI format
-	if tools, ok := data["tools"].([]interface{}); ok && len(tools) > 0 {
-		fixedTools := make([]interface{}, 0, len(tools))
-		for _, toolInterface := range tools {
-			tool, ok := toolInterface.(map[string]interface{})
-			if !ok {
-				fixedTools = append(fixedTools, toolInterface)
-				continue
-			}
-
-			// Check if it's Claude format (has "name" at top level, no "type" field)
-			if name, hasName := tool["name"].(string); hasName && name != "" && tool["type"] == nil {
-				// Convert Claude format to OpenAI format
-				// Ensure parameters is a valid object, not nil
-				parameters := tool["input_schema"]
-				if parameters == nil {
-					parameters = map[string]interface{}{
-						"type":       "object",
-						"properties": map[string]interface{}{},
-					}
-				}
-
-				openaiTool := map[string]interface{}{
-					"type": "function",
-					"function": map[string]interface{}{
-						"name":        tool["name"],
-						"description": tool["description"],
-						"parameters":  parameters,
-					},
-				}
-				fixedTools = append(fixedTools, openaiTool)
-			} else {
-				// Already OpenAI format or unknown format, keep as-is
-				fixedTools = append(fixedTools, tool)
-			}
-		}
-
-		// Log tool count for debugging
-		if len(fixedTools) > 20 {
-			logger.Warn("Large number of tools detected: %d (OpenAI recommends ≤20)", len(fixedTools))
-		}
-
-		data["tools"] = fixedTools
+	if audit.Changed {
+		logger.Debug("[cx_chat_openai] request normalize reason=%s summary=%v", audit.Reason, audit.Summary)
 	}
-
-	// Strip cache_control from all messages (Anthropic-specific)
-	if messages, ok := data["messages"].([]interface{}); ok {
-		for _, msgInterface := range messages {
-			if msg, ok := msgInterface.(map[string]interface{}); ok {
-				delete(msg, "cache_control")
-			}
-		}
-	}
-
-	// Strip cache_control from tool definitions
-	if tools, ok := data["tools"].([]interface{}); ok {
-		for _, toolInterface := range tools {
-			if tool, ok := toolInterface.(map[string]interface{}); ok {
-				delete(tool, "cache_control")
-				if fn, ok := tool["function"].(map[string]interface{}); ok {
-					delete(fn, "cache_control")
-				}
-			}
-		}
-	}
-
-	// Strip Anthropic-specific top-level fields
-	delete(data, "thinking")
-	delete(data, "enable_thinking")
-	delete(data, "budget_tokens")
-	delete(data, "metadata")
 
 	return json.Marshal(data)
 }

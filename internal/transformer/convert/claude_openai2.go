@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -280,11 +279,7 @@ func OpenAI2RespToClaude(openai2Resp []byte) ([]byte, error) {
 				}
 			}
 		case "function_call":
-			var args map[string]interface{}
-			if err := json.Unmarshal([]byte(item.Arguments), &args); err != nil {
-				logger.Warn("Failed to unmarshal function_call arguments: %v, using empty object", err)
-				args = map[string]interface{}{}
-			}
+			args := parseJSONObjectArguments(item.Arguments, "Failed to unmarshal function_call arguments")
 			toolID := item.CallID
 			if toolID == "" {
 				toolID = item.ID
@@ -873,10 +868,7 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 				}
 				name, _ := itemMap["name"].(string)
 				argsStr, _ := itemMap["arguments"].(string)
-				var args interface{}
-				if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
-					args = map[string]interface{}{}
-				}
+				args := parseJSONObjectArguments(argsStr, "Failed to unmarshal tool arguments")
 				pendingToolUses = append(pendingToolUses, map[string]interface{}{
 					"type": "tool_use", "id": callID, "name": name, "input": args,
 				})

@@ -137,3 +137,61 @@ func TestClaudeTransformer_TransformResponseWithContext_NonStreaming(t *testing.
 		t.Errorf("Expected object 'response', got '%v'", openai2Resp["object"])
 	}
 }
+
+func TestClaudeTransformer_TransformRequest_ClaudeShapeUsesClaudeResponsesBridge(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	claudeReq := `{
+		"model": "claude-4-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "claude-sonnet-4-20250514" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["input"] == nil {
+		t.Fatalf("expected Claude body to become responses input first and then Claude target output policy keep structure")
+	}
+}
+
+func TestClaudeTransformer_TransformRequest_OpenAIChatShapeUsesChatToClaudeBridge(t *testing.T) {
+	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [
+			{"role": "system", "content": "You are helpful."},
+			{"role": "user", "content": "Hello"}
+		],
+		"stream_options": {"include_usage": true}
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["messages"] == nil {
+		t.Fatalf("expected Claude messages output")
+	}
+	if data["system"] == nil {
+		t.Fatalf("expected system preserved/mapped")
+	}
+}

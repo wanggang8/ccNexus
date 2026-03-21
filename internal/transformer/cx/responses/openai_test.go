@@ -138,3 +138,128 @@ func TestOpenAITransformer_TransformResponseWithContext_NonStreaming(t *testing.
 		t.Errorf("Expected object 'response', got '%v'", openai2Resp["object"])
 	}
 }
+
+func TestOpenAITransformer_TransformRequest_ClaudeShapeUsesClaudeConverter(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	claudeReq := `{
+		"model": "claude-4-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected converted OpenAI chat messages, got %#v", data["messages"])
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_OpenAIChatShapeUsesChatBridge(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [
+			{"role": "system", "content": "You are helpful."},
+			{"role": "user", "content": "Hello"}
+		],
+		"stream_options": {"include_usage": true}
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["messages"] == nil {
+		t.Fatalf("expected OpenAI chat bridge to responses->openai target output")
+	}
+	if data["stream_options"] == nil {
+		t.Fatalf("expected stream_options preserved, got nil")
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_OpenAIChatToOpenAI_PreservesToolChoice(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+		"tool_choice": "required"
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["tool_choice"] != "required" {
+		t.Fatalf("expected tool_choice preserved for openai target, got %#v", data["tool_choice"])
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_OpenAIChatToOpenAI_NormalizesLegacyFunctionsAndFunctionCall(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"functions": [{"name": "legacy_func", "description": "Legacy", "parameters": {"type": "object"}}],
+		"function_call": {"name": "legacy_func"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if _, ok := data["functions"]; ok {
+		t.Fatalf("expected legacy functions removed, got %#v", data["functions"])
+	}
+	if _, ok := data["function_call"]; ok {
+		t.Fatalf("expected legacy function_call removed, got %#v", data["function_call"])
+	}
+	if _, ok := data["tools"].([]interface{}); !ok {
+		t.Fatalf("expected tools after normalization, got %#v", data["tools"])
+	}
+	toolChoice, ok := data["tool_choice"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected normalized tool_choice object, got %#v", data["tool_choice"])
+	}
+	fn, _ := toolChoice["function"].(map[string]interface{})
+	if toolChoice["type"] != "function" || fn["name"] != "legacy_func" {
+		t.Fatalf("unexpected normalized tool_choice: %#v", toolChoice)
+	}
+}

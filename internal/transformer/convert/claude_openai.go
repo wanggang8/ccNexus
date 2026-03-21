@@ -124,12 +124,12 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 					// Use array content format when images are present
 					var parts []map[string]interface{}
 					if len(textParts) > 0 {
-						parts = append(parts, map[string]interface{}{"type": "text", "text": strings.Join(textParts, "")})
+						parts = append(parts, map[string]interface{}{"type": "text", "text": joinTextParts(textParts)})
 					}
 					parts = append(parts, imageParts...)
 					openaiMsg.Content = parts
 				} else if len(textParts) > 0 {
-					openaiMsg.Content = strings.Join(textParts, "")
+					openaiMsg.Content = joinTextParts(textParts)
 				}
 				if len(toolCalls) > 0 {
 					openaiMsg.ToolCalls = toolCalls
@@ -138,7 +138,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 			} else if hasThinking && msg.Role == "assistant" {
 				messages = append(messages, transformer.OpenAIMessage{
 					Role:    "assistant",
-					Content: "(thinking...)",
+					Content: placeholderForThinkingOnly(),
 				})
 			}
 
@@ -321,11 +321,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 					}
 					funcObj, _ := tc["function"].(map[string]interface{})
 					argsStr, _ := funcObj["arguments"].(string)
-					var args map[string]interface{}
-					if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
-						logger.Warn("Failed to unmarshal tool arguments: %v, using empty object", err)
-						args = map[string]interface{}{}
-					}
+					args := parseJSONObjectArguments(argsStr, "Failed to unmarshal tool arguments")
 					blocks = append(blocks, map[string]interface{}{
 						"type":  "tool_use",
 						"id":    tc["id"],

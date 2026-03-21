@@ -162,3 +162,89 @@ func TestOpenAI2Transformer_TransformResponseWithContext_NonStreaming(t *testing
 		t.Errorf("Expected passthrough")
 	}
 }
+
+func TestOpenAI2Transformer_TransformRequest_ClaudeShapeUsesClaudeBridge(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	claudeReq := `{
+		"model": "claude-4-sonnet",
+		"system": [{"type": "text", "text": "You are helpful."}],
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+		"metadata": {"source": "cursor"}
+	}`
+
+	result, err := trans.TransformRequest([]byte(claudeReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["model"] != "gpt-4o" {
+		t.Fatalf("expected model override, got %#v", data["model"])
+	}
+	if data["input"] == nil {
+		t.Fatalf("expected Claude shape to convert to responses input")
+	}
+	if data["metadata"] == nil {
+		t.Fatalf("expected metadata preserved")
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_OpenAIChatShapeUsesChatBridge(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [
+			{"role": "system", "content": "You are helpful."},
+			{"role": "user", "content": "Hello"}
+		],
+		"stream_options": {"include_usage": true}
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["input"] == nil {
+		t.Fatalf("expected chat shape to convert into responses input")
+	}
+	if _, ok := data["stream_options"]; ok {
+		t.Fatalf("expected stream_options dropped for responses target, got %#v", data["stream_options"])
+	}
+}
+
+func TestOpenAI2Transformer_TransformRequest_OpenAIChatToResponses_MapsToolChoice(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-4o")
+
+	chatReq := `{
+		"model": "gpt-4.1",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+		"tool_choice": "required"
+	}`
+
+	result, err := trans.TransformRequest([]byte(chatReq))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if data["tool_choice"] == nil {
+		t.Fatalf("expected tool_choice mapped into responses target")
+	}
+}
