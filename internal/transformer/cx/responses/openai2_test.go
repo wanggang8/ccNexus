@@ -228,6 +228,77 @@ func TestOpenAI2Transformer_TransformRequest_OpenAIChatShapeUsesChatBridge(t *te
 	}
 }
 
+func TestOpenAI2Transformer_TransformRequest_RealGpt542LogPreservesResponsesFields(t *testing.T) {
+	trans := NewOpenAI2Transformer("gpt-5.4")
+
+	rawReq := readPrefixedLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/gpt5.4-2.log", 0, "原始：")
+	result, err := trans.TransformRequest(rawReq)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(rawReq, &raw); err != nil {
+		t.Fatalf("unmarshal raw payload failed: %v", err)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	for _, key := range []string{"input", "include", "metadata", "reasoning", "tools", "user", "store"} {
+		if data[key] == nil {
+			t.Fatalf("expected %s preserved for responses target, got %#v", key, data[key])
+		}
+	}
+	if _, ok := data["messages"]; ok {
+		t.Fatalf("expected responses target to avoid chat downgrade, got %#v", data["messages"])
+	}
+	if _, ok := data["stream_options"]; ok {
+		t.Fatalf("expected stream_options dropped for responses target, got %#v", data["stream_options"])
+	}
+	if data["prompt_cache_retention"] != raw["prompt_cache_retention"] {
+		t.Fatalf("expected prompt_cache_retention preserved, got %#v want %#v", data["prompt_cache_retention"], raw["prompt_cache_retention"])
+	}
+	if data["store"] != raw["store"] {
+		t.Fatalf("expected store preserved, got %#v want %#v", data["store"], raw["store"])
+	}
+	reasoning, ok := data["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning object preserved, got %#v", data["reasoning"])
+	}
+	if reasoning["summary"] != "auto" || reasoning["effort"] != "medium" {
+		t.Fatalf("expected reasoning.summary/effort preserved, got %#v", reasoning)
+	}
+
+	rawTools := raw["tools"].([]interface{})
+	tools := data["tools"].([]interface{})
+	if len(tools) != len(rawTools) {
+		t.Fatalf("expected tool count %d preserved, got %d", len(rawTools), len(tools))
+	}
+
+	foundCustom := false
+	for i, toolRaw := range tools {
+		tool := toolRaw.(map[string]interface{})
+		source := rawTools[i].(map[string]interface{})
+		if tool["type"] != source["type"] {
+			t.Fatalf("expected tool %d type preserved, got %#v want %#v", i, tool["type"], source["type"])
+		}
+		if tool["name"] != source["name"] {
+			t.Fatalf("expected tool %d name preserved, got %#v want %#v", i, tool["name"], source["name"])
+		}
+		if source["type"] == "custom" {
+			foundCustom = true
+			if _, ok := tool["format"].(map[string]interface{}); !ok {
+				t.Fatalf("expected custom tool %d format preserved, got %#v", i, tool)
+			}
+		}
+	}
+	if !foundCustom {
+		t.Fatal("expected real log to contain custom tool")
+	}
+}
+
 func TestOpenAI2Transformer_TransformRequest_OpenAIChatToResponses_MapsToolChoice(t *testing.T) {
 	trans := NewOpenAI2Transformer("gpt-4o")
 

@@ -2,11 +2,39 @@ package responses
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
+
+func readPrefixedLogJSONLine(t *testing.T, path string, lineIndex int, prefix string) []byte {
+	t.Helper()
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log failed: %v", err)
+	}
+
+	lines := strings.Split(string(payload), "\n")
+	if lineIndex < 0 || lineIndex >= len(lines) {
+		t.Fatalf("expected log %s to contain line %d, got %d lines", path, lineIndex+1, len(lines))
+	}
+
+	line := strings.TrimSpace(lines[lineIndex])
+	if line == "" {
+		t.Fatalf("expected log %s line %d to contain payload", path, lineIndex+1)
+	}
+	if prefix != "" {
+		if !strings.HasPrefix(line, prefix) {
+			t.Fatalf("expected log %s line %d to start with %q, got %q", path, lineIndex+1, prefix, line)
+		}
+		line = strings.TrimPrefix(line, prefix)
+	}
+
+	return []byte(line)
+}
 
 func TestOpenAITransformer_Name(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4")
@@ -261,5 +289,99 @@ func TestOpenAITransformer_TransformRequest_OpenAIChatToOpenAI_NormalizesLegacyF
 	fn, _ := toolChoice["function"].(map[string]interface{})
 	if toolChoice["type"] != "function" || fn["name"] != "legacy_func" {
 		t.Fatalf("unexpected normalized tool_choice: %#v", toolChoice)
+	}
+}
+
+func TestOpenAITransformer_TransformRequest_RealGpt54LogShowsChatDowngradeLoss(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-5.4")
+
+	rawReq := readPrefixedLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/gpt5.4-2.log", 0, "原始：")
+	result, err := trans.TransformRequest(rawReq)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(rawReq, &raw); err != nil {
+		t.Fatalf("unmarshal raw payload failed: %v", err)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	if _, ok := data["messages"].([]interface{}); !ok {
+		t.Fatalf("expected OpenAI target to produce chat messages, got %#v", data["messages"])
+	}
+	for _, key := range []string{"include", "store", "reasoning", "input"} {
+		if _, ok := data[key]; ok {
+			t.Fatalf("expected %s to be dropped after responses->chat downgrade, got %#v", key, data[key])
+		}
+	}
+	if data["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning.effort downgraded to reasoning_effort=medium, got %#v", data["reasoning_effort"])
+	}
+	if _, ok := data["stream_options"].(map[string]interface{}); !ok {
+		t.Fatalf("expected stream_options preserved, got %#v", data["stream_options"])
+	}
+	if _, ok := data["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata preserved, got %#v", data["metadata"])
+	}
+	if data["prompt_cache_retention"] != raw["prompt_cache_retention"] {
+		t.Fatalf("expected prompt_cache_retention preserved, got %#v want %#v", data["prompt_cache_retention"], raw["prompt_cache_retention"])
+	}
+
+	rawTools, ok := raw["tools"].([]interface{})
+	if !ok || len(rawTools) == 0 {
+		t.Fatalf("expected raw tools in log, got %#v", raw["tools"])
+	}
+	transformedTools, ok := data["tools"].([]interface{})
+	if !ok || len(transformedTools) != len(rawTools) {
+		t.Fatalf("expected transformed tool count to match raw count %d, got %#v", len(rawTools), data["tools"])
+	}
+
+	foundCustomRaw := false
+	foundApplyPatch := false
+	for _, rawTool := range rawTools {
+		tool, _ := rawTool.(map[string]interface{})
+		if tool["type"] == "custom" {
+			foundCustomRaw = true
+			if _, ok := tool["format"].(map[string]interface{}); !ok {
+				t.Fatalf("expected raw custom tool to carry format, got %#v", tool)
+			}
+		}
+	}
+	if !foundCustomRaw {
+		t.Fatal("expected raw log to contain at least one custom tool")
+	}
+
+	for i, transformedTool := range transformedTools {
+		tool, _ := transformedTool.(map[string]interface{})
+		if tool["type"] != "function" {
+			t.Fatalf("expected downgraded tool %d to be function, got %#v", i, tool)
+		}
+		fn, ok := tool["function"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected downgraded tool %d to wrap function payload, got %#v", i, tool)
+		}
+		if fn["name"] == "ApplyPatch" {
+			foundApplyPatch = true
+			params, ok := fn["parameters"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected ApplyPatch parameters after downgrade, got %#v", fn["parameters"])
+			}
+			props, ok := params["properties"].(map[string]interface{})
+			if !ok || props["input"] == nil {
+				t.Fatalf("expected ApplyPatch to keep generic input schema, got %#v", params)
+			}
+			input, _ := props["input"].(map[string]interface{})
+			desc, _ := input["description"].(string)
+			if !strings.Contains(desc, "Custom tool format constraints:") || !strings.Contains(desc, "type=grammar") {
+				t.Fatalf("expected ApplyPatch custom format hint preserved in description, got %q", desc)
+			}
+		}
+	}
+	if !foundApplyPatch {
+		t.Fatal("expected transformed tools to contain ApplyPatch")
 	}
 }

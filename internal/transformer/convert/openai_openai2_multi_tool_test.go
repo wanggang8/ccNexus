@@ -2,6 +2,7 @@ package convert
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -145,9 +146,19 @@ func TestOpenAIStreamToOpenAI2_TextThenToolCall(t *testing.T) {
 
 	// Step 2: Tool call after text
 	tc := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"q\":\"test\"}"}}]},"finish_reason":null}]}`
-	_, err = OpenAIStreamToOpenAI2([]byte(tc), ctx)
+	result2, err := OpenAIStreamToOpenAI2([]byte(tc), ctx)
 	if err != nil {
 		t.Fatalf("Tool call chunk failed: %v", err)
+	}
+	result2Str := string(result2)
+	if !strings.Contains(result2Str, "response.output_text.done") {
+		t.Fatal("Expected output_text.done before tool call starts")
+	}
+	if !strings.Contains(result2Str, "response.output_item.done") {
+		t.Fatal("Expected message output_item.done before tool call starts")
+	}
+	if !strings.Contains(result2Str, `"type":"function_call"`) {
+		t.Fatal("Expected function_call item after message closure")
 	}
 
 	// Step 3: Finish
@@ -159,15 +170,70 @@ func TestOpenAIStreamToOpenAI2_TextThenToolCall(t *testing.T) {
 
 	resultStr := string(result3)
 
-	// Should close text block AND complete tool call
-	if !strings.Contains(resultStr, "response.output_text.done") {
-		t.Error("Expected output_text.done event")
-	}
 	if !strings.Contains(resultStr, "response.function_call_arguments.done") {
 		t.Error("Expected function_call_arguments.done event")
 	}
 	if !strings.Contains(resultStr, "response.completed") {
 		t.Error("Expected response.completed event")
+	}
+}
+
+func TestOpenAIStreamToOpenAI2_RealChatGPT54LogProducesPureResponsesSSE(t *testing.T) {
+	raw, err := os.ReadFile("/Users/vick/Desktop/project/ccNexus/docs/chatgpt5.4-sse.log")
+	if err != nil {
+		t.Fatalf("read chatgpt5.4-sse.log failed: %v", err)
+	}
+
+	ctx := transformer.NewStreamContext()
+	parts := strings.Split(string(raw), "\n\n")
+	var out strings.Builder
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		event := []byte(part + "\n\n")
+		converted, err := OpenAIStreamToOpenAI2(event, ctx)
+		if err != nil {
+			t.Fatalf("OpenAIStreamToOpenAI2 failed on event %q: %v", part, err)
+		}
+		out.Write(converted)
+	}
+
+	result := out.String()
+	if result == "" {
+		t.Fatal("expected converted SSE output, got empty string")
+	}
+	if strings.Contains(result, "chat.completion.chunk") {
+		t.Fatalf("expected pure Responses SSE without chat chunks, got: %s", result)
+	}
+	if !strings.Contains(result, "response.created") {
+		t.Fatal("expected response.created event")
+	}
+	if !strings.Contains(result, "response.output_text.delta") {
+		t.Fatal("expected response.output_text.delta event")
+	}
+	if !strings.Contains(result, "response.function_call_arguments.delta") {
+		t.Fatal("expected response.function_call_arguments.delta event")
+	}
+	if !strings.Contains(result, "response.function_call_arguments.done") {
+		t.Fatal("expected response.function_call_arguments.done event")
+	}
+	if !strings.Contains(result, "response.completed") {
+		t.Fatal("expected response.completed event")
+	}
+	if !strings.Contains(result, "data: [DONE]") {
+		t.Fatal("expected final [DONE]")
+	}
+
+	textDoneIdx := strings.Index(result, "response.output_text.done")
+	toolDoneIdx := strings.Index(result, "response.function_call_arguments.done")
+	completedIdx := strings.Index(result, "response.completed")
+	if textDoneIdx == -1 || toolDoneIdx == -1 || completedIdx == -1 {
+		t.Fatalf("expected text done, tool done, and completed events in output: %s", result)
+	}
+	if !(textDoneIdx < toolDoneIdx && toolDoneIdx < completedIdx) {
+		t.Fatalf("unexpected event order, want text.done < tool.done < completed, got output: %s", result)
 	}
 }
 

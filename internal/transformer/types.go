@@ -398,13 +398,14 @@ type OpenAI2ContentPart struct {
 }
 
 // OpenAI2Tool represents a tool in Responses API
-type OpenAI2Tool struct {
-	Type        string                 `json:"type"` // "function"
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-	Strict      *bool                  `json:"strict,omitempty"`
-}
+ type OpenAI2Tool struct {
+ 	Type        string                 `json:"type"` // "function" or "custom"
+ 	Name        string                 `json:"name"`
+ 	Description string                 `json:"description,omitempty"`
+ 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+ 	Format      map[string]interface{} `json:"format,omitempty"`
+ 	Strict      *bool                  `json:"strict,omitempty"`
+ }
 
 // OpenAI2Request represents an OpenAI Responses API request
 type OpenAI2Request struct {

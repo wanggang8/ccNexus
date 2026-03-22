@@ -106,6 +106,11 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 
 // OpenAI2ReqToOpenAI converts OpenAI Responses request to OpenAI Chat request
 func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
+	var rawReq map[string]interface{}
+	if err := json.Unmarshal(openai2Req, &rawReq); err != nil {
+		return nil, err
+	}
+
 	var req transformer.OpenAI2Request
 	if err := json.Unmarshal(openai2Req, &req); err != nil {
 		return nil, err
@@ -137,7 +142,6 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			}
 			switch itemType {
 			case "message":
-				// Flush pending tool calls
 				if len(pendingToolCalls) > 0 {
 					messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
 					pendingToolCalls = nil
@@ -163,7 +167,6 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 				})
 
 			case "function_call_output":
-				// Flush pending tool calls first
 				if len(pendingToolCalls) > 0 {
 					messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
 					pendingToolCalls = nil
@@ -174,61 +177,128 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			}
 		}
 
-		// Flush remaining
 		if len(pendingToolCalls) > 0 {
 			messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
 		}
 	}
 
-	openaiReq := transformer.OpenAIRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   req.Stream,
+	openaiReq := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+		"stream":   req.Stream,
 	}
 
 	if req.MaxOutputTokens > 0 {
-		openaiReq.MaxCompletionTokens = req.MaxOutputTokens
+		openaiReq["max_completion_tokens"] = req.MaxOutputTokens
 	}
 	if req.Temperature != nil {
-		openaiReq.Temperature = req.Temperature
+		openaiReq["temperature"] = req.Temperature
 	}
 	if req.ReasoningEffort != nil {
-		openaiReq.ReasoningEffort = req.ReasoningEffort
+		openaiReq["reasoning_effort"] = req.ReasoningEffort
 	}
 
 	if len(req.Tools) > 0 {
+		var tools []map[string]interface{}
 		for _, tool := range req.Tools {
-			var params map[string]interface{}
-			switch tool.Type {
-			case "function":
-				params = tool.Parameters
-			case "custom":
-				// Custom tools (like apply_patch) use format instead of parameters
-				// Convert to a function that accepts a single string input
-				params = map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"input": map[string]interface{}{"type": "string", "description": "The input for this tool"},
-					},
-					"required": []string{"input"},
-				}
-			default:
+			params, description, ok := buildOpenAIChatToolDefinition(tool)
+			if !ok {
 				continue
 			}
-			openaiTool := transformer.OpenAITool{Type: "function"}
-			openaiTool.Function.Name = tool.Name
-			openaiTool.Function.Description = tool.Description
-			openaiTool.Function.Parameters = params
-			openaiTool.Function.Strict = tool.Strict
-			openaiReq.Tools = append(openaiReq.Tools, openaiTool)
+			fn := map[string]interface{}{
+				"name":       tool.Name,
+				"parameters": params,
+			}
+			if description != "" {
+				fn["description"] = description
+			}
+			if tool.Strict != nil {
+				fn["strict"] = *tool.Strict
+			}
+			tools = append(tools, map[string]interface{}{
+				"type":     "function",
+				"function": fn,
+			})
+		}
+		if len(tools) > 0 {
+			openaiReq["tools"] = tools
 		}
 	}
 
 	if req.ToolChoice != nil {
-		openaiReq.ToolChoice = mapOpenAI2ToolChoiceToOpenAI(req.ToolChoice)
+		if mapped := mapOpenAI2ToolChoiceToOpenAI(req.ToolChoice); mapped != nil {
+			openaiReq["tool_choice"] = mapped
+		}
+	}
+
+	for _, key := range []string{"metadata", "stream_options", "user", "prompt_cache_retention"} {
+		if value, ok := rawReq[key]; ok {
+			openaiReq[key] = value
+		}
 	}
 
 	return json.Marshal(openaiReq)
+}
+
+func buildOpenAIChatToolDefinition(tool transformer.OpenAI2Tool) (map[string]interface{}, string, bool) {
+	description := strings.TrimSpace(tool.Description)
+	switch tool.Type {
+	case "function":
+		params := tool.Parameters
+		if len(params) == 0 {
+			params = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+		}
+		return params, description, true
+	case "custom":
+		params := map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"input": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"required": []string{"input"},
+		}
+		inputDesc := buildCustomToolInputDescription(tool)
+		params["properties"].(map[string]interface{})["input"].(map[string]interface{})["description"] = inputDesc
+		if formatHint := buildCustomToolFormatHint(tool.Format); formatHint != "" {
+			if description != "" {
+				description += "\n\n"
+			}
+			description += formatHint
+		}
+		return params, description, true
+	default:
+		return nil, "", false
+	}
+}
+
+func buildCustomToolInputDescription(tool transformer.OpenAI2Tool) string {
+	base := "The input for this tool."
+	if desc := strings.TrimSpace(tool.Description); desc != "" {
+		base = desc
+	}
+	if formatHint := buildCustomToolFormatHint(tool.Format); formatHint != "" {
+		return base + "\n\n" + formatHint
+	}
+	return base
+}
+
+func buildCustomToolFormatHint(format map[string]interface{}) string {
+	if len(format) == 0 {
+		return ""
+	}
+	parts := []string{"Custom tool format constraints:"}
+	if formatType, _ := format["type"].(string); formatType != "" {
+		parts = append(parts, fmt.Sprintf("type=%s", formatType))
+	}
+	if syntax, _ := format["syntax"].(string); syntax != "" {
+		parts = append(parts, fmt.Sprintf("syntax=%s", syntax))
+	}
+	if definition, _ := format["definition"].(string); definition != "" {
+		parts = append(parts, fmt.Sprintf("definition=%s", definition))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func mapOpenAIToolChoiceToOpenAI2(toolChoice interface{}) interface{} {
@@ -496,6 +566,24 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			}
 			ctx.ContentText += delta.Content
 			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": messageItem.OutputIndex, "content_index": 0, "delta": delta.Content})
+		}
+
+		// Handle tool calls
+		if len(delta.ToolCalls) > 0 && ctx.ContentBlockStarted {
+			accText := ctx.ContentText
+			ctx.ContentText = ""
+			for _, item := range orderedResponseOutputItems(ctx) {
+				if item != nil && item.Type == "message" && !item.Completed {
+					writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": item.OutputIndex, "content_index": 0, "text": accText})
+					writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": item.OutputIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text", "text": accText}})
+					writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": item.OutputIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+					item.Status = "completed"
+					item.Completed = true
+					updateResponseOutputItemLookup(ctx, item)
+					break
+				}
+			}
+			ctx.ContentBlockStarted = false
 		}
 
 		// Handle tool calls
