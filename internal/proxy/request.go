@@ -21,6 +21,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/storage"
 	"github.com/lich0821/ccNexus/internal/transformer"
 	"github.com/lich0821/ccNexus/internal/transformer/cc"
+	"github.com/lich0821/ccNexus/internal/transformer/compat"
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/chat"
 	"github.com/lich0821/ccNexus/internal/transformer/cx/responses"
@@ -33,16 +34,18 @@ const (
 )
 
 // prepareTransformerForClient creates transformer based on client format and endpoint
-func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endpoint) (transformer.Transformer, error) {
+func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endpoint, requestBody []byte) (transformer.Transformer, error) {
 	endpointTransformer := endpoint.Transformer
 	if endpointTransformer == "" {
 		endpointTransformer = "claude"
 	}
 
+	effectiveFormat := detectEffectiveClientFormat(clientFormat, requestBody)
+
 	var trans transformer.Transformer
 	var err error
 
-	switch clientFormat {
+	switch effectiveFormat {
 	case ClientFormatClaude:
 		trans, err = prepareCCTransformer(endpoint, endpointTransformer)
 	case ClientFormatOpenAIChat:
@@ -50,15 +53,28 @@ func prepareTransformerForClient(clientFormat ClientFormat, endpoint config.Endp
 	case ClientFormatOpenAIResponses:
 		trans, err = prepareCxRespTransformer(endpoint, endpointTransformer)
 	default:
-		return nil, fmt.Errorf("unsupported client format: %s", clientFormat)
+		return nil, fmt.Errorf("unsupported client format: %s", effectiveFormat)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	logger.Debug("[%s] 转换器: %s (客户端: %s, 端点: %s)", endpoint.Name, trans.Name(), clientFormat, endpointTransformer)
+	logger.Debug("[%s] 转换器: %s (客户端: %s→%s, 端点: %s)", endpoint.Name, trans.Name(), clientFormat, effectiveFormat, endpointTransformer)
 	return trans, nil
+}
+
+func detectEffectiveClientFormat(clientFormat ClientFormat, requestBody []byte) ClientFormat {
+	if clientFormat != ClientFormatOpenAIChat || len(requestBody) == 0 {
+		return clientFormat
+	}
+
+	shape := compat.DetectRequestShape(requestBody)
+	if shape == compat.RequestShapeOpenAIResponses {
+		return ClientFormatOpenAIResponses
+	}
+
+	return clientFormat
 }
 
 // prepareCCTransformer creates transformer for Claude Code client
