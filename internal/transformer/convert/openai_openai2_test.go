@@ -371,6 +371,45 @@ func TestOpenAI2ReqToOpenAI_WithFunctionCall(t *testing.T) {
 	if toolMsg.ToolCallID != "call_1" {
 		t.Errorf("Expected tool_call_id 'call_1', got '%v'", toolMsg.ToolCallID)
 	}
+	if toolMsg.Content != "file content" {
+		t.Fatalf("expected tool content preserved, got %#v", toolMsg.Content)
+	}
+}
+
+func TestOpenAI2ReqToOpenAI_FunctionCallOutputArrayPreservesText(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Questionnaire"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "AskQuestion", "arguments": "{\"title\":\"t\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_text", "text": "User questions responses:\nQuestion a: x"}]}
+		]
+	}`
+
+	result, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4o")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq transformer.OpenAIRequest
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if len(openaiReq.Messages) != 3 {
+		t.Fatalf("Expected 3 messages, got %d", len(openaiReq.Messages))
+	}
+	toolMsg := openaiReq.Messages[2]
+	if toolMsg.Role != "tool" {
+		t.Fatalf("expected tool role, got %#v", toolMsg.Role)
+	}
+	content, ok := toolMsg.Content.(string)
+	if !ok {
+		t.Fatalf("expected tool content string after normalization, got %T (%#v)", toolMsg.Content, toolMsg.Content)
+	}
+	if !strings.Contains(content, "User questions responses:") {
+		t.Fatalf("expected normalized tool output text preserved, got %#v", content)
+	}
 }
 
 func TestOpenAI2ReqToOpenAI_WithCustomTool(t *testing.T) {
@@ -399,6 +438,44 @@ func TestOpenAI2ReqToOpenAI_WithCustomTool(t *testing.T) {
 	// Custom tool should be converted to function with input parameter
 	if openaiReq.Tools[0].Function.Name != "apply_patch" {
 		t.Errorf("Expected tool name 'apply_patch', got '%v'", openaiReq.Tools[0].Function.Name)
+	}
+}
+
+func TestOpenAI2ReqToOpenAI_CustomToolArgumentsWrappedForChat(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Patch file"}]},
+			{"type": "function_call", "call_id": "call_patch", "name": "ApplyPatch", "arguments": "*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-old\n+new\n*** End Patch"}
+		],
+		"tools": [
+			{"type": "custom", "name": "ApplyPatch", "description": "Apply patch"}
+		]
+	}`
+
+	result, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq map[string]interface{}
+	if err := json.Unmarshal(result, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages := openaiReq["messages"].([]interface{})
+	assistant := messages[1].(map[string]interface{})
+	toolCalls := assistant["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	function := toolCall["function"].(map[string]interface{})
+	arguments := function["arguments"].(string)
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(arguments), &decoded); err != nil {
+		t.Fatalf("expected wrapped custom arguments json, got %q: %v", arguments, err)
+	}
+	if decoded["input"] == nil {
+		t.Fatalf("expected custom tool arguments wrapped into input field, got %#v", decoded)
 	}
 }
 
@@ -571,6 +648,79 @@ func TestOpenAIRespToOpenAI2_WithToolCalls(t *testing.T) {
 	funcCall := output[0].(map[string]interface{})
 	if funcCall["type"] != "function_call" {
 		t.Errorf("Expected type 'function_call', got '%v'", funcCall["type"])
+	}
+}
+
+func TestOpenAIRespToOpenAI2_CustomToolArgumentsUnwrappedForResponses(t *testing.T) {
+	openaiResp := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [{"id": "call_patch", "type": "function", "function": {"name": "ApplyPatch", "arguments": "{\"input\":\"*** Begin Patch\\n*** Update File: /tmp/a.txt\\n@@\\n-old\\n+new\\n*** End Patch\"}"}}]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`
+
+	result, err := OpenAIRespToOpenAI2([]byte(openaiResp))
+	if err != nil {
+		t.Fatalf("OpenAIRespToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Resp map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Resp); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	output := openai2Resp["output"].([]interface{})
+	funcCall := output[0].(map[string]interface{})
+	arguments := funcCall["arguments"].(string)
+	if !strings.HasPrefix(arguments, "*** Begin Patch") {
+		t.Fatalf("expected wrapped custom arguments to be unwrapped for responses, got %#v", arguments)
+	}
+}
+
+func TestOpenAIReqToOpenAI2_ToolMessageArrayContentPreserved(t *testing.T) {
+	openaiReq := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": "Questionnaire"},
+			{"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "AskQuestion", "arguments": "{\"title\":\"t\"}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": [{"type": "input_text", "text": "User questions responses:\nQuestion a: x"}]}
+		]
+	}`
+
+	result, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-5.4")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var openai2Req map[string]interface{}
+	if err := json.Unmarshal(result, &openai2Req); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	input := openai2Req["input"].([]interface{})
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	functionOutput := input[2].(map[string]interface{})
+	if functionOutput["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output item, got %#v", functionOutput)
+	}
+	output, ok := functionOutput["output"].([]interface{})
+	if !ok || len(output) != 1 {
+		t.Fatalf("expected array output preserved, got %#v", functionOutput["output"])
+	}
+	part := output[0].(map[string]interface{})
+	if part["type"] != "input_text" {
+		t.Fatalf("expected input_text part preserved, got %#v", part)
 	}
 }
 

@@ -345,7 +345,7 @@ func TestClaudeTransformer_TransformRequest_OpenAIResponsesShapeUsesResponsesCon
 func TestClaudeTransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
 
-	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 2))
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 3))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}

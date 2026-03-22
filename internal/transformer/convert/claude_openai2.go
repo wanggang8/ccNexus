@@ -170,8 +170,15 @@ func OpenAI2ReqToClaude(openai2Req []byte, model string) ([]byte, error) {
 		claudeReq["thinking"] = thinking
 	}
 
+	customToolNames := make(map[string]struct{})
+	for _, tool := range req.Tools {
+		if tool.Type == "custom" && strings.TrimSpace(tool.Name) != "" {
+			customToolNames[tool.Name] = struct{}{}
+		}
+	}
+
 	// Convert input to messages
-	messages, systemPrompt := convertOpenAI2InputToClaude(req.Input)
+	messages, systemPrompt := convertOpenAI2InputToClaude(req.Input, customToolNames)
 	if systemPrompt != "" {
 		if existing, ok := claudeReq["system"].(string); ok && existing != "" {
 			claudeReq["system"] = existing + "\n" + systemPrompt
@@ -858,7 +865,45 @@ func toolResultToString(content interface{}) string {
 	}
 }
 
-func convertOpenAI2InputToClaude(input interface{}) ([]map[string]interface{}, string) {
+func normalizeResponsesToolOutputToClaudeContent(output interface{}) interface{} {
+	if output == nil {
+		return ""
+	}
+	if str, ok := output.(string); ok {
+		return str
+	}
+	if arr, ok := output.([]interface{}); ok {
+		return convertOpenAI2ContentToClaude(arr, "tool")
+	}
+	return extractToolResultContent(output)
+}
+
+func normalizeResponsesToolArgumentsForClaude(name, arguments string, customToolNames map[string]struct{}) map[string]interface{} {
+	trimmedName := strings.TrimSpace(name)
+	trimmedArgs := strings.TrimSpace(arguments)
+	if trimmedName == "" || trimmedArgs == "" {
+		return parseJSONObjectArguments(arguments, "Failed to unmarshal tool arguments")
+	}
+	if _, ok := customToolNames[trimmedName]; !ok {
+		return parseJSONObjectArguments(arguments, "Failed to unmarshal tool arguments")
+	}
+
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(trimmedArgs), &decoded); err == nil {
+		switch v := decoded.(type) {
+		case map[string]interface{}:
+			if _, ok := v["input"].(string); ok && len(v) == 1 {
+				return v
+			}
+		case string:
+			return map[string]interface{}{"input": v}
+		}
+	}
+
+	return map[string]interface{}{"input": arguments}
+}
+
+func convertOpenAI2InputToClaude(input interface{}, customToolNames map[string]struct{}) ([]map[string]interface{}, string) {
 	var messages []map[string]interface{}
 	var systemParts []string
 
@@ -933,7 +978,7 @@ func convertOpenAI2InputToClaude(input interface{}) ([]map[string]interface{}, s
 				}
 				name, _ := itemMap["name"].(string)
 				argsStr, _ := itemMap["arguments"].(string)
-				args := parseJSONObjectArguments(argsStr, "Failed to unmarshal tool arguments")
+				args := normalizeResponsesToolArgumentsForClaude(name, argsStr, customToolNames)
 				pendingToolUses = append(pendingToolUses, map[string]interface{}{
 					"type": "tool_use", "id": callID, "name": name, "input": args,
 				})
@@ -946,9 +991,8 @@ func convertOpenAI2InputToClaude(input interface{}) ([]map[string]interface{}, s
 				}
 				// Convert to Claude tool_result
 				callID, _ := itemMap["call_id"].(string)
-				output, _ := itemMap["output"].(string)
 				pendingToolResults = append(pendingToolResults, map[string]interface{}{
-					"type": "tool_result", "tool_use_id": callID, "content": output,
+					"type": "tool_result", "tool_use_id": callID, "content": normalizeResponsesToolOutputToClaudeContent(itemMap["output"]),
 				})
 			}
 		}

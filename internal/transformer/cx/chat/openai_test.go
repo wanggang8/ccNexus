@@ -873,7 +873,7 @@ func TestOpenAITransformer_TransformRequest_ResponsesShapeNormalizesReasoningAli
 func TestOpenAITransformer_TransformRequest_RealCursorClaudeLog(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4o")
 
-	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 2))
+	result, err := trans.TransformRequest(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/claude-cursor.log", 3))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}
@@ -986,6 +986,45 @@ func TestOpenAITransformer_TransformRequest_RealGPTCursorLog(t *testing.T) {
 	}
 }
 
+func TestOpenAITransformer_TransformRequest_RealGPT5LogPreservesToolOutputs(t *testing.T) {
+	trans := NewOpenAITransformer("gpt-4o")
+
+	payload := strings.TrimPrefix(string(readLogJSONLine(t, "/Users/vick/Desktop/project/ccNexus/docs/gpt5.log", 0)), "转换前：")
+	result, err := trans.TransformRequest([]byte(payload))
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal transformed payload failed: %v", err)
+	}
+
+	messages, ok := data["messages"].([]interface{})
+	if !ok {
+		t.Fatalf("expected converted openai messages, got %#v", data["messages"])
+	}
+
+	toolMessages := 0
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]interface{})
+		if !ok || msg["role"] != "tool" {
+			continue
+		}
+		toolMessages++
+		content, ok := msg["content"].(string)
+		if !ok {
+			t.Fatalf("expected tool message content normalized to string, got %T (%#v)", msg["content"], msg["content"])
+		}
+		if !strings.Contains(content, "User questions responses:") {
+			t.Fatalf("expected tool output text preserved, got %#v", content)
+		}
+	}
+	if toolMessages != 4 {
+		t.Fatalf("expected 4 tool messages from gpt5 log, got %d", toolMessages)
+	}
+}
+
 func TestOpenAITransformer_TransformRequest_RealClaudeCursorLog_StripsClaudeOnlyTopLevelFields(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4o")
 
@@ -999,7 +1038,7 @@ func TestOpenAITransformer_TransformRequest_RealClaudeCursorLog_StripsClaudeOnly
 		t.Fatalf("expected claude-cursor log to contain transformed request line")
 	}
 
-	result, err := trans.TransformRequest([]byte(lines[2]))
+	result, err := trans.TransformRequest([]byte(lines[3]))
 	if err != nil {
 		t.Fatalf("TransformRequest failed: %v", err)
 	}

@@ -390,9 +390,29 @@ func TestOpenAI2ReqToClaude_WithFunctionCall(t *testing.T) {
 	}
 
 	messages := claudeReq["messages"].([]interface{})
-	// Should have: user, assistant (with tool_use), user (with tool_result)
 	if len(messages) != 3 {
 		t.Fatalf("Expected 3 messages, got %d", len(messages))
+	}
+
+	assistant := messages[1].(map[string]interface{})
+	assistantContent := assistant["content"].([]interface{})
+	toolUse := assistantContent[0].(map[string]interface{})
+	if toolUse["type"] != "tool_use" {
+		t.Fatalf("expected tool_use block, got %#v", toolUse)
+	}
+	input := toolUse["input"].(map[string]interface{})
+	if input["path"] != "/tmp/a" {
+		t.Fatalf("expected tool_use input.path preserved, got %#v", input)
+	}
+
+	user := messages[2].(map[string]interface{})
+	userContent := user["content"].([]interface{})
+	toolResult := userContent[0].(map[string]interface{})
+	if toolResult["type"] != "tool_result" {
+		t.Fatalf("expected tool_result block, got %#v", toolResult)
+	}
+	if toolResult["content"] != "file content" {
+		t.Fatalf("expected tool_result content preserved, got %#v", toolResult["content"])
 	}
 }
 
@@ -451,6 +471,92 @@ func TestOpenAI2ReqToClaude_WithCustomTool(t *testing.T) {
 	tools := claudeReq["tools"].([]interface{})
 	if len(tools) != 1 {
 		t.Fatalf("Expected 1 tool, got %d", len(tools))
+	}
+
+	tool := tools[0].(map[string]interface{})
+	inputSchema := tool["input_schema"].(map[string]interface{})
+	properties := inputSchema["properties"].(map[string]interface{})
+	if _, ok := properties["input"]; !ok {
+		t.Fatalf("expected custom tool input_schema to expose input field, got %#v", inputSchema)
+	}
+}
+
+func TestOpenAI2ReqToClaude_PreservesStructuredToolResultOutput(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"input": [
+			{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"/tmp/a\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_text", "text": "line1"}, {"type": "input_text", "text": "line2"}]}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %#v", messages)
+	}
+
+	toolResultMsg := messages[1].(map[string]interface{})
+	content := toolResultMsg["content"].([]interface{})
+	toolResult := content[0].(map[string]interface{})
+	if toolResult["type"] != "tool_result" {
+		t.Fatalf("expected tool_result block, got %#v", toolResult)
+	}
+	resultContent := toolResult["content"]
+	parts, ok := resultContent.([]interface{})
+	if !ok {
+		t.Fatalf("expected structured output preserved as Claude content array, got %#v", resultContent)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 content parts, got %#v", parts)
+	}
+	first := parts[0].(map[string]interface{})
+	second := parts[1].(map[string]interface{})
+	if first["text"] != "line1" || second["text"] != "line2" {
+		t.Fatalf("expected structured output text preserved, got %#v", parts)
+	}
+}
+
+func TestOpenAI2ReqToClaude_WrapsCustomToolStringArguments(t *testing.T) {
+	openai2Req := `{
+		"model": "gpt-5.4",
+		"tools": [
+			{"type": "custom", "name": "apply_patch", "description": "Apply patch"}
+		],
+		"input": [
+			{"type": "function_call", "call_id": "call_1", "name": "apply_patch", "arguments": "*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-old\n+new\n*** End Patch"}
+		]
+	}`
+
+	result, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(result, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %#v", messages)
+	}
+	assistant := messages[0].(map[string]interface{})
+	content := assistant["content"].([]interface{})
+	toolUse := content[0].(map[string]interface{})
+	input := toolUse["input"].(map[string]interface{})
+	if input["input"] != "*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-old\n+new\n*** End Patch" {
+		t.Fatalf("expected custom tool raw arguments wrapped into input field, got %#v", input)
 	}
 }
 
@@ -1281,7 +1387,7 @@ func TestConvertOpenAI2InputToClaude_PreservesBareRoleMessages(t *testing.T) {
 		map[string]interface{}{"role": "assistant", "content": "Hi!"},
 	}
 
-	messages, systemPrompt := convertOpenAI2InputToClaude(input)
+	messages, systemPrompt := convertOpenAI2InputToClaude(input, nil)
 	if systemPrompt != "System line." {
 		t.Fatalf("expected system prompt to be extracted, got %#v", systemPrompt)
 	}
@@ -1309,7 +1415,7 @@ func TestConvertOpenAI2InputToClaude_PreservesMultiPartSystemBlocks(t *testing.T
 		map[string]interface{}{"role": "user", "content": "Hello"},
 	}
 
-	messages, systemPrompt := convertOpenAI2InputToClaude(input)
+	messages, systemPrompt := convertOpenAI2InputToClaude(input, nil)
 	if systemPrompt != "Line 1\nLine 2" {
 		t.Fatalf("expected multi-part system blocks to preserve line breaks, got %#v", systemPrompt)
 	}
@@ -1327,7 +1433,7 @@ func TestConvertOpenAI2InputToClaude_FunctionCallOutputFlushesPendingToolUses(t 
 		map[string]interface{}{"type": "function_call_output", "call_id": "call_1", "output": "file content"},
 	}
 
-	messages, _ := convertOpenAI2InputToClaude(input)
+	messages, _ := convertOpenAI2InputToClaude(input, nil)
 	if len(messages) != 2 {
 		t.Fatalf("expected assistant tool_use and user tool_result messages, got %#v", messages)
 	}

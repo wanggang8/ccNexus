@@ -37,11 +37,10 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 
 		// tool result messages → function_call_output
 		if msg.Role == "tool" {
-			content, _ := msg.Content.(string)
 			input = append(input, map[string]interface{}{
 				"type":    "function_call_output",
 				"call_id": msg.ToolCallID,
-				"output":  content,
+				"output":  normalizeChatToolContentToResponsesOutput(msg.Content),
 			})
 			continue
 		}
@@ -111,6 +110,13 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 		return nil, err
 	}
 
+	customToolNames := make(map[string]struct{})
+	for _, tool := range req.Tools {
+		if tool.Type == "custom" && strings.TrimSpace(tool.Name) != "" {
+			customToolNames[tool.Name] = struct{}{}
+		}
+	}
+
 	var messages []transformer.OpenAIMessage
 
 	if req.Instructions != "" {
@@ -153,6 +159,7 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 				callID, _ := itemMap["call_id"].(string)
 				name, _ := itemMap["name"].(string)
 				args, _ := itemMap["arguments"].(string)
+				args = normalizeResponsesToolArgumentsForChat(name, args, customToolNames)
 				pendingToolCalls = append(pendingToolCalls, transformer.OpenAIToolCall{
 					ID:   callID,
 					Type: "function",
@@ -169,7 +176,7 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 					pendingToolCalls = nil
 				}
 				callID, _ := itemMap["call_id"].(string)
-				output, _ := itemMap["output"].(string)
+				output := normalizeResponsesToolOutputToChatContent(itemMap["output"])
 				messages = append(messages, transformer.OpenAIMessage{Role: "tool", Content: output, ToolCallID: callID})
 			}
 		}
@@ -311,7 +318,7 @@ func OpenAIRespToOpenAI2(openaiResp []byte) ([]byte, error) {
 				"type":      "function_call",
 				"call_id":   tc.ID,
 				"name":      tc.Function.Name,
-				"arguments": tc.Function.Arguments,
+				"arguments": normalizeChatToolArgumentsToResponses(tc.Function.Arguments),
 			})
 		}
 	}
@@ -859,4 +866,97 @@ func convertOpenAI2ContentToOpenAIChat(content interface{}, role string) interfa
 		flushTextBuffer()
 	}
 	return parts
+}
+
+func normalizeResponsesToolOutputToChatContent(output interface{}) string {
+	if output == nil {
+		return ""
+	}
+	if str, ok := output.(string); ok {
+		return str
+	}
+	if content := convertOpenAI2ContentToOpenAIChat(output, "tool"); content != nil {
+		switch v := content.(type) {
+		case string:
+			return v
+		case []interface{}, map[string]interface{}:
+			if data, err := json.Marshal(v); err == nil {
+				return string(data)
+			}
+		}
+	}
+	if data, err := json.Marshal(output); err == nil {
+		return string(data)
+	}
+	return fmt.Sprint(output)
+}
+
+func normalizeChatToolContentToResponsesOutput(content interface{}) interface{} {
+	if content == nil {
+		return ""
+	}
+	switch v := content.(type) {
+	case string:
+		return v
+	case []interface{}, map[string]interface{}:
+		return v
+	default:
+		if data, err := json.Marshal(v); err == nil {
+			return string(data)
+		}
+		return fmt.Sprint(v)
+	}
+}
+
+func normalizeResponsesToolArgumentsForChat(name, arguments string, customToolNames map[string]struct{}) string {
+	trimmedName := strings.TrimSpace(name)
+	trimmedArgs := strings.TrimSpace(arguments)
+	if trimmedName == "" || trimmedArgs == "" {
+		return arguments
+	}
+	if _, ok := customToolNames[trimmedName]; !ok {
+		return arguments
+	}
+
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(trimmedArgs), &decoded); err == nil {
+		switch v := decoded.(type) {
+		case map[string]interface{}:
+			if _, ok := v["input"].(string); ok && len(v) == 1 {
+				return arguments
+			}
+		case string:
+			wrapped, err := json.Marshal(map[string]interface{}{"input": v})
+			if err == nil {
+				return string(wrapped)
+			}
+		}
+	}
+
+	wrapped, err := json.Marshal(map[string]interface{}{"input": arguments})
+	if err != nil {
+		return arguments
+	}
+	return string(wrapped)
+}
+
+func normalizeChatToolArgumentsToResponses(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return arguments
+	}
+
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return arguments
+	}
+	obj, ok := decoded.(map[string]interface{})
+	if !ok || len(obj) != 1 {
+		return arguments
+	}
+	input, ok := obj["input"].(string)
+	if !ok {
+		return arguments
+	}
+	return input
 }
