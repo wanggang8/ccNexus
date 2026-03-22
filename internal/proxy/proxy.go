@@ -466,7 +466,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		trans, err := prepareTransformerForClient(clientFormat, endpoint, bodyBytes)
+		trans, err := prepareTransformerForClient(clientFormat, endpoint)
 		if err != nil {
 			logger.Error("[%s] %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)

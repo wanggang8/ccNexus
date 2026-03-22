@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -67,122 +66,6 @@ func TestDetectClientFormat_ChatTakesPrecedence(t *testing.T) {
 	result := detectClientFormat("/v1/chat/completions/from/responses")
 	if result != ClientFormatOpenAIChat {
 		t.Errorf("Expected chat format for ambiguous path, got %q", result)
-	}
-}
-
-func TestDetectEffectiveClientFormat_ChatPathWithResponsesBody(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.4","input":[],"reasoning":{"effort":"medium"},"store":false}`)
-	result := detectEffectiveClientFormat(ClientFormatOpenAIChat, body)
-	if result != ClientFormatOpenAIResponses {
-		t.Fatalf("detectEffectiveClientFormat(chat, responses body) = %q, want %q", result, ClientFormatOpenAIResponses)
-	}
-}
-
-func TestDetectEffectiveClientFormat_ChatPathWithChatBody(t *testing.T) {
-	body := []byte(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
-	result := detectEffectiveClientFormat(ClientFormatOpenAIChat, body)
-	if result != ClientFormatOpenAIChat {
-		t.Fatalf("detectEffectiveClientFormat(chat, chat body) = %q, want %q", result, ClientFormatOpenAIChat)
-	}
-}
-
-func TestPrepareTransformerForClient_ResponsesBodyUsesResponsesTransformer(t *testing.T) {
-	endpoint := config.Endpoint{
-		Name:        "OpenAI2",
-		Transformer: "openai2",
-		Model:       "gpt-5.4",
-	}
-	body := []byte(`{"model":"gpt-5.4","input":[],"reasoning":{"effort":"medium"},"store":false}`)
-
-	trans, err := prepareTransformerForClient(ClientFormatOpenAIChat, endpoint, body)
-	if err != nil {
-		t.Fatalf("prepareTransformerForClient returned error: %v", err)
-	}
-	if trans.Name() != "cx_resp_openai2" {
-		t.Fatalf("expected cx_resp_openai2, got %q", trans.Name())
-	}
-}
-
-func TestPrepareTransformerForClient_GPT54LogShapeUsesResponsesTransformer(t *testing.T) {
-	endpoint := config.Endpoint{
-		Name:        "OpenAI2",
-		Transformer: "openai2",
-		Model:       "gpt-5.4",
-	}
-	body := []byte(`{
-		"user":"95dfaae8bbc5aaa3",
-		"model":"gpt-5.4",
-		"input":[
-			{"role":"system","content":"You are GPT-5.4."},
-			{"role":"user","content":"test"}
-		],
-		"tools":[
-			{
-				"type":"function",
-				"name":"ReadFile",
-				"description":"Reads a file",
-				"parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
-			}
-		],
-		"store":false,
-		"include":["reasoning.encrypted_content"],
-		"reasoning":{"effort":"medium","summary":"auto"},
-		"stream":true,
-		"stream_options":{"include_usage":true},
-		"metadata":{"cursorConversationId":"5e66cef0-7372-496e-aa21-476a66401a2a"}
-	}`)
-
-	trans, err := prepareTransformerForClient(ClientFormatOpenAIChat, endpoint, body)
-	if err != nil {
-		t.Fatalf("prepareTransformerForClient returned error: %v", err)
-	}
-	if trans.Name() != "cx_resp_openai2" {
-		t.Fatalf("expected GPT-5.4 log shape to use cx_resp_openai2, got %q", trans.Name())
-	}
-}
-
-func TestPrepareTransformerForClient_ChatBodyKeepsChatTransformer(t *testing.T) {
-	endpoint := config.Endpoint{
-		Name:        "OpenAI",
-		Transformer: "openai",
-		Model:       "gpt-4.1",
-	}
-	body := []byte(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
-
-	trans, err := prepareTransformerForClient(ClientFormatOpenAIChat, endpoint, body)
-	if err != nil {
-		t.Fatalf("prepareTransformerForClient returned error: %v", err)
-	}
-	if trans.Name() != "cx_chat_openai" {
-		t.Fatalf("expected cx_chat_openai, got %q", trans.Name())
-	}
-}
-
-func TestPrepareTransformerForClient_InvalidJSONKeepsPathBasedFormat(t *testing.T) {
-	endpoint := config.Endpoint{
-		Name:        "OpenAI",
-		Transformer: "openai",
-		Model:       "gpt-4.1",
-	}
-	body := []byte(`{"messages":`)
-
-	trans, err := prepareTransformerForClient(ClientFormatOpenAIChat, endpoint, body)
-	if err != nil {
-		t.Fatalf("prepareTransformerForClient returned error: %v", err)
-	}
-	if trans.Name() != "cx_chat_openai" {
-		t.Fatalf("expected invalid JSON to keep cx_chat_openai, got %q", trans.Name())
-	}
-}
-
-func TestDetectEffectiveClientFormat_ResponsesBodyRoundTripJSON(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.4","input":[],"include":["reasoning.encrypted_content"],"store":false}`)
-	if !json.Valid(body) {
-		t.Fatal("test body should be valid JSON")
-	}
-	result := detectEffectiveClientFormat(ClientFormatOpenAIChat, body)
-	if result != ClientFormatOpenAIResponses {
-		t.Fatalf("detectEffectiveClientFormat(valid responses body) = %q, want %q", result, ClientFormatOpenAIResponses)
 	}
 }
 
