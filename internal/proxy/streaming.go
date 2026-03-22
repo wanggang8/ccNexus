@@ -30,17 +30,6 @@ func parseOpenAIIncludeUsage(bodyBytes []byte) bool {
 	return req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 }
 
-func shouldInjectClaudeUsageFallback(transformerName string, streamCtx *transformer.StreamContext) bool {
-	switch transformerName {
-	case "cx_resp_openai", "cx_resp_openai2", "cx_chat_openai", "cx_chat_openai2":
-		return false
-	case "cx_chat_claude":
-		return streamCtx != nil && streamCtx.IncludeUsage
-	default:
-		return true
-	}
-}
-
 // handleStreamingResponse processes streaming SSE responses
 // Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string, []byte, []byte) {
@@ -133,7 +122,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				shouldInjectUsageFallback := shouldInjectClaudeUsageFallback(transformerName, streamCtx)
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
 				if shouldInjectUsageFallback {
 					// Inject message_delta event with usage
 					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
@@ -192,7 +181,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				shouldInjectUsageFallback := shouldInjectClaudeUsageFallback(transformerName, streamCtx)
+				shouldInjectUsageFallback := transformerName != "cx_chat_claude" || (streamCtx != nil && streamCtx.IncludeUsage)
 				if shouldInjectUsageFallback {
 					// Inject message_delta event with usage before message_stop
 					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)

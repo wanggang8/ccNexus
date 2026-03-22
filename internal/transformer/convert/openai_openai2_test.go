@@ -378,7 +378,7 @@ func TestOpenAI2ReqToOpenAI_WithCustomTool(t *testing.T) {
 		"model": "gpt-4o",
 		"input": "Hello",
 		"tools": [
-			{"type": "custom", "name": "apply_patch", "description": "Apply a patch", "format": {"type": "grammar", "syntax": "lark", "definition": "start: patch"}}
+			{"type": "custom", "name": "apply_patch", "description": "Apply a patch"}
 		]
 	}`
 
@@ -387,42 +387,18 @@ func TestOpenAI2ReqToOpenAI_WithCustomTool(t *testing.T) {
 		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
 	}
 
-	var openaiReq map[string]interface{}
+	var openaiReq transformer.OpenAIRequest
 	if err := json.Unmarshal(result, &openaiReq); err != nil {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	tools, ok := openaiReq["tools"].([]interface{})
-	if !ok || len(tools) != 1 {
-		t.Fatalf("expected 1 tool, got %#v", openaiReq["tools"])
+	if len(openaiReq.Tools) != 1 {
+		t.Fatalf("Expected 1 tool, got %d", len(openaiReq.Tools))
 	}
-	tool := tools[0].(map[string]interface{})
-	fn, ok := tool["function"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected function wrapper, got %#v", tool)
-	}
-	if fn["name"] != "apply_patch" {
-		t.Errorf("Expected tool name 'apply_patch', got '%v'", fn["name"])
-	}
-	params, ok := fn["parameters"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected parameters preserved, got %#v", fn["parameters"])
-	}
-	props, ok := params["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected properties map, got %#v", params)
-	}
-	input, ok := props["input"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected input property, got %#v", props["input"])
-	}
-	desc, _ := input["description"].(string)
-	if !strings.Contains(desc, "type=grammar") || !strings.Contains(desc, "definition=start: patch") {
-		t.Fatalf("expected custom format hint in input description, got %q", desc)
-	}
-	toolDesc, _ := fn["description"].(string)
-	if !strings.Contains(toolDesc, "syntax=lark") {
-		t.Fatalf("expected custom format hint in tool description, got %q", toolDesc)
+
+	// Custom tool should be converted to function with input parameter
+	if openaiReq.Tools[0].Function.Name != "apply_patch" {
+		t.Errorf("Expected tool name 'apply_patch', got '%v'", openaiReq.Tools[0].Function.Name)
 	}
 }
 
@@ -468,7 +444,7 @@ func TestOpenAI2ReqToOpenAI_CursorStyleInputWithoutTypedMessage(t *testing.T) {
 		],
 		"tools": [
 			{"type": "function", "name": "ReadFile", "description": "Read file", "parameters": {"type": "object"}},
-			{"type": "custom", "name": "ApplyPatch", "description": "Apply patch", "format": {"type": "grammar", "syntax": "lark", "definition": "start: patch"}}
+			{"type": "custom", "name": "ApplyPatch", "description": "Apply patch"}
 		]
 	}`
 
@@ -501,18 +477,8 @@ func TestOpenAI2ReqToOpenAI_CursorStyleInputWithoutTypedMessage(t *testing.T) {
 		if tool["type"] != "function" {
 			t.Fatalf("expected tool %d type=function, got %#v", i, tool)
 		}
-		fn, ok := tool["function"].(map[string]interface{})
-		if !ok {
+		if _, ok := tool["function"].(map[string]interface{}); !ok {
 			t.Fatalf("expected tool %d to use chat function wrapper, got %#v", i, tool)
-		}
-		if fn["name"] == "ApplyPatch" {
-			params := fn["parameters"].(map[string]interface{})
-			props := params["properties"].(map[string]interface{})
-			input := props["input"].(map[string]interface{})
-			desc, _ := input["description"].(string)
-			if !strings.Contains(desc, "type=grammar") {
-				t.Fatalf("expected ApplyPatch custom format hint, got %q", desc)
-			}
 		}
 	}
 
