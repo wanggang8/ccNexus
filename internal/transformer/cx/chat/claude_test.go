@@ -591,37 +591,3 @@ func TestClaudeTransformer_TransformResponseWithContext_NonStreaming(t *testing.
 		t.Errorf("Expected object 'chat.completion', got '%v'", openaiResp["object"])
 	}
 }
-
-func TestClaudeTransformer_TransformResponseWithContext_ClaudeToolUseStartShouldEmitToolCallsImmediately(t *testing.T) {
-	trans := NewClaudeTransformer("claude-sonnet-4-20250514")
-	ctx := transformer.NewStreamContext()
-
-	messageStart := []byte(`event: message_start
-data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}
-
-`)
-	toolStart := []byte(`event: content_block_start
-data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}
-
-`)
-
-	first, err := trans.TransformResponseWithContext(messageStart, true, ctx)
-	if err != nil {
-		t.Fatalf("message_start TransformResponseWithContext failed: %v", err)
-	}
-	if first == nil {
-		t.Fatal("expected message_start to emit initial OpenAI chunk")
-	}
-
-	second, err := trans.TransformResponseWithContext(toolStart, true, ctx)
-	if err != nil {
-		t.Fatalf("tool_start TransformResponseWithContext failed: %v", err)
-	}
-	if second == nil {
-		t.Fatal("expected tool_use start to emit tool_calls chunk immediately, got nil")
-	}
-	if !strings.Contains(string(second), "\"tool_calls\"") {
-		t.Fatalf("expected tool_calls in tool_start chunk, got %q", string(second))
-	}
-}
-

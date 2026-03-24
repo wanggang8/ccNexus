@@ -477,7 +477,7 @@ func TestOpenAIRespToClaudeWithMultipleThinking(t *testing.T) {
 	}
 }
 
-func TestClaudeStreamToOpenAI_EmitsToolShellAtToolUseStart(t *testing.T) {
+func TestClaudeStreamToOpenAI_DelaysToolShellUntilFirstArgumentDelta(t *testing.T) {
 	ctx := transformer.NewStreamContext()
 	ctx.MessageID = "msg_1"
 	ctx.ModelName = "gpt-4"
@@ -495,18 +495,11 @@ data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_
 	if err != nil {
 		t.Fatalf("tool start failed: %v", err)
 	}
-	if out1 == nil {
-		t.Fatal("expected tool chunk at tool_use start, got nil")
+	if out1 != nil {
+		t.Fatalf("expected no tool chunk before first input_json_delta, got %s", string(out1))
 	}
-	resultStart := string(out1)
-	if !strings.Contains(resultStart, `"id":"toolu_1"`) {
-		t.Fatalf("expected tool shell id at tool_use start, got %s", resultStart)
-	}
-	if !strings.Contains(resultStart, `"name":"read_file"`) {
-		t.Fatalf("expected tool shell name at tool_use start, got %s", resultStart)
-	}
-	if !strings.Contains(resultStart, `"function":{"arguments":"","name":"read_file"}`) {
-		t.Fatalf("expected empty tool arguments at tool_use start, got %s", resultStart)
+	if !ctx.ToolBlockPending {
+		t.Fatal("expected tool block pending after tool_use start")
 	}
 
 	out2, err := ClaudeStreamToOpenAI([]byte(argDelta), ctx, "gpt-4")
@@ -514,8 +507,17 @@ data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_
 		t.Fatalf("tool delta failed: %v", err)
 	}
 	resultStr := string(out2)
+	if !strings.Contains(resultStr, `"id":"toolu_1"`) {
+		t.Fatalf("expected tool shell id on first argument delta, got %s", resultStr)
+	}
+	if !strings.Contains(resultStr, `"name":"read_file"`) {
+		t.Fatalf("expected tool shell name on first argument delta, got %s", resultStr)
+	}
 	if !strings.Contains(resultStr, `"function":{"arguments":"{\"path\":\"/tmp/a\"}"}`) {
 		t.Fatalf("expected argument delta payload on first argument delta, got %s", resultStr)
+	}
+	if ctx.ToolBlockPending {
+		t.Fatal("expected tool block pending cleared after first input_json_delta")
 	}
 }
 
