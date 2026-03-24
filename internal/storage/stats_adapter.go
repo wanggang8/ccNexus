@@ -9,17 +9,11 @@ import (
 // It implements the proxy.StatsStorage interface
 type StatsStorageAdapter struct {
 	storage *SQLiteStorage
-	userID  int64
 }
 
 // NewStatsStorageAdapter creates a new adapter
 func NewStatsStorageAdapter(storage *SQLiteStorage) *StatsStorageAdapter {
-	return &StatsStorageAdapter{storage: storage, userID: 1}
-}
-
-// NewStatsStorageAdapterForUser creates a scoped stats adapter.
-func NewStatsStorageAdapterForUser(storage *SQLiteStorage, userID int64) *StatsStorageAdapter {
-	return &StatsStorageAdapter{storage: storage, userID: userID}
+	return &StatsStorageAdapter{storage: storage}
 }
 
 // proxyStatToStorageStat converts proxy.StatRecord to storage.DailyStat using explicit field mapping
@@ -42,14 +36,8 @@ func proxyStatToStorageStat(stat interface{}) (*DailyStat, error) {
 	// This is a transitional solution that's safer than the previous implementation
 	switch v := stat.(type) {
 	case map[string]interface{}:
-		userID, _ := v["UserID"].(int64)
-		if userID == 0 {
-			if f, ok := v["UserID"].(float64); ok {
-				userID = int64(f)
-			}
-		}
+		// Handle map-based stat records
 		return &DailyStat{
-			UserID:       userID,
 			EndpointName: v["EndpointName"].(string),
 			Date:         v["Date"].(string),
 			Requests:     v["Requests"].(int),
@@ -73,55 +61,51 @@ func proxyStatToStorageStat(stat interface{}) (*DailyStat, error) {
 
 		// Use type assertion to extract fields safely
 		// The calling code should pass the correct type
-	statPtr, ok := stat.(interface {
-		UserID() int64
-		EndpointName() string
-		Date() string
-		Requests() int
-		Errors() int
-		InputTokens() int
-		OutputTokens() int
-		DeviceID() string
-	})
+		statPtr, ok := stat.(interface {
+			EndpointName() string
+			Date() string
+			Requests() int
+			Errors() int
+			InputTokens() int
+			OutputTokens() int
+			DeviceID() string
+		})
 
-	if ok {
-		return &DailyStat{
-			UserID:       statPtr.UserID(),
-			EndpointName: statPtr.EndpointName(),
-			Date:         statPtr.Date(),
-			Requests:     statPtr.Requests(),
-			Errors:       statPtr.Errors(),
-			InputTokens:  statPtr.InputTokens(),
-			OutputTokens: statPtr.OutputTokens(),
-			DeviceID:     statPtr.DeviceID(),
-		}, nil
-	}
+		if ok {
+			return &DailyStat{
+				EndpointName: statPtr.EndpointName(),
+				Date:         statPtr.Date(),
+				Requests:     statPtr.Requests(),
+				Errors:       statPtr.Errors(),
+				InputTokens:  statPtr.InputTokens(),
+				OutputTokens: statPtr.OutputTokens(),
+				DeviceID:     statPtr.DeviceID(),
+			}, nil
+		}
 
 		// Fallback: direct struct field access via type assertion
 		// This attempts to match the exact proxy.StatRecord structure
-	type DirectStatRecord struct {
-		UserID       int64
-		EndpointName string
-		Date         string
-		Requests     int
-		Errors       int
-		InputTokens  int
-		OutputTokens int
-		DeviceID     string
-	}
+		type DirectStatRecord struct {
+			EndpointName string
+			Date         string
+			Requests     int
+			Errors       int
+			InputTokens  int
+			OutputTokens int
+			DeviceID     string
+		}
 
 		// Try direct conversion if it's a compatible struct
 		if statVal, ok := stat.(DirectStatRecord); ok {
-		return &DailyStat{
-			UserID:       statVal.UserID,
-			EndpointName: statVal.EndpointName,
-			Date:         statVal.Date,
-			Requests:     statVal.Requests,
-			Errors:       statVal.Errors,
-			InputTokens:  statVal.InputTokens,
-			OutputTokens: statVal.OutputTokens,
-			DeviceID:     statVal.DeviceID,
-		}, nil
+			return &DailyStat{
+				EndpointName: statVal.EndpointName,
+				Date:         statVal.Date,
+				Requests:     statVal.Requests,
+				Errors:       statVal.Errors,
+				InputTokens:  statVal.InputTokens,
+				OutputTokens: statVal.OutputTokens,
+				DeviceID:     statVal.DeviceID,
+			}, nil
 		}
 
 		// Last resort: use reflection but with proper error handling
@@ -166,19 +150,7 @@ func extractStatUsingReflectionSafe(stat interface{}) (*DailyStat, error) {
 		return int(field.Int()), nil
 	}
 
-	getInt64Field := func(fieldName string) (int64, error) {
-		field := v.FieldByName(fieldName)
-		if !field.IsValid() {
-			return 0, fmt.Errorf("field %s not found", fieldName)
-		}
-		if field.Kind() != reflect.Int64 && field.Kind() != reflect.Int {
-			return 0, fmt.Errorf("field %s is not an int64", fieldName)
-		}
-		return field.Int(), nil
-	}
-
 	// Extract all fields with error checking
-	userID, _ := getInt64Field("UserID")
 	endpointName, err := getStringField("EndpointName")
 	if err != nil {
 		return nil, fmt.Errorf("EndpointName: %w", err)
@@ -215,7 +187,6 @@ func extractStatUsingReflectionSafe(stat interface{}) (*DailyStat, error) {
 	}
 
 	return &DailyStat{
-		UserID:       userID,
 		EndpointName: endpointName,
 		Date:         date,
 		Requests:     requests,
@@ -233,16 +204,12 @@ func (a *StatsStorageAdapter) RecordDailyStat(stat interface{}) error {
 	if err != nil {
 		return fmt.Errorf("failed to convert stat record: %w", err)
 	}
-	userID := a.userID
-	if dailyStat.UserID > 0 {
-		userID = dailyStat.UserID
-	}
-	return a.storage.RecordDailyStatForUser(userID, dailyStat)
+	return a.storage.RecordDailyStat(dailyStat)
 }
 
 // GetTotalStats gets total stats for all endpoints
 func (a *StatsStorageAdapter) GetTotalStats() (int, map[string]interface{}, error) {
-	totalRequests, endpointStats, err := a.storage.GetTotalStatsForUser(a.userID)
+	totalRequests, endpointStats, err := a.storage.GetTotalStats()
 	if err != nil {
 		return 0, nil, err
 	}
@@ -300,7 +267,7 @@ type DailyRecordCompat struct {
 
 // GetPeriodStatsAggregated gets aggregated stats for all endpoints in a time period
 func (a *StatsStorageAdapter) GetPeriodStatsAggregated(startDate, endDate string) (map[string]interface{}, error) {
-	endpointStats, err := a.storage.GetPeriodStatsAggregatedForUser(a.userID, startDate, endDate)
+	endpointStats, err := a.storage.GetPeriodStatsAggregated(startDate, endDate)
 	if err != nil {
 		return nil, err
 	}

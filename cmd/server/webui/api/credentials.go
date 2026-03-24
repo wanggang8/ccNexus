@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,7 +33,7 @@ type importCredentialsRequest struct {
 }
 
 func (h *Handler) handleEndpointCredentials(w http.ResponseWriter, r *http.Request, endpointName string, parts []string) {
-	endpoint, err := h.getEndpointByName(r, endpointName)
+	endpoint, err := h.getEndpointByName(endpointName)
 	if err != nil {
 		logger.Error("Failed to get endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
@@ -91,24 +90,19 @@ func (h *Handler) handleEndpointCredentials(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) listEndpointCredentials(w http.ResponseWriter, r *http.Request, endpointName string) {
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
-	credentials, err := h.storage.GetEndpointCredentialsByUser(user.ID, endpointName)
+	credentials, err := h.storage.GetEndpointCredentials(endpointName)
 	if err != nil {
 		logger.Error("Failed to get endpoint credentials: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint credentials")
 		return
 	}
-	rateLimits, err := h.storage.GetCredentialRateLimitsByUser(user.ID, endpointName)
+	rateLimits, err := h.storage.GetCredentialRateLimitsByEndpoint(endpointName)
 	if err != nil {
 		logger.Warn("Failed to load rate limits: %v", err)
 		rateLimits = nil
 	}
 
-	stats, err := h.storage.GetTokenPoolStatsByUser(user.ID, endpointName)
+	stats, err := h.storage.GetTokenPoolStats(endpointName)
 	if err != nil {
 		logger.Warn("Failed to get credential stats: %v", err)
 	}
@@ -131,11 +125,6 @@ func (h *Handler) listEndpointCredentials(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) importEndpointCredentials(w http.ResponseWriter, r *http.Request, endpointName string) {
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
@@ -148,7 +137,7 @@ func (h *Handler) importEndpointCredentials(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	existing, err := h.storage.GetEndpointCredentialsByUser(user.ID, endpointName)
+	existing, err := h.storage.GetEndpointCredentials(endpointName)
 	if err != nil {
 		logger.Error("Failed to get existing credentials: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get existing credentials")
@@ -221,7 +210,7 @@ func (h *Handler) importEndpointCredentials(w http.ResponseWriter, r *http.Reque
 
 		existingCred := findExistingCredential(accountIndex, emailIndex, &cred)
 		if existingCred == nil {
-			if err := h.storage.SaveEndpointCredentialForUser(user.ID, &cred); err != nil {
+			if err := h.storage.SaveEndpointCredential(&cred); err != nil {
 				failed++
 				errors = append(errors, fmt.Sprintf("item[%d]: save failed: %v", i, err))
 				continue
@@ -377,17 +366,8 @@ func (h *Handler) updateEndpointCredential(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) deleteEndpointCredential(w http.ResponseWriter, r *http.Request, endpointName string, id int64) {
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
-	if err := h.storage.DeleteEndpointCredentialForUser(user.ID, endpointName, id); err != nil {
+	if err := h.storage.DeleteEndpointCredential(endpointName, id); err != nil {
 		logger.Error("Failed to delete credential: %v", err)
-		if errors.Is(err, storage.ErrCredentialNotFound) {
-			WriteError(w, http.StatusNotFound, "Credential not found")
-			return
-		}
 		WriteError(w, http.StatusInternalServerError, "Failed to delete credential")
 		return
 	}
@@ -398,12 +378,7 @@ func (h *Handler) deleteEndpointCredential(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) getEndpointCredentialStats(w http.ResponseWriter, r *http.Request, endpointName string) {
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
-	stats, err := h.storage.GetTokenPoolStatsByUser(user.ID, endpointName)
+	stats, err := h.storage.GetTokenPoolStats(endpointName)
 	if err != nil {
 		logger.Error("Failed to get token pool stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get token pool stats")
@@ -413,12 +388,8 @@ func (h *Handler) getEndpointCredentialStats(w http.ResponseWriter, r *http.Requ
 	WriteSuccess(w, stats)
 }
 
-func (h *Handler) getEndpointByName(r *http.Request, name string) (*storage.Endpoint, error) {
-	user := h.currentUser(r)
-	if user == nil {
-		return nil, nil
-	}
-	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+func (h *Handler) getEndpointByName(name string) (*storage.Endpoint, error) {
+	endpoints, err := h.storage.GetEndpoints()
 	if err != nil {
 		return nil, err
 	}

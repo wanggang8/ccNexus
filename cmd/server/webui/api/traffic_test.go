@@ -19,7 +19,7 @@ func TestTrafficAPIs(t *testing.T) {
 	recorder := p.GetTrafficRecorder()
 
 	// Create handler
-	h := 		NewHandler(cfg, p, nil)
+	h := NewHandler(cfg, p, nil, "")
 
 	t.Run("GetRecordingStatus", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/traffic/recording", nil)

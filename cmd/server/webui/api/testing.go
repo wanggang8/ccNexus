@@ -30,13 +30,7 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
-
-	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+	endpoints, err := h.storage.GetEndpoints()
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -350,14 +344,10 @@ func (h *Handler) testMinimalRequest(client *http.Client, apiUrl, apiKey, transf
 	return resp.StatusCode, nil
 }
 
-func (h *Handler) resolveEndpointAPIKey(r *http.Request, endpoint *storage.Endpoint) (string, error) {
+func (h *Handler) resolveEndpointAPIKey(endpoint *storage.Endpoint) (string, error) {
 	authMode := config.NormalizeAuthMode(endpoint.AuthMode)
 	if config.IsTokenPoolAuthMode(authMode) {
-		user := h.currentUser(r)
-		if user == nil {
-			return "", fmt.Errorf("current user not found")
-		}
-		cred, err := h.storage.GetUsableEndpointCredentialForUser(user.ID, endpoint.Name, time.Now().UTC())
+		cred, err := h.storage.GetUsableEndpointCredential(endpoint.Name, time.Now().UTC())
 		if err != nil {
 			return "", fmt.Errorf("failed to get token from pool: %w", err)
 		}
@@ -394,14 +384,9 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiUrl, apiKey := req.APIUrl, req.APIKey
-	user := h.currentUser(r)
-	if user == nil {
-		WriteError(w, http.StatusUnauthorized, "Current user not found")
-		return
-	}
 	if (apiKey == "" || apiKey == "****") && req.EndpointName != "" {
 		// Use stored credentials when editing (frontend has masked key)
-		endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+		endpoints, err := h.storage.GetEndpoints()
 		if err != nil {
 			logger.Error("Failed to get endpoints: %v", err)
 			WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -521,7 +506,10 @@ func (h *Handler) fetchGeminiModels(apiUrl, apiKey string) ([]string, error) {
 
 	models := make([]string, 0, len(result.Models))
 	for _, m := range result.Models {
-		name := strings.TrimPrefix(m.Name, "models/")
+		name := m.Name
+		if strings.HasPrefix(name, "models/") {
+			name = strings.TrimPrefix(name, "models/")
+		}
 		models = append(models, name)
 	}
 	return models, nil

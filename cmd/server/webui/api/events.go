@@ -49,55 +49,16 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 			logger.Debug("[SSE] Client disconnected")
 			return
 		case <-ticker.C:
-			user := h.currentUser(r)
-			if user == nil {
-				return
-			}
-			statsSummary := map[string]interface{}{
-				"TotalRequests":     0,
-				"TotalErrors":       0,
-				"TotalInputTokens":  int64(0),
-				"TotalOutputTokens": int64(0),
-				"Endpoints":         map[string]interface{}{},
-			}
-			_, endpointStats, statsErr := h.storage.GetTotalStatsForUser(user.ID)
-			if statsErr != nil {
-				logger.Error("[SSE] Failed to get scoped stats: %v", statsErr)
-			} else {
-				endpointsPayload := make(map[string]interface{}, len(endpointStats))
-				totalRequests := 0
-				totalErrors := 0
-				var totalInputTokens int64
-				var totalOutputTokens int64
-				for name, stat := range endpointStats {
-					endpointsPayload[name] = stat
-					totalRequests += stat.Requests
-					totalErrors += stat.Errors
-					totalInputTokens += stat.InputTokens
-					totalOutputTokens += stat.OutputTokens
-				}
-				statsSummary = map[string]interface{}{
-					"TotalRequests":     totalRequests,
-					"TotalErrors":       totalErrors,
-					"TotalInputTokens":  totalInputTokens,
-					"TotalOutputTokens": totalOutputTokens,
-					"Endpoints":         endpointsPayload,
-				}
-			}
-			currentEndpoint := ""
-			if h.proxy != nil {
-				proxyEndpoint, proxyErr := h.proxy.GetCurrentEndpointNameForUser(user.ID)
-				if proxyErr != nil {
-					logger.Error("[SSE] Failed to get current endpoint: %v", proxyErr)
-				} else {
-					currentEndpoint = proxyEndpoint
-				}
-			}
+			// Send stats update
+			stats := h.proxy.GetStats()
+
+			// Get current endpoint from proxy
+			currentEndpoint := h.proxy.GetCurrentEndpointName()
 
 			event := map[string]interface{}{
 				"type":            "stats",
 				"timestamp":       time.Now().Unix(),
-				"stats":           statsSummary,
+				"stats":           stats,
 				"currentEndpoint": currentEndpoint,
 			}
 

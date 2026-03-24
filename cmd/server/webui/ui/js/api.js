@@ -1,6 +1,5 @@
 // API Client for ccNexus
 const AUTH_TOKEN_KEY = 'ccnexus_ui_token';
-const CURRENT_USER_KEY = 'ccnexus_current_user';
 
 class APIClient {
     constructor(baseURL = '/api') {
@@ -172,22 +171,6 @@ class APIClient {
         return { ok: res.ok, ...data };
     }
 
-    async getUsers() {
-        return this.request('GET', '/users');
-    }
-
-    async createUser(data) {
-        return this.request('POST', '/users', data);
-    }
-
-    async resetUserToken(id) {
-        return this.request('POST', `/users/${id}/reset-token`);
-    }
-
-    async updateUserStatus(id, status) {
-        return this.request('PATCH', `/users/${id}/status`, { status });
-    }
-
     // Traffic logs
     async getTrafficLogs(filter = {}) {
         const params = new URLSearchParams();
@@ -215,4 +198,4 @@ class APIClient {
 }
 
 export const api = new APIClient();
-export { AUTH_TOKEN_KEY, CURRENT_USER_KEY };
+export { AUTH_TOKEN_KEY };

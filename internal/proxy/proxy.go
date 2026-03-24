@@ -41,7 +41,6 @@ type Proxy struct {
 	stats             *Stats
 	trafficRecorder   *TrafficRecorder // traffic log recorder
 	currentIndex      int
-	userCurrentIndex  map[int64]int
 	mu                sync.RWMutex
 	server            *http.Server
 	httpClient        *http.Client                  // Reusable HTTP client with connection pool
@@ -81,7 +80,6 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		stats:           stats,
 		trafficRecorder: NewTrafficRecorder(),
 		currentIndex:    0,
-		userCurrentIndex: make(map[int64]int),
 		httpClient:      httpClient,
 		activeRequests:  make(map[string]int),
 		endpointCtx:     make(map[string]context.Context),
@@ -172,58 +170,6 @@ func (p *Proxy) getEnabledEndpoints() []config.Endpoint {
 	return enabled
 }
 
-func (p *Proxy) getEnabledEndpointsForUser(userID int64) []config.Endpoint {
-	if p.storage == nil || userID <= 0 {
-		return p.getEnabledEndpoints()
-	}
-	endpoints, err := p.storage.GetEndpointsByUser(userID)
-	if err != nil {
-		logger.Warn("failed to get user endpoints: %v", err)
-		return nil
-	}
-	enabled := make([]config.Endpoint, 0, len(endpoints))
-	for _, ep := range endpoints {
-		if ep.Enabled {
-			enabled = append(enabled, config.Endpoint{
-				ID:               ep.ID,
-				Name:             ep.Name,
-				APIUrl:           ep.APIUrl,
-				APIKey:           ep.APIKey,
-				AuthMode:         ep.AuthMode,
-				Enabled:          ep.Enabled,
-				Transformer:      ep.Transformer,
-				Model:            ep.Model,
-				Remark:           ep.Remark,
-				RequestOverrides: ep.RequestOverrides,
-			})
-		}
-	}
-	return enabled
-}
-
-func (p *Proxy) getCurrentEndpointForUser(userID int64) config.Endpoint {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	endpoints := p.getEnabledEndpointsForUser(userID)
-	if len(endpoints) == 0 {
-		return config.Endpoint{}
-	}
-	if p.storage != nil && userID > 0 {
-		if currentName, err := p.storage.GetCurrentEndpointNameForUser(userID); err == nil && currentName != "" {
-			for _, ep := range endpoints {
-				if ep.Name == currentName {
-					return ep
-				}
-			}
-		}
-	}
-	if idx, ok := p.userCurrentIndex[userID]; ok && idx >= 0 {
-		return endpoints[idx%len(endpoints)]
-	}
-	return endpoints[0]
-}
-
 // getCurrentEndpoint returns the current endpoint (thread-safe)
 func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 	p.mu.RLock()
@@ -271,11 +217,6 @@ func (p *Proxy) isCurrentEndpoint(endpointName string) bool {
 	return current.Name == endpointName
 }
 
-func (p *Proxy) isCurrentEndpointForUser(userID int64, endpointName string) bool {
-	current := p.getCurrentEndpointForUser(userID)
-	return current.Name == endpointName
-}
-
 // getEndpointContext returns a context for the given endpoint, creating one if needed
 func (p *Proxy) getEndpointContext(endpointName string) context.Context {
 	p.ctxMu.Lock()
@@ -303,15 +244,16 @@ func (p *Proxy) cancelEndpointRequests(endpointName string) {
 	}
 }
 
+// rotateEndpoint switches to the next endpoint (thread-safe)
+// waitForActive: if true, waits briefly for active requests to complete before switching
 func (p *Proxy) rotateEndpoint() config.Endpoint {
-	return p.rotateEndpointForUser(1)
-}
-
-func (p *Proxy) rotateEndpointForUser(userID int64) config.Endpoint {
-	oldEndpoint := p.getCurrentEndpointForUser(userID)
+	// First, check if we need to wait for active requests
+	oldEndpoint := p.getCurrentEndpoint()
 	if p.hasActiveRequests(oldEndpoint.Name) {
 		logger.Debug("[SWITCH] Waiting for active requests on %s to complete...", oldEndpoint.Name)
-		for i := 0; i < 10; i++ {
+
+		// Wait outside of the main lock to avoid blocking other operations
+		for i := 0; i < 10; i++ { // Check 10 times, 50ms each = 500ms max
 			time.Sleep(50 * time.Millisecond)
 			if !p.hasActiveRequests(oldEndpoint.Name) {
 				break
@@ -319,38 +261,26 @@ func (p *Proxy) rotateEndpointForUser(userID int64) config.Endpoint {
 		}
 	}
 
+	// Now acquire lock and perform the rotation
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	endpoints := p.getEnabledEndpointsForUser(userID)
+	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
 		return config.Endpoint{}
 	}
 
-	oldIndex := 0
-	if idx, ok := p.userCurrentIndex[userID]; ok && idx >= 0 {
-		oldIndex = idx % len(endpoints)
-	}
-	if oldEndpoint.Name != "" {
-		for i, ep := range endpoints {
-			if ep.Name == oldEndpoint.Name {
-				oldIndex = i
-				break
-			}
-		}
+	oldIndex := p.currentIndex % len(endpoints)
+	oldEndpoint = endpoints[oldIndex]
+
+	// Calculate next index
+	p.currentIndex = (oldIndex + 1) % len(endpoints)
+
+	newEndpoint := endpoints[p.currentIndex]
+	if len(endpoints) > 1 && oldEndpoint.Name != newEndpoint.Name {
+		logger.Debug("[SWITCH] %s → %s (#%d)", oldEndpoint.Name, newEndpoint.Name, p.currentIndex+1)
 	}
 
-	newIndex := (oldIndex + 1) % len(endpoints)
-	p.userCurrentIndex[userID] = newIndex
-	newEndpoint := endpoints[newIndex]
-	if p.storage != nil && userID > 0 {
-		if err := p.storage.SetCurrentEndpointNameForUser(userID, newEndpoint.Name); err != nil {
-			logger.Warn("failed to persist rotated endpoint for user %d: %v", userID, err)
-		}
-	}
-	if len(endpoints) > 1 && oldEndpoint.Name != newEndpoint.Name {
-		logger.Debug("[SWITCH] %s → %s (#%d)", oldEndpoint.Name, newEndpoint.Name, newIndex+1)
-	}
 	return newEndpoint
 }
 
@@ -358,20 +288,6 @@ func (p *Proxy) rotateEndpointForUser(userID int64) config.Endpoint {
 func (p *Proxy) GetCurrentEndpointName() string {
 	endpoint := p.getCurrentEndpoint()
 	return endpoint.Name
-}
-
-func (p *Proxy) GetCurrentEndpointNameForUser(userID int64) (string, error) {
-	if p.storage == nil {
-		return p.GetCurrentEndpointName(), nil
-	}
-	name, err := p.storage.GetCurrentEndpointNameForUser(userID)
-	if err != nil {
-		return "", err
-	}
-	if name != "" {
-		return name, nil
-	}
-	return p.GetCurrentEndpointName(), nil
 }
 
 // SetCurrentEndpoint manually switches to a specific endpoint by name
@@ -410,46 +326,6 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	return fmt.Errorf("endpoint '%s' not found or not enabled", targetName)
 }
 
-func (p *Proxy) SetCurrentEndpointForUser(userID int64, targetName string) error {
-	p.mu.Lock()
-
-	endpoints := p.getEnabledEndpointsForUser(userID)
-	if len(endpoints) == 0 {
-		p.mu.Unlock()
-		return fmt.Errorf("no enabled endpoints")
-	}
-
-	for i, ep := range endpoints {
-		if ep.Name == targetName {
-			oldIndex := 0
-			if idx, ok := p.userCurrentIndex[userID]; ok && idx >= 0 {
-				oldIndex = idx % len(endpoints)
-			}
-			oldEndpoint := endpoints[oldIndex]
-			oldEndpointName := ""
-			if oldEndpoint.Name != targetName {
-				oldEndpointName = oldEndpoint.Name
-			}
-			p.userCurrentIndex[userID] = i
-			logger.Info("[用户手动切换] user=%d %s → %s", userID, oldEndpoint.Name, ep.Name)
-			p.mu.Unlock()
-
-			if p.storage != nil {
-				if err := p.storage.SetCurrentEndpointNameForUser(userID, targetName); err != nil {
-					return err
-				}
-			}
-			if oldEndpointName != "" {
-				p.cancelEndpointRequests(oldEndpointName)
-			}
-			return nil
-		}
-	}
-
-	p.mu.Unlock()
-	return fmt.Errorf("endpoint '%s' not found or not enabled", targetName)
-}
-
 // ClientFormat represents the API format used by the client
 type ClientFormat string
 
@@ -476,30 +352,6 @@ func detectClientFormat(path string) ClientFormat {
 }
 
 // handleProxy handles the main proxy logic
-func getTokenFromProxyRequest(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	if s := r.Header.Get("Authorization"); strings.HasPrefix(s, "Bearer ") {
-		return strings.TrimSpace(strings.TrimPrefix(s, "Bearer "))
-	}
-	if s := strings.TrimSpace(r.Header.Get("X-API-Token")); s != "" {
-		return s
-	}
-	return strings.TrimSpace(r.URL.Query().Get("token"))
-}
-
-func (p *Proxy) resolveUserFromRequest(r *http.Request) (*storage.User, error) {
-	if p.storage == nil {
-		return nil, nil
-	}
-	token := getTokenFromProxyRequest(r)
-	if token == "" {
-		return nil, nil
-	}
-	return p.storage.GetUserByToken(token)
-}
-
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
@@ -534,27 +386,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	json.Unmarshal(bodyBytes, &streamReq)
 
-	currentUserID := int64(1)
-	if user, userErr := p.resolveUserFromRequest(r); userErr != nil {
-		logger.Warn("failed to resolve user from proxy request: %v", userErr)
-	} else if user != nil {
-		currentUserID = user.ID
-	}
-
-	endpoints := p.getEnabledEndpointsForUser(currentUserID)
+	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
 		logger.Error("没有可用的端点")
 		http.Error(w, "No enabled endpoints configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	maxRetries := p.computeMaxRetriesForUser(currentUserID, endpoints)
+	maxRetries := p.computeMaxRetries(endpoints)
 	endpointAttempts := 0
 	lastEndpointName := ""
 	refreshedCredentialAttempts := make(map[int64]bool)
 
 	for retry := 0; retry < maxRetries; retry++ {
-		endpoint := p.getCurrentEndpointForUser(currentUserID)
+		endpoint := p.getCurrentEndpoint()
 		if endpoint.Name == "" {
 			http.Error(w, "No enabled endpoints available", http.StatusServiceUnavailable)
 			return
@@ -574,23 +419,23 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		credentialID := int64(0)
 		var selectedCredential *storage.EndpointCredential
 		if config.IsTokenPoolAuthMode(authMode) {
-			credential, err := p.selectCredentialForUser(currentUserID, endpoint.Name)
+			credential, err := p.selectCredential(endpoint.Name)
 			if err != nil {
 				logger.Warn("[%s] Failed to select token pool credential: %v", endpoint.Name, err)
-				p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
 				if endpointAttempts >= 2 {
-					p.rotateEndpointForUser(currentUserID)
+					p.rotateEndpoint()
 					endpointAttempts = 0
 				}
 				continue
 			}
 			if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 				logger.Warn("[%s] No usable token in token pool", endpoint.Name)
-				p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
 				if endpointAttempts >= 2 {
-					p.rotateEndpointForUser(currentUserID)
+					p.rotateEndpoint()
 					endpointAttempts = 0
 				}
 				continue
@@ -612,10 +457,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if apiKey == "" {
 			logger.Warn("[%s] API key mode but apiKey is empty", endpoint.Name)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -624,7 +469,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		trans, err := prepareTransformerForClient(clientFormat, endpoint)
 		if err != nil {
 			logger.Error("[%s] %v", endpoint.Name, err)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for transformer error
@@ -640,7 +485,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -651,7 +496,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
 			logger.Error("[%s] 请求转换失败: %v", endpoint.Name, err)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for transform error
@@ -668,7 +513,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -726,7 +571,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential, thinkingEnabled)
 		if err != nil {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for request build error
@@ -744,7 +589,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -783,7 +628,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			p.markCredentialFailure(credentialID, 0, err.Error())
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for request send error
@@ -801,7 +646,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -824,8 +669,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					inputTokens, outputTokens = p.estimateTokens(bodyBytes, outputText, inputTokens, outputTokens, endpoint.Name)
 				}
 
-				p.stats.RecordRequestForUser(currentUserID, endpoint.Name)
-				p.stats.RecordTokensForUser(currentUserID, endpoint.Name, inputTokens, outputTokens)
+				p.stats.RecordRequest(endpoint.Name)
+				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
 				p.markCredentialSuccess(credentialID)
 				p.markRequestInactive(endpoint.Name)
@@ -839,10 +684,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Warn("[%s] Failed to aggregate streaming response as non-stream: %v", endpoint.Name, err)
 			p.markCredentialFailure(credentialID, 0, err.Error())
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -856,8 +701,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				inputTokens, outputTokens = p.estimateTokens(bodyBytes, outputText, inputTokens, outputTokens, endpoint.Name)
 			}
 
-			p.stats.RecordRequestForUser(currentUserID, endpoint.Name)
-			p.stats.RecordTokensForUser(currentUserID, endpoint.Name, inputTokens, outputTokens)
+			p.stats.RecordRequest(endpoint.Name)
+			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
 			p.markCredentialSuccess(credentialID)
 			p.markRequestInactive(endpoint.Name)
@@ -895,8 +740,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				// Transform failed: send error to client + clean up
 				logger.Error("[%s] Non-streaming response transformation failed: %v", endpoint.Name, err)
-				p.stats.RecordRequestForUser(currentUserID, endpoint.Name)
-				p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+				p.stats.RecordRequest(endpoint.Name)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
 				http.Error(w, fmt.Sprintf(`{"error":{"message":"response transformation failed: %s","type":"proxy_error"}}`, err.Error()), http.StatusBadGateway)
 
@@ -921,8 +766,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			p.stats.RecordRequestForUser(currentUserID, endpoint.Name)
-			p.stats.RecordTokensForUser(currentUserID, endpoint.Name, inputTokens, outputTokens)
+			p.stats.RecordRequest(endpoint.Name)
+			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
 			p.markCredentialSuccess(credentialID)
 			p.markRequestInactive(endpoint.Name)
@@ -973,7 +818,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.DebugLog("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
 			p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
 
 			// Record traffic log for retry error
@@ -993,7 +838,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 
 			if endpointAttempts >= 2 {
-				p.rotateEndpointForUser(currentUserID)
+				p.rotateEndpoint()
 				endpointAttempts = 0
 			}
 			continue
@@ -1025,7 +870,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				logger.Warn("[%s] Upstream %d looks like route/gateway denial, skipping credential invalidation", endpoint.Name, resp.StatusCode)
 			}
 			if skipCredentialPenalty {
-				p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
 			} else {
 				if selectedCredential != nil &&
@@ -1047,7 +892,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				}
 				p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-				p.stats.RecordErrorForUser(currentUserID, endpoint.Name)
+				p.stats.RecordError(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
 				endpointAttempts = 0
 				logger.Warn("[%s] Credential auth failed (%d), retrying with next token", endpoint.Name, resp.StatusCode)
@@ -1110,15 +955,11 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "All endpoints failed", http.StatusServiceUnavailable)
 }
 
-func (p *Proxy) selectCredentialForUser(userID int64, endpointName string) (*storage.EndpointCredential, error) {
+func (p *Proxy) selectCredential(endpointName string) (*storage.EndpointCredential, error) {
 	if p.storage == nil {
 		return nil, nil
 	}
-	return p.storage.GetUsableEndpointCredentialForUser(userID, endpointName, time.Now().UTC())
-}
-
-func (p *Proxy) selectCredential(endpointName string) (*storage.EndpointCredential, error) {
-	return p.selectCredentialForUser(1, endpointName)
+	return p.storage.GetUsableEndpointCredential(endpointName, time.Now().UTC())
 }
 
 func (p *Proxy) markCredentialSuccess(credentialID int64) {
@@ -1149,10 +990,6 @@ func (p *Proxy) markCredentialFailure(credentialID int64, statusCode int, errMsg
 }
 
 func (p *Proxy) computeMaxRetries(endpoints []config.Endpoint) int {
-	return p.computeMaxRetriesForUser(1, endpoints)
-}
-
-func (p *Proxy) computeMaxRetriesForUser(userID int64, endpoints []config.Endpoint) int {
 	baseRetries := len(endpoints) * 2
 	if p.storage == nil || len(endpoints) == 0 {
 		return baseRetries
@@ -1164,7 +1001,7 @@ func (p *Proxy) computeMaxRetriesForUser(userID int64, endpoints []config.Endpoi
 			continue
 		}
 
-		stats, err := p.storage.GetTokenPoolStatsByUser(userID, endpoint.Name)
+		stats, err := p.storage.GetTokenPoolStats(endpoint.Name)
 		if err != nil {
 			logger.Warn("[%s] Failed to load token pool stats: %v", endpoint.Name, err)
 			continue

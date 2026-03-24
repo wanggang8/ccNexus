@@ -12,7 +12,7 @@ cd ccNexus
 docker compose -f cmd/server/docker-compose.yml up -d --build
 ```
 
-启动后访问 `http://<服务器IP>:3021/ui/` 登录并配置端点（端口 3021 映射容器 3000）。
+启动后访问 `http://<服务器IP>:3021/ui/` 配置端点（端口 3021 映射容器 3000）。
 
 ---
 
@@ -128,6 +128,7 @@ RestartSec=5
 Environment=CCNEXUS_DATA_DIR=/opt/ccnexus
 Environment=CCNEXUS_PORT=3000
 Environment=CCNEXUS_DB_PATH=/opt/ccnexus/ccnexus.db
+Environment=CCNEXUS_UI_TOKEN=cc7fb9516ff16b8f88fa62961e59b8290b47b5c21172581bb03cfb0ff49d78e2
 [Install]
 WantedBy=multi-user.target
 ```
@@ -161,6 +162,13 @@ cd /path/to/ccNexus
 docker compose -f cmd/server/docker-compose.yml up -d --build
 ```
 
+**启用 UI Token（外网部署建议）：** 编辑 `cmd/server/docker-compose.yml`，在 environment 下添加或修改：
+```yaml
+- CCNEXUS_UI_TOKEN=your-secret-token
+```
+
+或使用 `.env` 文件：`echo "CCNEXUS_UI_TOKEN=$(openssl rand -hex 32)" > .env`，或启动时传入：`CCNEXUS_UI_TOKEN=xxx docker compose -f cmd/server/docker-compose.yml up -d --build`
+
 停止：
 
 ```bash
@@ -177,6 +185,15 @@ docker compose -f cmd/server/docker-compose.yml down
 | `CCNEXUS_DB_PATH` | 数据库路径 | `{DATA_DIR}/ccnexus.db` |
 | `CCNEXUS_PORT` | 代理监听端口 | 配置中的端口（默认 3000） |
 | `CCNEXUS_LOG_LEVEL` | 日志级别 0=DEBUG 1=INFO 2=WARN 3=ERROR | 1 |
+| `CCNEXUS_UI_TOKEN` | Web UI 访问 Token（设置后需提供此 Token 才能访问 /ui/ 和 /api/） | 空（不校验） |
+
+### UI Token 使用说明
+
+- **不设置**：任意访问 Web UI 和 API
+- **设置后**：访问 `/ui/` 时需先输入 Token；API 请求需在 Header 中携带：
+  - `Authorization: Bearer <token>` 或
+  - `X-API-Token: <token>`
+- 建议使用复杂随机字符串，例如：`openssl rand -hex 32`
 
 ---
 
@@ -191,8 +208,6 @@ http://<服务器IP>:<端口>/ui/
 ```
 
 例如：`http://192.168.1.100:3000/ui/`
-
-首次进入需要使用管理员 Token 登录。当前服务端默认会创建内置管理员用户，管理员 Token 为固定值；如需继续长期使用，建议登录后在用户管理页创建或轮换你自己的 Token。
 
 ### 7.2 通过 Web 界面添加端点
 
@@ -213,7 +228,6 @@ http://<服务器IP>:<端口>/ui/
 
 ```bash
 curl -X POST http://<服务器IP>:<端口>/api/endpoints \
-  -H "Authorization: Bearer <你的用户Token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude Official",

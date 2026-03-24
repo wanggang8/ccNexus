@@ -23,12 +23,6 @@ func (h *Handler) handleTrafficLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse filter parameters
-	allowed, err := h.currentUserEndpointNameSet(r)
-	if err != nil {
-		logger.Error("Failed to get scoped endpoints: %v", err)
-		WriteError(w, http.StatusInternalServerError, "Failed to get traffic logs")
-		return
-	}
 	filter := &proxy.TrafficFilter{}
 	if endpointName := r.URL.Query().Get("endpoint"); endpointName != "" {
 		filter.EndpointName = endpointName
@@ -54,22 +48,12 @@ func (h *Handler) handleTrafficLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logs := h.proxy.GetTrafficRecorder().GetLogs(filter)
-	filteredLogs := make([]proxy.TrafficLogSummary, 0, len(logs))
-	for _, log := range logs {
-		if allowed == nil {
-			filteredLogs = append(filteredLogs, log)
-			continue
-		}
-		if _, ok := allowed[log.EndpointName]; ok {
-			filteredLogs = append(filteredLogs, log)
-		}
-	}
 	recording := h.proxy.GetTrafficRecorder().IsRecording()
-	total := len(filteredLogs)
+	total := h.proxy.GetTrafficRecorder().GetCount()
 
 	WriteSuccess(w, map[string]interface{}{
-		"logs":      filteredLogs,
-		"count":     len(filteredLogs),
+		"logs":      logs,
+		"count":     len(logs),
 		"total":     total,
 		"recording": recording,
 	})
@@ -81,18 +65,6 @@ func (h *Handler) handleTrafficLogDetail(w http.ResponseWriter, r *http.Request,
 	if detail == nil {
 		WriteError(w, http.StatusNotFound, "Traffic log not found")
 		return
-	}
-
-	allowed, err := h.currentUserEndpointNameSet(r)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "Failed to get traffic log")
-		return
-	}
-	if allowed != nil {
-		if _, ok := allowed[detail.EndpointName]; !ok {
-			WriteError(w, http.StatusNotFound, "Traffic log not found")
-			return
-		}
 	}
 
 	WriteSuccess(w, detail)

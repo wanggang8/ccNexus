@@ -16,8 +16,6 @@ import (
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
-const builtInAdminToken = "cc7fb9516ff16b8f88fa62961e59b8290b47b5c21172581bb03cfb0ff49d78e2"
-
 func main() {
 	dataDir := resolveDataDir()
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -58,9 +56,6 @@ func main() {
 	}
 
 	statsAdapter := storage.NewStatsStorageAdapter(sqliteStorage)
-	if err := sqliteStorage.SyncDefaultUserToken(builtInAdminToken); err != nil {
-		logger.Warn("Failed to set built-in default admin token: %v", err)
-	}
 	p := proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
 
 	// Create HTTP mux
@@ -68,10 +63,15 @@ func main() {
 
 	// Initialize and register Web UI (optional plugin)
 	// If webui package is not available, this will be skipped at compile time
-	if err := registerWebUI(mux, cfg, p, sqliteStorage); err != nil {
+	uiToken := os.Getenv("CCNEXUS_UI_TOKEN")
+	if err := registerWebUI(mux, cfg, p, sqliteStorage, uiToken); err != nil {
 		logger.Warn("Web UI not available: %v", err)
 	} else {
-		logger.Info("Web UI available at /ui/")
+		if uiToken != "" {
+			logger.Info("Web UI available at /ui/ (token required)")
+		} else {
+			logger.Info("Web UI available at /ui/")
+		}
 	}
 
 	errCh := make(chan error, 1)

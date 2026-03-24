@@ -37,7 +37,6 @@ type StatsStorage interface {
 
 // StatRecord represents a stat record for storage
 type StatRecord struct {
-	UserID       int64
 	EndpointName string
 	Date         string
 	Requests     int
@@ -95,11 +94,11 @@ func (s *Stats) SetOnStatsUpdated(callback func(endpointName string, endpointPer
 	s.onStatsUpdated = callback
 }
 
-func (s *Stats) RecordRequestForUser(userID int64, endpointName string) {
+// RecordRequest records a request for an endpoint
+func (s *Stats) RecordRequest(endpointName string) {
 	date := time.Now().Format("2006-01-02")
 
 	stat := &StatRecord{
-		UserID:       userID,
 		EndpointName: endpointName,
 		Date:         date,
 		Requests:     1,
@@ -112,18 +111,14 @@ func (s *Stats) RecordRequestForUser(userID int64, endpointName string) {
 	if err := s.storage.RecordDailyStat(stat); err != nil {
 		logger.Error("Failed to record request: %v", err)
 	}
+	// Don't emit event here - wait for RecordTokens which is always called after
 }
 
-// RecordRequest records a request for an endpoint
-func (s *Stats) RecordRequest(endpointName string) {
-	s.RecordRequestForUser(1, endpointName)
-}
-
-func (s *Stats) RecordErrorForUser(userID int64, endpointName string) {
+// RecordError records an error for an endpoint
+func (s *Stats) RecordError(endpointName string) {
 	date := time.Now().Format("2006-01-02")
 
 	stat := &StatRecord{
-		UserID:       userID,
 		EndpointName: endpointName,
 		Date:         date,
 		Requests:     0,
@@ -136,20 +131,16 @@ func (s *Stats) RecordErrorForUser(userID int64, endpointName string) {
 	if err := s.storage.RecordDailyStat(stat); err != nil {
 		logger.Error("Failed to record error: %v", err)
 	} else {
+		// Emit stats update event for errors (not followed by RecordTokens)
 		s.emitStatsUpdate(endpointName)
 	}
 }
 
-// RecordError records an error for an endpoint
-func (s *Stats) RecordError(endpointName string) {
-	s.RecordErrorForUser(1, endpointName)
-}
-
-func (s *Stats) RecordTokensForUser(userID int64, endpointName string, inputTokens, outputTokens int) {
+// RecordTokens records token usage for an endpoint
+func (s *Stats) RecordTokens(endpointName string, inputTokens, outputTokens int) {
 	date := time.Now().Format("2006-01-02")
 
 	stat := &StatRecord{
-		UserID:       userID,
 		EndpointName: endpointName,
 		Date:         date,
 		Requests:     0,
@@ -162,13 +153,9 @@ func (s *Stats) RecordTokensForUser(userID int64, endpointName string, inputToke
 	if err := s.storage.RecordDailyStat(stat); err != nil {
 		logger.Error("Failed to record tokens: %v", err)
 	} else {
+		// Emit stats update event after successful record
 		s.emitStatsUpdate(endpointName)
 	}
-}
-
-// RecordTokens records token usage for an endpoint
-func (s *Stats) RecordTokens(endpointName string, inputTokens, outputTokens int) {
-	s.RecordTokensForUser(1, endpointName, inputTokens, outputTokens)
 }
 
 // emitStatsUpdate queries current stats for the endpoint and emits an update event

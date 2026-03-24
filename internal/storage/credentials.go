@@ -140,10 +140,6 @@ func scanCredential(scanner interface {
 }
 
 func (s *SQLiteStorage) GetEndpointCredentials(endpointName string) ([]EndpointCredential, error) {
-	return s.GetEndpointCredentialsByUser(1, endpointName)
-}
-
-func (s *SQLiteStorage) GetEndpointCredentialsByUser(userID int64, endpointName string) ([]EndpointCredential, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -153,9 +149,9 @@ func (s *SQLiteStorage) GetEndpointCredentialsByUser(userID int64, endpointName 
 			last_refresh, expires_at, status, enabled, failure_count, cooldown_until, last_checked_at,
 			last_used_at, last_error, remark, created_at, updated_at
 		FROM endpoint_credentials
-		WHERE user_id=? AND endpoint_name=?
+		WHERE endpoint_name=?
 		ORDER BY enabled DESC, failure_count ASC, COALESCE(last_used_at, created_at) ASC, updated_at DESC
-	`, userID, endpointName)
+	`, endpointName)
 	if err != nil {
 		return nil, err
 	}
@@ -201,10 +197,6 @@ func (s *SQLiteStorage) GetCredentialByID(id int64) (*EndpointCredential, error)
 }
 
 func (s *SQLiteStorage) SaveEndpointCredential(cred *EndpointCredential) error {
-	return s.SaveEndpointCredentialForUser(1, cred)
-}
-
-func (s *SQLiteStorage) SaveEndpointCredentialForUser(userID int64, cred *EndpointCredential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -217,12 +209,11 @@ func (s *SQLiteStorage) SaveEndpointCredentialForUser(userID int64, cred *Endpoi
 
 	result, err := s.db.Exec(`
 		INSERT INTO endpoint_credentials (
-			user_id, endpoint_name, provider_type, account_id, email, access_token, refresh_token, id_token,
+			endpoint_name, provider_type, account_id, email, access_token, refresh_token, id_token,
 			last_refresh, expires_at, status, enabled, failure_count, cooldown_until, last_checked_at,
 			last_used_at, last_error, remark
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		userID,
 		cred.EndpointName,
 		cred.ProviderType,
 		toNullString(cred.AccountID),
@@ -316,24 +307,20 @@ func (s *SQLiteStorage) UpdateEndpointCredential(cred *EndpointCredential) error
 		return err
 	}
 	if affected == 0 {
-		return ErrCredentialNotFound
+		return fmt.Errorf("credential not found")
 	}
 
 	return nil
 }
 
 func (s *SQLiteStorage) DeleteEndpointCredential(endpointName string, id int64) error {
-	return s.DeleteEndpointCredentialForUser(1, endpointName, id)
-}
-
-func (s *SQLiteStorage) DeleteEndpointCredentialForUser(userID int64, endpointName string, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, err := s.db.Exec(`DELETE FROM credential_rate_limits WHERE credential_id=?`, id); err != nil {
 		return err
 	}
-	result, err := s.db.Exec(`DELETE FROM endpoint_credentials WHERE user_id=? AND endpoint_name=? AND id=?`, userID, endpointName, id)
+	result, err := s.db.Exec(`DELETE FROM endpoint_credentials WHERE endpoint_name=? AND id=?`, endpointName, id)
 	if err != nil {
 		return err
 	}
@@ -343,7 +330,7 @@ func (s *SQLiteStorage) DeleteEndpointCredentialForUser(userID int64, endpointNa
 		return err
 	}
 	if affected == 0 {
-		return ErrCredentialNotFound
+		return fmt.Errorf("credential not found")
 	}
 
 	return nil
@@ -362,11 +349,7 @@ func (s *SQLiteStorage) SetEndpointCredentialEnabled(endpointName string, id int
 }
 
 func (s *SQLiteStorage) GetTokenPoolStats(endpointName string) (TokenPoolStats, error) {
-	return s.GetTokenPoolStatsByUser(1, endpointName)
-}
-
-func (s *SQLiteStorage) GetTokenPoolStatsByUser(userID int64, endpointName string) (TokenPoolStats, error) {
-	credentials, err := s.GetEndpointCredentialsByUser(userID, endpointName)
+	credentials, err := s.GetEndpointCredentials(endpointName)
 	if err != nil {
 		return TokenPoolStats{}, err
 	}
@@ -411,11 +394,7 @@ func (s *SQLiteStorage) GetAllTokenPoolStats() (map[string]TokenPoolStats, error
 }
 
 func (s *SQLiteStorage) GetUsableEndpointCredential(endpointName string, now time.Time) (*EndpointCredential, error) {
-	return s.GetUsableEndpointCredentialForUser(1, endpointName, now)
-}
-
-func (s *SQLiteStorage) GetUsableEndpointCredentialForUser(userID int64, endpointName string, now time.Time) (*EndpointCredential, error) {
-	credentials, err := s.GetEndpointCredentialsByUser(userID, endpointName)
+	credentials, err := s.GetEndpointCredentials(endpointName)
 	if err != nil {
 		return nil, err
 	}
