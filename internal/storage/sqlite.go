@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const defaultAdminToken = "cc7fb9516ff16b8f88fa62961e59b8290b47b5c21172581bb03cfb0ff49d78e2"
+
 // escapeSQLString escapes single quotes in SQL string literals to prevent injection
 func escapeSQLString(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
@@ -85,9 +87,22 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 
 func (s *SQLiteStorage) initSchema() error {
 	schema := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT UNIQUE NOT NULL,
+		token_hash TEXT UNIQUE,
+		status TEXT NOT NULL DEFAULT 'active',
+		role TEXT NOT NULL DEFAULT 'user',
+		current_endpoint_name TEXT,
+		last_used_at DATETIME,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS endpoints (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT UNIQUE NOT NULL,
+		user_id INTEGER NOT NULL DEFAULT 1,
+		name TEXT NOT NULL,
 		api_url TEXT NOT NULL,
 		api_key TEXT NOT NULL,
 		auth_mode TEXT NOT NULL DEFAULT 'api_key',
@@ -98,11 +113,13 @@ func (s *SQLiteStorage) initSchema() error {
 		request_overrides TEXT,
 		sort_order INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, name)
 	);
 
 	CREATE TABLE IF NOT EXISTS endpoint_credentials (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL DEFAULT 1,
 		endpoint_name TEXT NOT NULL,
 		provider_type TEXT NOT NULL DEFAULT 'codex',
 		account_id TEXT,
@@ -144,6 +161,7 @@ func (s *SQLiteStorage) initSchema() error {
 
 	CREATE TABLE IF NOT EXISTS daily_stats (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL DEFAULT 1,
 		endpoint_name TEXT NOT NULL,
 		date TEXT NOT NULL,
 		requests INTEGER DEFAULT 0,
@@ -152,7 +170,7 @@ func (s *SQLiteStorage) initSchema() error {
 		output_tokens INTEGER DEFAULT 0,
 		device_id TEXT DEFAULT 'default',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(endpoint_name, date, device_id)
+		UNIQUE(user_id, endpoint_name, date, device_id)
 	);
 
 	CREATE TABLE IF NOT EXISTS app_config (
@@ -161,6 +179,8 @@ func (s *SQLiteStorage) initSchema() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_users_token_hash ON users(token_hash) WHERE token_hash IS NOT NULL AND token_hash != '';
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_endpoint ON daily_stats(endpoint_name);
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_device ON daily_stats(device_id);
@@ -185,8 +205,348 @@ func (s *SQLiteStorage) initSchema() error {
 	if err := s.migrateRequestOverrides(); err != nil {
 		return err
 	}
+	if err := s.migrateUsers(); err != nil {
+		return err
+	}
+	if err := s.migrateDailyStatsUser(); err != nil {
+		return err
+	}
+	if err := s.migrateEndpointCredentialUsers(); err != nil {
+		return err
+	}
+	if err := s.migrateEndpointUsers(); err != nil {
+		return err
+	}
+	if err := s.ensureDefaultUser(); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (s *SQLiteStorage) migrateUsers() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='current_endpoint_name'`).Scan(&count)
+	if err != nil {
+		if _, createErr := s.db.Exec(`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT UNIQUE NOT NULL,
+			token_hash TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			role TEXT NOT NULL DEFAULT 'user',
+			current_endpoint_name TEXT,
+			last_used_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`); createErr != nil {
+			return createErr
+		}
+		return nil
+	}
+	if count == 0 {
+		_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN current_endpoint_name TEXT`)
+		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStorage) migrateEndpointUsers() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name='user_id'`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE endpoints ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`UPDATE endpoints SET user_id = 1 WHERE user_id IS NULL OR user_id = 0`)
+	return err
+}
+
+func (s *SQLiteStorage) migrateDailyStatsUser() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('daily_stats') WHERE name='user_id'`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE daily_stats ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`UPDATE daily_stats SET user_id = 1 WHERE user_id IS NULL OR user_id = 0`)
+	return err
+}
+
+func (s *SQLiteStorage) migrateEndpointCredentialUsers() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoint_credentials') WHERE name='user_id'`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE endpoint_credentials ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`UPDATE endpoint_credentials SET user_id = 1 WHERE user_id IS NULL OR user_id = 0`)
+	return err
+}
+
+func (s *SQLiteStorage) ensureDefaultUser() error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO users (id, username, token_hash, status, role) VALUES (1, ?, ?, 'active', 'admin')`, "default", defaultAdminToken)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE users SET username='default', status='active', role='admin' WHERE id=1`)
+	return err
+}
+
+func (s *SQLiteStorage) SyncDefaultUserToken(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	if err := s.ensureDefaultUser(); err != nil {
+		return err
+	}
+	return s.SetUserTokenByID(1, token)
+}
+
+func (s *SQLiteStorage) ClearDefaultUserToken() error {
+	if err := s.ensureDefaultUser(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE users SET token_hash=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=1`)
+	return err
+}
+
+func (s *SQLiteStorage) EnsureUser(username, token, role string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(username) == "" || strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("username and token are required")
+	}
+	role = normalizeUserRole(role)
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO users (id, username, token_hash, status, role, updated_at) VALUES ((SELECT id FROM users WHERE username = ?), ?, ?, 'active', ?, CURRENT_TIMESTAMP)`, username, username, token, role); err != nil {
+		return nil, err
+	}
+	return s.getUserByUsernameLocked(username)
+}
+
+func normalizeUserRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "admin" {
+		return "admin"
+	}
+	return "user"
+}
+
+func normalizeUserStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "disabled" {
+		return "disabled"
+	}
+	return "active"
+}
+
+func (s *SQLiteStorage) ListUsers() ([]User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`SELECT id, username, COALESCE(token_hash, ''), status, role, COALESCE(current_endpoint_name, ''), last_used_at, created_at, updated_at FROM users ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]User, 0)
+	for rows.Next() {
+		var user User
+		var lastUsedAt sql.NullTime
+		if err := rows.Scan(&user.ID, &user.Username, &user.TokenHash, &user.Status, &user.Role, &user.CurrentEndpointName, &lastUsedAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if lastUsedAt.Valid {
+			user.LastUsedAt = lastUsedAt.Time
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *SQLiteStorage) CreateUser(username, token, role string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	username = strings.TrimSpace(username)
+	token = strings.TrimSpace(token)
+	if username == "" || token == "" {
+		return nil, fmt.Errorf("username and token are required")
+	}
+	role = normalizeUserRole(role)
+
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username=?`, username).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists > 0 {
+		return nil, fmt.Errorf("user already exists")
+	}
+
+	result, err := s.db.Exec(`INSERT INTO users (username, token_hash, status, role) VALUES (?, ?, 'active', ?)`, username, token, role)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return nil, fmt.Errorf("user or token already exists")
+		}
+		return nil, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return s.getUserByIDLocked(id)
+}
+
+func (s *SQLiteStorage) RotateUserToken(id int64, token string) (*User, error) {
+	if err := s.SetUserTokenByID(id, token); err != nil {
+		return nil, err
+	}
+	return s.GetUserByID(id)
+}
+
+func (s *SQLiteStorage) SetUserTokenByID(id int64, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	token = strings.TrimSpace(token)
+	if id <= 0 || token == "" {
+		return fmt.Errorf("valid user id and token are required")
+	}
+	result, err := s.db.Exec(`UPDATE users SET token_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, token, id)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return fmt.Errorf("token already exists")
+		}
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStorage) UpdateUserStatus(id int64, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id <= 0 {
+		return fmt.Errorf("valid user id is required")
+	}
+	status = normalizeUserStatus(status)
+	if id == 1 && status != "active" {
+		return fmt.Errorf("default admin user cannot be disabled")
+	}
+	result, err := s.db.Exec(`UPDATE users SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStorage) GetUserByToken(token string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var user User
+	var lastUsedAt sql.NullTime
+	err := s.db.QueryRow(`SELECT id, username, COALESCE(token_hash, ''), status, role, COALESCE(current_endpoint_name, ''), last_used_at, created_at, updated_at FROM users WHERE token_hash=? AND status='active'`, token).
+		Scan(&user.ID, &user.Username, &user.TokenHash, &user.Status, &user.Role, &user.CurrentEndpointName, &lastUsedAt, &user.CreatedAt, &user.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lastUsedAt.Valid {
+		user.LastUsedAt = lastUsedAt.Time
+	}
+	_, _ = s.db.Exec(`UPDATE users SET last_used_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`, user.ID)
+	return &user, nil
+}
+
+func (s *SQLiteStorage) GetUserByID(id int64) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getUserByIDLocked(id)
+}
+
+func (s *SQLiteStorage) getUserByIDLocked(id int64) (*User, error) {
+	var user User
+	var lastUsedAt sql.NullTime
+	err := s.db.QueryRow(`SELECT id, username, COALESCE(token_hash, ''), status, role, COALESCE(current_endpoint_name, ''), last_used_at, created_at, updated_at FROM users WHERE id=?`, id).
+		Scan(&user.ID, &user.Username, &user.TokenHash, &user.Status, &user.Role, &user.CurrentEndpointName, &lastUsedAt, &user.CreatedAt, &user.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lastUsedAt.Valid {
+		user.LastUsedAt = lastUsedAt.Time
+	}
+	return &user, nil
+}
+
+func (s *SQLiteStorage) GetDefaultUser() (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getUserByUsernameLocked("default")
+}
+
+func (s *SQLiteStorage) getUserByUsernameLocked(username string) (*User, error) {
+	var user User
+	var lastUsedAt sql.NullTime
+	err := s.db.QueryRow(`SELECT id, username, COALESCE(token_hash, ''), status, role, COALESCE(current_endpoint_name, ''), last_used_at, created_at, updated_at FROM users WHERE username=?`, username).
+		Scan(&user.ID, &user.Username, &user.TokenHash, &user.Status, &user.Role, &user.CurrentEndpointName, &lastUsedAt, &user.CreatedAt, &user.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lastUsedAt.Valid {
+		user.LastUsedAt = lastUsedAt.Time
+	}
+	return &user, nil
+}
+
+func (s *SQLiteStorage) SetCurrentEndpointNameForUser(userID int64, endpointName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE users SET current_endpoint_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, endpointName, userID)
+	return err
+}
+
+func (s *SQLiteStorage) GetCurrentEndpointNameForUser(userID int64) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var endpointName string
+	err := s.db.QueryRow(`SELECT COALESCE(current_endpoint_name, '') FROM users WHERE id=?`, userID).Scan(&endpointName)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return endpointName, err
 }
 
 // migrateSortOrder adds the sort_order column to existing databases
@@ -248,10 +608,14 @@ func (s *SQLiteStorage) migrateRequestOverrides() error {
 }
 
 func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
+	return s.GetEndpointsByUser(1)
+}
+
+func (s *SQLiteStorage) GetEndpointsByUser(userID int64) ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, COALESCE(request_overrides, ''), sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, COALESCE(model, ''), COALESCE(remark, ''), COALESCE(request_overrides, ''), sort_order, created_at, updated_at FROM endpoints WHERE user_id=? ORDER BY sort_order ASC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -271,13 +635,17 @@ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 }
 
 func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
+	return s.SaveEndpointForUser(1, ep)
+}
+
+func (s *SQLiteStorage) SaveEndpointForUser(userID int64, ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	normalizeEndpointAuthMode(ep)
 
-	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, remark, request_overrides, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder)
+	result, err := s.db.Exec(`INSERT INTO endpoints (user_id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, request_overrides, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder)
 	if err != nil {
 		return err
 	}
@@ -291,41 +659,34 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 }
 
 func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
+	return s.UpdateEndpointForUser(1, ep)
+}
+
+func (s *SQLiteStorage) UpdateEndpointForUser(userID int64, ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	normalizeEndpointAuthMode(ep)
 
 	if ep.ID > 0 {
-		// Use ID for update (supports endpoint rename from API)
-		_, err := s.db.Exec(`UPDATE endpoints SET name=?, api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, request_overrides=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-			ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder, ep.ID)
+		_, err := s.db.Exec(`UPDATE endpoints SET name=?, api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, request_overrides=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`,
+			ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder, ep.ID, userID)
 		return err
 	}
-	// Fallback for adapter path (no ID): update by name, cannot rename
-	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, request_overrides=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
-		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder, ep.Name)
+	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, request_overrides=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=? AND user_id=?`,
+		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.RequestOverrides, ep.SortOrder, ep.Name, userID)
 	return err
 }
 
 func (s *SQLiteStorage) DeleteEndpoint(name string) error {
+	return s.DeleteEndpointForUser(1, name)
+}
+
+func (s *SQLiteStorage) DeleteEndpointForUser(userID int64, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Cascade delete credentials and rate limits
-	if _, err := s.db.Exec(`
-		DELETE FROM credential_rate_limits
-		WHERE credential_id IN (
-			SELECT id FROM endpoint_credentials WHERE endpoint_name=?
-		)
-	`, name); err != nil {
-		return err
-	}
-	if _, err := s.db.Exec(`DELETE FROM endpoint_credentials WHERE endpoint_name=?`, name); err != nil {
-		return err
-	}
-
-	result, err := s.db.Exec(`DELETE FROM endpoints WHERE name=?`, name)
+	result, err := s.db.Exec(`DELETE FROM endpoints WHERE name=? AND user_id=?`, name, userID)
 	if err != nil {
 		return err
 	}
@@ -337,18 +698,23 @@ func (s *SQLiteStorage) DeleteEndpoint(name string) error {
 }
 
 func (s *SQLiteStorage) RecordDailyStat(stat *DailyStat) error {
+	return s.RecordDailyStatForUser(1, stat)
+}
+
+func (s *SQLiteStorage) RecordDailyStatForUser(userID int64, stat *DailyStat) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	stat.UserID = userID
 
 	_, err := s.db.Exec(`
-		INSERT INTO daily_stats (endpoint_name, date, requests, errors, input_tokens, output_tokens, device_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(endpoint_name, date, device_id) DO UPDATE SET
+		INSERT INTO daily_stats (user_id, endpoint_name, date, requests, errors, input_tokens, output_tokens, device_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, endpoint_name, date, device_id) DO UPDATE SET
 			requests = requests + excluded.requests,
 			errors = errors + excluded.errors,
 			input_tokens = input_tokens + excluded.input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens
-	`, stat.EndpointName, stat.Date, stat.Requests, stat.Errors, stat.InputTokens, stat.OutputTokens, stat.DeviceID)
+	`, stat.UserID, stat.EndpointName, stat.Date, stat.Requests, stat.Errors, stat.InputTokens, stat.OutputTokens, stat.DeviceID)
 
 	return err
 }
@@ -425,14 +791,14 @@ func (s *SQLiteStorage) Close() error {
 	return s.db.Close()
 }
 
-func (s *SQLiteStorage) GetTotalStats() (int, map[string]*EndpointStats, error) {
+func (s *SQLiteStorage) GetTotalStatsForUser(userID int64) (int, map[string]*EndpointStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	query := `SELECT endpoint_name, SUM(requests), SUM(errors), SUM(input_tokens), SUM(output_tokens)
-		FROM daily_stats GROUP BY endpoint_name`
+		FROM daily_stats WHERE user_id=? GROUP BY endpoint_name`
 
-	rows, err := s.db.Query(query)
+	rows, err := s.db.Query(query, userID)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -460,6 +826,10 @@ func (s *SQLiteStorage) GetTotalStats() (int, map[string]*EndpointStats, error) 
 	}
 
 	return totalRequests, result, rows.Err()
+}
+
+func (s *SQLiteStorage) GetTotalStats() (int, map[string]*EndpointStats, error) {
+	return s.GetTotalStatsForUser(1)
 }
 
 func (s *SQLiteStorage) GetEndpointTotalStats(endpointName string) (*EndpointStats, error) {
@@ -490,15 +860,19 @@ func (s *SQLiteStorage) GetEndpointTotalStats(endpointName string) (*EndpointSta
 
 // GetPeriodStatsAggregated returns aggregated statistics for all endpoints in a time period using a single query
 func (s *SQLiteStorage) GetPeriodStatsAggregated(startDate, endDate string) (map[string]*EndpointStats, error) {
+	return s.GetPeriodStatsAggregatedForUser(1, startDate, endDate)
+}
+
+func (s *SQLiteStorage) GetPeriodStatsAggregatedForUser(userID int64, startDate, endDate string) (map[string]*EndpointStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	query := `SELECT endpoint_name, SUM(requests), SUM(errors), SUM(input_tokens), SUM(output_tokens)
 		FROM daily_stats
-		WHERE date >= ? AND date <= ?
+		WHERE user_id = ? AND date >= ? AND date <= ?
 		GROUP BY endpoint_name`
 
-	rows, err := s.db.Query(query, startDate, endDate)
+	rows, err := s.db.Query(query, userID, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}

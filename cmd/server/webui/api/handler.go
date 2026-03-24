@@ -13,27 +13,14 @@ type Handler struct {
 	config  *config.Config
 	proxy   *proxy.Proxy
 	storage *storage.SQLiteStorage
-	uiToken string // when set, all API/UI requests require this token
 }
 
 // NewHandler creates a new API handler
-func NewHandler(cfg *config.Config, p *proxy.Proxy, s *storage.SQLiteStorage, uiToken string) *Handler {
+func NewHandler(cfg *config.Config, p *proxy.Proxy, s *storage.SQLiteStorage) *Handler {
 	return &Handler{
 		config:  cfg,
 		proxy:   p,
 		storage: s,
-		uiToken: uiToken,
-	}
-}
-
-// authWrap wraps a handler to require UI token when configured
-func (h *Handler) authWrap(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.uiToken != "" && getTokenFromRequest(r) != h.uiToken {
-			WriteError(w, http.StatusUnauthorized, "Invalid or missing API token")
-			return
-		}
-		fn(w, r)
 	}
 }
 
@@ -62,6 +49,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/config", h.authWrap(h.handleConfig))
 	mux.HandleFunc("/api/config/port", h.authWrap(h.handleConfigPort))
 	mux.HandleFunc("/api/config/log-level", h.authWrap(h.handleConfigLogLevel))
+
+	// User management
+	mux.HandleFunc("/api/users", h.authWrap(h.handleUsers))
+	mux.HandleFunc("/api/users/", h.authWrap(h.handleUserByID))
 
 	// Real-time events
 	mux.HandleFunc("/api/events", h.authWrap(h.handleEvents))

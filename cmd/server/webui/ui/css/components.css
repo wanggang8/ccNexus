@@ -806,6 +806,19 @@ body.dark-theme .stats-endpoint-row-high-error {
 }
 
 /* Enhanced traffic log items */
+.user-actions {
+    flex-wrap: wrap;
+}
+
+.token-display-box {
+    padding: 1rem;
+    border: 1px dashed var(--border-color);
+    border-radius: 0.5rem;
+    background: var(--bg-secondary);
+    word-break: break-all;
+}
+
+/* Enhanced traffic log items */
 .traffic-log-item {
     padding: 1.25rem;
     border: 1px solid var(--border-color);

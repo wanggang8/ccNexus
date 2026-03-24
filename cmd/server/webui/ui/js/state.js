@@ -1,13 +1,14 @@
 // Simple reactive state management
 class State {
     constructor() {
-        this.data = {
-            endpoints: [],
-            stats: null,
-            config: null,
-            currentView: 'dashboard',
-            currentEndpoint: null
-        };
+		this.data = {
+			endpoints: [],
+			stats: null,
+			config: null,
+			currentView: 'dashboard',
+			currentEndpoint: null,
+			currentUser: null
+		};
         this.listeners = new Map();
     }
 

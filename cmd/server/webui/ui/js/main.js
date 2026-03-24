@@ -5,8 +5,9 @@ import { endpoints } from './components/endpoints.js';
 import { stats } from './components/stats.js';
 import { testing } from './components/testing.js';
 import { traffic } from './components/traffic.js';
+import { users } from './components/users.js';
 import { icons, getIcon } from './icons.js';
-import { api, AUTH_TOKEN_KEY } from './api.js';
+import { api, AUTH_TOKEN_KEY, CURRENT_USER_KEY } from './api.js';
 
 // Populate all data-icon elements
 function initIcons() {
@@ -43,7 +44,10 @@ function initRealtime() {
         eventSourceInstance = null;
     }
     const token = sessionStorage.getItem(AUTH_TOKEN_KEY);
-    const url = token ? `/api/events?token=${encodeURIComponent(token)}` : '/api/events';
+    if (!token) {
+        return;
+    }
+    const url = `/api/events?token=${encodeURIComponent(token)}`;
     eventSourceInstance = new EventSource(url);
 
     eventSourceInstance.onopen = () => {
@@ -82,11 +86,13 @@ function initRealtime() {
 // Show login form when auth required
 function showLoginForm() {
     const app = document.getElementById('app');
+    sessionStorage.removeItem(CURRENT_USER_KEY);
+    state.update('currentUser', null);
     app.innerHTML = `
         <div class="login-overlay">
             <div class="login-box">
                 <h1>ccNexus</h1>
-                <p class="login-hint">请输入 API Token 以继续</p>
+                <p class="login-hint">管理员 Token 已固定，请直接输入。</p>
                 <form id="login-form">
                     <input type="password" id="login-token" placeholder="API Token" autocomplete="off" />
                     <button type="submit">进入</button>
@@ -107,7 +113,11 @@ function showLoginForm() {
         try {
             const res = await api.verifyToken(token);
             if (res.ok && (res.success || res.data)) {
+                const user = res.data?.user || res.user || null;
                 sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+                if (user) {
+                    sessionStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
+                }
                 location.reload();
             } else {
                 errEl.textContent = res.error || 'Token 无效';
@@ -123,15 +133,46 @@ async function init() {
     // Prevent transitions on page load
     document.body.classList.add('preload');
 
+    let currentUser = null;
+    const token = sessionStorage.getItem(AUTH_TOKEN_KEY);
+    const cachedUser = sessionStorage.getItem(CURRENT_USER_KEY);
+    if (cachedUser) {
+        try {
+            currentUser = JSON.parse(cachedUser);
+        } catch {
+            sessionStorage.removeItem(CURRENT_USER_KEY);
+        }
+    }
+
     // Check auth
     try {
         const status = await api.getAuthStatus();
-        if (status.authRequired && !sessionStorage.getItem(AUTH_TOKEN_KEY)) {
+        if (status.authRequired && !token) {
             showLoginForm();
             return;
         }
+        if (token) {
+            const verify = await api.verifyToken(token);
+            if (!verify.ok) {
+                sessionStorage.removeItem(AUTH_TOKEN_KEY);
+                sessionStorage.removeItem(CURRENT_USER_KEY);
+                showLoginForm();
+                return;
+            }
+            currentUser = verify.data?.user || verify.user || currentUser;
+            if (currentUser) {
+                sessionStorage.setItem(CURRENT_USER_KEY, JSON.stringify(currentUser));
+                state.update('currentUser', currentUser);
+            }
+        }
     } catch (err) {
         console.warn('Auth check failed:', err);
+    }
+
+    const usersNavItem = document.getElementById('users-nav-item');
+    const isAdmin = currentUser?.role === 'admin';
+    if (usersNavItem) {
+        usersNavItem.style.display = isAdmin ? '' : 'none';
     }
 
     // Register routes
@@ -140,6 +181,9 @@ async function init() {
     router.register('stats', stats);
     router.register('testing', testing);
     router.register('traffic', traffic);
+    if (isAdmin) {
+        router.register('users', users);
+    }
 
     // Initialize icons
     initIcons();
@@ -157,11 +201,16 @@ async function init() {
             logoutBtn.innerHTML = '<span class="icon" data-icon="logOut"></span>';
             logoutBtn.addEventListener('click', () => {
                 sessionStorage.removeItem(AUTH_TOKEN_KEY);
+                sessionStorage.removeItem(CURRENT_USER_KEY);
                 location.reload();
             });
             footer.insertBefore(logoutBtn, footer.firstChild);
             initIcons();
         }
+    }
+
+    if (!isAdmin && state.get('currentView') === 'users') {
+        state.update('currentView', 'dashboard');
     }
 
     // Initialize router

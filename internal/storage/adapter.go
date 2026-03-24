@@ -5,16 +5,22 @@ import "github.com/lich0821/ccNexus/internal/config"
 // ConfigStorageAdapter adapts SQLiteStorage to config.StorageAdapter interface
 type ConfigStorageAdapter struct {
 	storage *SQLiteStorage
+	userID  int64
 }
 
 // NewConfigStorageAdapter creates a new adapter
 func NewConfigStorageAdapter(storage *SQLiteStorage) *ConfigStorageAdapter {
-	return &ConfigStorageAdapter{storage: storage}
+	return &ConfigStorageAdapter{storage: storage, userID: 1}
+}
+
+// NewConfigStorageAdapterForUser creates a scoped adapter for a specific user.
+func NewConfigStorageAdapterForUser(storage *SQLiteStorage, userID int64) *ConfigStorageAdapter {
+	return &ConfigStorageAdapter{storage: storage, userID: userID}
 }
 
 // GetEndpoints returns endpoints in config format
 func (a *ConfigStorageAdapter) GetEndpoints() ([]config.StorageEndpoint, error) {
-	endpoints, err := a.storage.GetEndpoints()
+	endpoints, err := a.storage.GetEndpointsByUser(a.userID)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +58,7 @@ func (a *ConfigStorageAdapter) SaveEndpoint(ep *config.StorageEndpoint) error {
 		RequestOverrides: ep.RequestOverrides,
 		SortOrder:        ep.SortOrder,
 	}
-	return a.storage.SaveEndpoint(endpoint)
+	return a.storage.SaveEndpointForUser(a.userID, endpoint)
 }
 
 // UpdateEndpoint updates an endpoint
@@ -70,12 +76,12 @@ func (a *ConfigStorageAdapter) UpdateEndpoint(ep *config.StorageEndpoint) error 
 		RequestOverrides: ep.RequestOverrides,
 		SortOrder:        ep.SortOrder,
 	}
-	return a.storage.UpdateEndpoint(endpoint)
+	return a.storage.UpdateEndpointForUser(a.userID, endpoint)
 }
 
 // DeleteEndpoint deletes an endpoint
 func (a *ConfigStorageAdapter) DeleteEndpoint(name string) error {
-	return a.storage.DeleteEndpoint(name)
+	return a.storage.DeleteEndpointForUser(a.userID, name)
 }
 
 // GetConfig gets a config value

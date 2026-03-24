@@ -105,6 +105,10 @@ func (s *SQLiteStorage) GetCredentialRateLimits(credentialID int64) (*Credential
 }
 
 func (s *SQLiteStorage) GetCredentialRateLimitsByEndpoint(endpointName string) (map[int64]*CredentialRateLimits, error) {
+	return s.GetCredentialRateLimitsByUser(1, endpointName)
+}
+
+func (s *SQLiteStorage) GetCredentialRateLimitsByUser(userID int64, endpointName string) (map[int64]*CredentialRateLimits, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -112,8 +116,8 @@ func (s *SQLiteStorage) GetCredentialRateLimitsByEndpoint(endpointName string) (
 		SELECT r.credential_id, r.snapshot_json, r.last_status, r.last_error, r.updated_at
 		FROM credential_rate_limits r
 		JOIN endpoint_credentials c ON c.id = r.credential_id
-		WHERE c.endpoint_name=?
-	`, endpointName)
+		WHERE c.user_id=? AND c.endpoint_name=?
+	`, userID, endpointName)
 	if err != nil {
 		return nil, err
 	}

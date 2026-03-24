@@ -35,6 +35,7 @@ var allowedExactPaths = map[string]struct{}{
 	"/api/config":             {},
 	"/api/config/port":        {},
 	"/api/config/log-level":   {},
+	"/api/users":              {},
 	"/api/events":             {},
 	"/api/traffic/logs":       {},
 	"/api/traffic/recording":  {},
@@ -44,6 +45,7 @@ var allowedExactPaths = map[string]struct{}{
 var allowedPrefixPaths = []string{
 	"/ui/",
 	"/api/endpoints/",
+	"/api/users/",
 }
 
 // routeAllowlistMiddleware blocks unsupported paths before they can reach the proxy chain.

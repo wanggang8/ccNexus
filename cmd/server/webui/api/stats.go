@@ -5,7 +5,27 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/storage"
 )
+
+func (h *Handler) currentUserEndpointNameSet(r *http.Request) (map[string]struct{}, error) {
+	if h.storage == nil {
+		return nil, nil
+	}
+	user := h.currentUser(r)
+	if user == nil {
+		return nil, nil
+	}
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]struct{}, len(endpoints))
+	for _, ep := range endpoints {
+		result[ep.Name] = struct{}{}
+	}
+	return result, nil
+}
 
 // handleStatsSummary returns overall statistics
 func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
@@ -14,17 +34,43 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalRequests, endpointStats := h.proxy.GetStats().GetStats()
+	allowed, err := h.currentUserEndpointNameSet(r)
+	if err != nil {
+		logger.Error("Failed to get scoped endpoints: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get stats")
+		return
+	}
 
-	// Calculate totals
+	var endpointStats map[string]*storage.EndpointStats
+	user := h.currentUser(r)
+	if user != nil {
+		_, endpointStats, err = h.storage.GetTotalStatsForUser(user.ID)
+	} else {
+		_, endpointStats, err = h.storage.GetTotalStats()
+	}
+	if err != nil {
+		logger.Error("Failed to get summary stats: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get stats")
+		return
+	}
+
+	filtered := make(map[string]interface{})
+	totalRequests := 0
 	totalErrors := 0
 	var totalInputTokens int64 = 0
 	var totalOutputTokens int64 = 0
 
-	for _, stats := range endpointStats {
+	for name, stats := range endpointStats {
+		if allowed != nil {
+			if _, ok := allowed[name]; !ok {
+				continue
+			}
+		}
+		filtered[name] = stats
+		totalRequests += stats.Requests
 		totalErrors += stats.Errors
-		totalInputTokens += int64(stats.InputTokens)
-		totalOutputTokens += int64(stats.OutputTokens)
+		totalInputTokens += stats.InputTokens
+		totalOutputTokens += stats.OutputTokens
 	}
 
 	WriteSuccess(w, map[string]interface{}{
@@ -32,7 +78,7 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 		"TotalErrors":       totalErrors,
 		"TotalInputTokens":  totalInputTokens,
 		"TotalOutputTokens": totalOutputTokens,
-		"Endpoints":         endpointStats,
+		"Endpoints":         filtered,
 	})
 }
 
@@ -44,7 +90,7 @@ func (h *Handler) handleStatsDaily(w http.ResponseWriter, r *http.Request) {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	stats, err := h.getStatsForPeriod(today, today)
+	stats, err := h.getStatsForPeriod(r, today, today)
 	if err != nil {
 		logger.Error("Failed to get daily stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get daily stats")
@@ -75,7 +121,7 @@ func (h *Handler) handleStatsWeekly(w http.ResponseWriter, r *http.Request) {
 	startDate := startOfWeek.Format("2006-01-02")
 	endDate := now.Format("2006-01-02")
 
-	stats, err := h.getStatsForPeriod(startDate, endDate)
+	stats, err := h.getStatsForPeriod(r, startDate, endDate)
 	if err != nil {
 		logger.Error("Failed to get weekly stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get weekly stats")
@@ -102,7 +148,7 @@ func (h *Handler) handleStatsMonthly(w http.ResponseWriter, r *http.Request) {
 	startDate := startOfMonth.Format("2006-01-02")
 	endDate := now.Format("2006-01-02")
 
-	stats, err := h.getStatsForPeriod(startDate, endDate)
+	stats, err := h.getStatsForPeriod(r, startDate, endDate)
 	if err != nil {
 		logger.Error("Failed to get monthly stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get monthly stats")
@@ -129,7 +175,7 @@ func (h *Handler) handleStatsTrends(w http.ResponseWriter, r *http.Request) {
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 
 	// Get today's stats
-	todayStats, err := h.getStatsForPeriod(today, today)
+	todayStats, err := h.getStatsForPeriod(r, today, today)
 	if err != nil {
 		logger.Error("Failed to get today's stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get trend stats")
@@ -137,7 +183,7 @@ func (h *Handler) handleStatsTrends(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get yesterday's stats
-	yesterdayStats, err := h.getStatsForPeriod(yesterday, yesterday)
+	yesterdayStats, err := h.getStatsForPeriod(r, yesterday, yesterday)
 	if err != nil {
 		logger.Error("Failed to get yesterday's stats: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get trend stats")
@@ -174,8 +220,18 @@ func (h *Handler) handleStatsTrends(w http.ResponseWriter, r *http.Request) {
 }
 
 // getStatsForPeriod retrieves statistics for a date range using a single aggregated query
-func (h *Handler) getStatsForPeriod(startDate, endDate string) (map[string]interface{}, error) {
-	endpointStats, err := h.storage.GetPeriodStatsAggregated(startDate, endDate)
+func (h *Handler) getStatsForPeriod(r *http.Request, startDate, endDate string) (map[string]interface{}, error) {
+	allowed, err := h.currentUserEndpointNameSet(r)
+	if err != nil {
+		return nil, err
+	}
+	var endpointStats map[string]*storage.EndpointStats
+	user := h.currentUser(r)
+	if user != nil {
+		endpointStats, err = h.storage.GetPeriodStatsAggregatedForUser(user.ID, startDate, endDate)
+	} else {
+		endpointStats, err = h.storage.GetPeriodStatsAggregated(startDate, endDate)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +243,11 @@ func (h *Handler) getStatsForPeriod(startDate, endDate string) (map[string]inter
 	epStats := make(map[string]interface{})
 
 	for endpointName, stats := range endpointStats {
+		if allowed != nil {
+			if _, ok := allowed[endpointName]; !ok {
+				continue
+			}
+		}
 		if stats.Requests > 0 {
 			epStats[endpointName] = map[string]interface{}{
 				"requests":     stats.Requests,

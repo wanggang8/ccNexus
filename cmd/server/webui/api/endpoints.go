@@ -60,8 +60,14 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 		h.toggleEndpoint(w, r, name)
 		return
 	}
-	if subpath == "credentials" {
-		h.handleEndpointCredentials(w, r, name, parts[2:])
+	if strings.HasPrefix(subpath, "credentials") {
+		credentialParts := []string{}
+		if subpath == "credentials" {
+			credentialParts = nil
+		} else if strings.HasPrefix(subpath, "credentials/") {
+			credentialParts = strings.Split(strings.TrimPrefix(subpath, "credentials/"), "/")
+		}
+		h.handleEndpointCredentials(w, r, name, credentialParts)
 		return
 	}
 
@@ -86,9 +92,14 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listEndpoints returns all endpoints
+// listEndpoints returns all endpoints for the current user
 func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
-	endpoints, err := h.storage.GetEndpoints()
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -100,10 +111,14 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		endpoints[i].APIKey = maskAPIKey(endpoints[i].APIKey)
 	}
 
-	tokenPools, err := h.storage.GetAllTokenPoolStats()
-	if err != nil {
-		logger.Warn("Failed to get token pool stats: %v", err)
-		tokenPools = map[string]storage.TokenPoolStats{}
+	tokenPools := make(map[string]storage.TokenPoolStats, len(endpoints))
+	for _, ep := range endpoints {
+		stats, statsErr := h.storage.GetTokenPoolStatsByUser(user.ID, ep.Name)
+		if statsErr != nil {
+			logger.Warn("Failed to get token pool stats for %s: %v", ep.Name, statsErr)
+			continue
+		}
+		tokenPools[ep.Name] = stats
 	}
 
 	WriteSuccess(w, map[string]interface{}{
@@ -112,9 +127,14 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getEndpoint returns a specific endpoint
+// getEndpoint returns a specific endpoint for the current user
 func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name string) {
-	endpoints, err := h.storage.GetEndpoints()
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -182,8 +202,13 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		req.APIKey = ""
 	}
 
-	// Get current endpoints to determine sort order
-	endpoints, err := h.storage.GetEndpoints()
+	// Get current user's endpoints to determine sort order
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -214,14 +239,14 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:        time.Now(),
 	}
 
-	if err := h.storage.SaveEndpoint(endpoint); err != nil {
+	if err := h.storage.SaveEndpointForUser(user.ID, endpoint); err != nil {
 		logger.Error("Failed to save endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to save endpoint")
 		return
 	}
 
 	// Update proxy config
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoint created but config reload failed")
 		return
@@ -233,6 +258,11 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 // updateEndpoint updates an existing endpoint
 func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name string) {
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
 	var req struct {
 		Name             string `json:"name"`
 		APIUrl           string `json:"apiUrl"`
@@ -250,8 +280,8 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	// Get existing endpoint
-	endpoints, err := h.storage.GetEndpoints()
+	// Get existing endpoint for current user
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -320,14 +350,14 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	existing.RequestOverrides = req.RequestOverrides
 	existing.UpdatedAt = time.Now()
 
-	if err := h.storage.UpdateEndpoint(existing); err != nil {
+	if err := h.storage.UpdateEndpointForUser(user.ID, existing); err != nil {
 		logger.Error("Failed to update endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to update endpoint")
 		return
 	}
 
 	// Update proxy config
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoint updated but config reload failed")
 		return
@@ -339,7 +369,12 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 
 // deleteEndpoint deletes an endpoint
 func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request, name string) {
-	if err := h.storage.DeleteEndpoint(name); err != nil {
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
+	if err := h.storage.DeleteEndpointForUser(user.ID, name); err != nil {
 		if errors.Is(err, storage.ErrEndpointNotFound) {
 			WriteError(w, http.StatusNotFound, "Endpoint not found")
 			return
@@ -350,7 +385,7 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request, name st
 	}
 
 	// Update proxy config
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoint deleted but config reload failed")
 		return
@@ -367,6 +402,11 @@ func (h *Handler) toggleEndpoint(w http.ResponseWriter, r *http.Request, name st
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
 
 	var req struct {
 		Enabled bool `json:"enabled"`
@@ -377,8 +417,8 @@ func (h *Handler) toggleEndpoint(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	// Get existing endpoint
-	endpoints, err := h.storage.GetEndpoints()
+	// Get existing endpoint for current user
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -401,14 +441,14 @@ func (h *Handler) toggleEndpoint(w http.ResponseWriter, r *http.Request, name st
 	existing.Enabled = req.Enabled
 	existing.UpdatedAt = time.Now()
 
-	if err := h.storage.UpdateEndpoint(existing); err != nil {
+	if err := h.storage.UpdateEndpointForUser(user.ID, existing); err != nil {
 		logger.Error("Failed to update endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to update endpoint")
 		return
 	}
 
 	// Update proxy config
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoint toggled but config reload failed")
 		return
@@ -425,15 +465,25 @@ func (h *Handler) handleCurrentEndpoint(w http.ResponseWriter, r *http.Request) 
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
 
-	endpoints := h.config.GetEndpoints()
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+	if err != nil {
+		logger.Error("Failed to get endpoints: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
+		return
+	}
 	if len(endpoints) == 0 {
 		WriteError(w, http.StatusNotFound, "No endpoints configured")
 		return
 	}
 
 	// Get enabled endpoints
-	var enabledEndpoints []config.Endpoint
+	var enabledEndpoints []storage.Endpoint
 	for _, ep := range endpoints {
 		if ep.Enabled {
 			enabledEndpoints = append(enabledEndpoints, ep)
@@ -445,8 +495,13 @@ func (h *Handler) handleCurrentEndpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	name := h.proxy.GetCurrentEndpointName()
-	if name == "" {
+	name, err := h.proxy.GetCurrentEndpointNameForUser(user.ID)
+	if err != nil {
+		logger.Error("Failed to get current endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get current endpoint")
+		return
+	}
+	if name == "" && len(enabledEndpoints) > 0 {
 		name = enabledEndpoints[0].Name
 	}
 	WriteSuccess(w, map[string]interface{}{
@@ -460,6 +515,11 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
 
 	var req struct {
 		Name string `json:"name"`
@@ -471,7 +531,12 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify endpoint exists
-	endpoints := h.config.GetEndpoints()
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
+	if err != nil {
+		logger.Error("Failed to get endpoints: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
+		return
+	}
 	found := false
 	for _, ep := range endpoints {
 		if ep.Name == req.Name && ep.Enabled {
@@ -485,7 +550,7 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.proxy.SetCurrentEndpoint(req.Name); err != nil {
+	if err := h.proxy.SetCurrentEndpointForUser(user.ID, req.Name); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -502,6 +567,11 @@ func (h *Handler) handleReorderEndpoints(w http.ResponseWriter, r *http.Request)
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
 
 	var req struct {
 		Names []string `json:"names"`
@@ -512,8 +582,8 @@ func (h *Handler) handleReorderEndpoints(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get all endpoints
-	endpoints, err := h.storage.GetEndpoints()
+	// Get all endpoints for current user
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -531,14 +601,14 @@ func (h *Handler) handleReorderEndpoints(w http.ResponseWriter, r *http.Request)
 		if ep, ok := endpointMap[name]; ok {
 			ep.SortOrder = i
 			ep.UpdatedAt = time.Now()
-			if err := h.storage.UpdateEndpoint(ep); err != nil {
+			if err := h.storage.UpdateEndpointForUser(user.ID, ep); err != nil {
 				logger.Error("Failed to update endpoint sort order: %v", err)
 			}
 		}
 	}
 
 	// Update proxy config
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoints reordered but config reload failed")
 		return
@@ -555,7 +625,12 @@ func (h *Handler) exportEndpoints(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	endpoints, err := h.storage.GetEndpoints()
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
+		return
+	}
+	endpoints, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -582,6 +657,11 @@ func (h *Handler) exportEndpoints(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	user := h.currentUser(r)
+	if user == nil {
+		WriteError(w, http.StatusUnauthorized, "Current user not found")
 		return
 	}
 	var req struct {
@@ -613,7 +693,7 @@ func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := h.storage.GetEndpoints()
+	existing, err := h.storage.GetEndpointsByUser(user.ID)
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -622,7 +702,7 @@ func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	if mode == "replace" {
 		for _, ep := range existing {
-			if err := h.storage.DeleteEndpoint(ep.Name); err != nil {
+			if err := h.storage.DeleteEndpointForUser(user.ID, ep.Name); err != nil {
 				logger.Warn("Failed to delete endpoint %s: %v", ep.Name, err)
 			}
 		}
@@ -686,7 +766,7 @@ func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 		if newEp.Transformer == "" {
 			newEp.Transformer = "claude"
 		}
-		if err := h.storage.SaveEndpoint(newEp); err != nil {
+		if err := h.storage.SaveEndpointForUser(user.ID, newEp); err != nil {
 			logger.Warn("Failed to save endpoint %s: %v", ep.Name, err)
 			continue
 		}
@@ -694,7 +774,7 @@ func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 		sortOrder++
 	}
 
-	if err := h.reloadConfig(); err != nil {
+	if err := h.reloadConfig(r); err != nil {
 		logger.Error("Failed to reload config: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Endpoints imported but config reload failed")
 		return
@@ -707,8 +787,12 @@ func (h *Handler) importEndpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 // reloadConfig reloads the configuration from storage and updates the proxy
-func (h *Handler) reloadConfig() error {
-	adapter := storage.NewConfigStorageAdapter(h.storage)
+func (h *Handler) reloadConfig(r *http.Request) error {
+	user := h.currentUser(r)
+	if user == nil {
+		return nil
+	}
+	adapter := storage.NewConfigStorageAdapterForUser(h.storage, user.ID)
 	cfg, err := config.LoadFromStorage(adapter)
 	if err != nil {
 		return err
