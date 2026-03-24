@@ -13,7 +13,7 @@ func TestRotateEndpointForUser(t *testing.T) {
 			{Name: "global-b", Enabled: true},
 		},
 	}
-	proxy := New(cfg, &mockStatsStorage{}, nil, "test-device", false)
+	proxy := New(cfg, &mockStatsStorage{}, nil, "test-device")
 	proxy.userCurrentIndex[42] = 0
 
 	next := proxy.rotateEndpointForUser(42)
@@ -34,7 +34,7 @@ func TestRotateEndpointForUserDoesNotAffectOtherUsers(t *testing.T) {
 			{Name: "global-b", Enabled: true},
 		},
 	}
-	proxy := New(cfg, &mockStatsStorage{}, nil, "test-device", false)
+	proxy := New(cfg, &mockStatsStorage{}, nil, "test-device")
 	proxy.userCurrentIndex[1] = 0
 	proxy.userCurrentIndex[2] = 1
 

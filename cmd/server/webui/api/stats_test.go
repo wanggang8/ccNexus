@@ -37,13 +37,13 @@ func TestHandleStatsSummaryFiltersByCurrentUser(t *testing.T) {
 	}
 
 	cfg := &config.Config{}
-	p := proxy.New(cfg, storage.NewStatsStorageAdapter(s), s, "test-device", false)
+	p := proxy.New(cfg, storage.NewStatsStorageAdapter(s), s, "test-device")
 	p.GetStats().RecordRequestForUser(userA.ID, "ep-a")
 	p.GetStats().RecordTokensForUser(userA.ID, "ep-a", 10, 20)
 	p.GetStats().RecordRequestForUser(userB.ID, "ep-b")
 	p.GetStats().RecordTokensForUser(userB.ID, "ep-b", 30, 40)
 
-	h := NewHandler(&config.Config{}, nil, s)
+	h := 		NewHandler(&config.Config{}, nil, s)
 	req := httptest.NewRequest(http.MethodGet, "/api/stats/summary", nil)
 	req = req.WithContext(context.WithValue(req.Context(), currentUserContextKey, userA))
 	w := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestGetStatsForPeriodUsesScopedUserStats(t *testing.T) {
 		t.Fatalf("record userB stat: %v", err)
 	}
 
-	h := NewHandler(&config.Config{}, nil, s)
+	h := 		NewHandler(&config.Config{}, nil, s)
 	req := httptest.NewRequest(http.MethodGet, "/api/stats/daily", nil)
 	req = req.WithContext(context.WithValue(req.Context(), currentUserContextKey, userA))
 

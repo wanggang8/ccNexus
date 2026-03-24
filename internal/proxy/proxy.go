@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -40,7 +40,6 @@ type Proxy struct {
 	storage           *storage.SQLiteStorage
 	stats             *Stats
 	trafficRecorder   *TrafficRecorder // traffic log recorder
-	requireProxyToken bool
 	currentIndex      int
 	userCurrentIndex  map[int64]int
 	mu                sync.RWMutex
@@ -55,7 +54,7 @@ type Proxy struct {
 }
 
 // New creates a new Proxy instance
-func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.SQLiteStorage, deviceID string, requireProxyToken bool) *Proxy {
+func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.SQLiteStorage, deviceID string) *Proxy {
 	stats := NewStats(statsStorage, deviceID)
 
 	// Create a reusable HTTP client with connection pool
@@ -77,17 +76,16 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 	}
 
 	return &Proxy{
-		config:            cfg,
-		storage:           sqliteStorage,
-		stats:             stats,
-		trafficRecorder:   NewTrafficRecorder(),
-		requireProxyToken: requireProxyToken,
-		currentIndex:      0,
-		userCurrentIndex:  make(map[int64]int),
-		httpClient:        httpClient,
-		activeRequests:    make(map[string]int),
-		endpointCtx:       make(map[string]context.Context),
-		endpointCancel:    make(map[string]context.CancelFunc),
+		config:          cfg,
+		storage:         sqliteStorage,
+		stats:           stats,
+		trafficRecorder: NewTrafficRecorder(),
+		currentIndex:    0,
+		userCurrentIndex: make(map[int64]int),
+		httpClient:      httpClient,
+		activeRequests:  make(map[string]int),
+		endpointCtx:     make(map[string]context.Context),
+		endpointCancel:  make(map[string]context.CancelFunc),
 	}
 }
 
@@ -541,9 +539,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("failed to resolve user from proxy request: %v", userErr)
 	} else if user != nil {
 		currentUserID = user.ID
-	} else if p.requireProxyToken {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
 	}
 
 	endpoints := p.getEnabledEndpointsForUser(currentUserID)

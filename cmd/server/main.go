@@ -61,7 +61,7 @@ func main() {
 	if err := sqliteStorage.SyncDefaultUserToken(builtInAdminToken); err != nil {
 		logger.Warn("Failed to set built-in default admin token: %v", err)
 	}
-	p := proxy.New(cfg, statsAdapter, sqliteStorage, deviceID, true)
+	p := proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
 
 	// Create HTTP mux
 	mux := http.NewServeMux()
