@@ -575,10 +575,14 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			switch block["type"] {
 			case "tool_use":
 				ctx.ToolBlockStarted = true
-				ctx.ToolBlockPending = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
-				return nil, nil
+				// Emit initial tool call shell immediately on tool_use start,
+				// matching OpenAI streaming semantics and pre-regression behavior.
+				return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
+						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
+				}, "")
 			case "thinking":
 				ctx.ThinkingBlockStarted = true
 			}
@@ -602,24 +606,6 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		case "input_json_delta":
 			partial, _ := delta["partial_json"].(string)
 			ctx.ToolArguments += partial
-			// Send tool call shell on first arguments delta, then stream incremental arguments.
-			if ctx.ToolBlockPending {
-				chunk, err := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-					{"index": ctx.ToolCallCounter, "id": ctx.CurrentToolID, "type": "function",
-						"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ""}},
-				}, "")
-				if err != nil {
-					return nil, err
-				}
-				deltaChunk, err := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-					{"index": ctx.ToolCallCounter, "function": map[string]interface{}{"arguments": partial}},
-				}, "")
-				if err != nil {
-					return nil, err
-				}
-				ctx.ToolBlockPending = false
-				return append(chunk, deltaChunk...), nil
-			}
 			// Send incremental arguments delta
 			return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
 				{"index": ctx.ToolCallCounter, "function": map[string]interface{}{"arguments": partial}},
@@ -633,7 +619,6 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 		}
 		if ctx.ToolBlockStarted {
 			ctx.ToolBlockStarted = false
-			ctx.ToolBlockPending = false
 			ctx.ToolArguments = ""
 			ctx.ToolCallCounter++
 		}
