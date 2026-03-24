@@ -38,7 +38,7 @@ func TestDesktopProxyDefaultMethodsUseUserOne(t *testing.T) {
 	if err := s.SaveEndpointForUser(user2.ID, &storage.Endpoint{Name: "pool-second", APIUrl: "https://u2-second", APIKey: "k4", AuthMode: config.AuthModeTokenPool, Enabled: true, Transformer: "claude"}); err != nil {
 		t.Fatalf("save user2 endpoint second: %v", err)
 	}
-	p := New(cfg, storage.NewStatsStorageAdapter(s), s, "test-device")
+	p := New(cfg, storage.NewStatsStorageAdapter(s), s, "test-device", false)
 	p.currentIndex = 0
 
 	if err := s.SaveEndpointCredential(&storage.EndpointCredential{EndpointName: "pool-default", ProviderType: "codex", AccessToken: "token-u1", Enabled: true}); err != nil {

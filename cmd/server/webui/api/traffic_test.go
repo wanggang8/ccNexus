@@ -15,11 +15,11 @@ import (
 func TestTrafficAPIs(t *testing.T) {
 	// Create test proxy with traffic recorder
 	cfg := &config.Config{}
-	p := proxy.New(cfg, nil, nil, "test-device")
+	p := proxy.New(cfg, nil, nil, "test-device", false)
 	recorder := p.GetTrafficRecorder()
 
 	// Create handler
-	h := 		NewHandler(cfg, p, nil)
+	h := NewHandler(cfg, p, nil)
 
 	t.Run("GetRecordingStatus", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/traffic/recording", nil)

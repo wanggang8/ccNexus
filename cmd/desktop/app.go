@@ -168,7 +168,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	statsAdapter := storage.NewStatsStorageAdapter(sqliteStorage)
-	a.proxy = proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
+	a.proxy = proxy.New(cfg, statsAdapter, sqliteStorage, deviceID, false)
 	if isDevBuild && trafficLogPath != "" {
 		if err := a.proxy.GetTrafficRecorder().EnableFileLogging(trafficLogPath); err != nil {
 			logger.Warn("Failed to enable traffic log file: %v", err)
