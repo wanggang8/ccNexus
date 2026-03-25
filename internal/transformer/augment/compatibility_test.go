@@ -62,7 +62,7 @@ func TestTransformAugmentToClaude_InjectsWorkspaceGuidelinesContextAndHistorySum
 	assertContains(t, systemText, "path=internal/transformer/augment/to_claude.go")
 	assertContains(t, systemText, "lang=go")
 	assertNotContains(t, systemText, "[selected_code]")
-	assertOrderedContains(t, systemText, []string{"遵循仓库规范，先修复测试。", "回复尽量简洁。", "[context]"})
+	assertOrderedContains(t, systemText, []string{"回复尽量简洁。", "遵循仓库规范，先修复测试。", "[context]"})
 
 	messages, ok := output["messages"].([]interface{})
 	if !ok || len(messages) == 0 {
@@ -73,12 +73,12 @@ func TestTransformAugmentToClaude_InjectsWorkspaceGuidelinesContextAndHistorySum
 		t.Fatalf("expected string user content, got %#v", messages[0].(map[string]interface{})["content"])
 	}
 	assertContains(t, messageText, "继续处理当前文件")
-	assertContains(t, messageText, "[prefix]")
-	assertContains(t, messageText, "[selected_code]")
-	assertContains(t, messageText, "[suffix]")
-	assertContains(t, messageText, "[diff]")
 	assertContains(t, messageText, "[history_summary]")
 	assertContains(t, messageText, "用户已经确认默认启用所有兼容增强。")
+	assertNotContains(t, messageText, "[prefix]")
+	assertNotContains(t, messageText, "[selected_code]")
+	assertNotContains(t, messageText, "[suffix]")
+	assertNotContains(t, messageText, "[diff]")
 }
 
 func TestTransformAugmentToOpenAI_InjectsWorkspaceGuidelinesContextAndHistorySummary(t *testing.T) {
@@ -133,13 +133,13 @@ func TestTransformAugmentToOpenAI_InjectsWorkspaceGuidelinesContextAndHistorySum
 	assertContains(t, systemText, "path=internal/transformer/augment/to_openai.go")
 	assertContains(t, systemText, "lang=go")
 	assertNotContains(t, systemText, "[selected_code]")
-	assertOrderedContains(t, systemText, []string{"优先依据本地代码事实。", "不要展开无关内容。", "[context]"})
+	assertOrderedContains(t, systemText, []string{"不要展开无关内容。", "优先依据本地代码事实。", "[context]"})
 
 	userText := messages[1].(map[string]interface{})["content"].(string)
 	assertContains(t, userText, "解释一下这段代码")
-	assertContains(t, userText, "[selected_code]")
 	assertContains(t, userText, "[history_summary]")
 	assertContains(t, userText, "上一轮已经完成字段兼容性分析。")
+	assertNotContains(t, userText, "[selected_code]")
 }
 
 func TestTransformAugmentToClaude_UsesStructuredRequestNodesAndContentNodes(t *testing.T) {
@@ -282,30 +282,25 @@ func TestTransformAugmentToOpenAI_UsesStructuredRequestNodesAndToolResultContent
 	}
 
 	messages := output["messages"].([]interface{})
-	if len(messages) != 3 {
-		t.Fatalf("expected assistant, tool and user messages, got %d", len(messages))
+	if len(messages) != 2 {
+		t.Fatalf("expected orphan tool-result user message and user prompt, got %d", len(messages))
 	}
-	if messages[0].(map[string]interface{})["role"] != "assistant" {
-		t.Fatalf("expected first message to be assistant, got %#v", messages[0])
+	if messages[0].(map[string]interface{})["role"] != "user" {
+		t.Fatalf("expected first message to be user orphan tool_result, got %#v", messages[0])
 	}
-	if messages[1].(map[string]interface{})["role"] != "tool" {
-		t.Fatalf("expected second message to be tool, got %#v", messages[1])
-	}
-	toolContent, ok := messages[1].(map[string]interface{})["content"].(string)
+	toolContent, ok := messages[0].(map[string]interface{})["content"].(string)
 	if !ok {
-		t.Fatalf("expected string tool content, got %#v", messages[1].(map[string]interface{})["content"])
+		t.Fatalf("expected string orphan tool-result content, got %#v", messages[0].(map[string]interface{})["content"])
 	}
+	assertContains(t, toolContent, "[orphan_tool_result")
 	assertContains(t, toolContent, "stderr: warning")
 	assertContains(t, toolContent, "[tool_result_image]")
 	assertContains(t, toolContent, "media_type=image/png")
-	if messages[1].(map[string]interface{})["tool_call_id"] != "call_456" {
-		t.Fatalf("expected tool_call_id call_456, got %#v", messages[1].(map[string]interface{})["tool_call_id"])
+	if messages[1].(map[string]interface{})["role"] != "user" {
+		t.Fatalf("expected second message to be user, got %#v", messages[1])
 	}
-	if messages[2].(map[string]interface{})["role"] != "user" {
-		t.Fatalf("expected third message to be user, got %#v", messages[2])
-	}
-	if messages[2].(map[string]interface{})["content"] != "请分析命令输出。" {
-		t.Fatalf("expected user text from structured_request_nodes, got %#v", messages[2].(map[string]interface{})["content"])
+	if messages[1].(map[string]interface{})["content"] != "请分析命令输出。" {
+		t.Fatalf("expected user text from structured_request_nodes, got %#v", messages[1].(map[string]interface{})["content"])
 	}
 }
 
@@ -430,6 +425,70 @@ func TestFormatHistorySummaryPrompt_PreservesHistoryEndPayload(t *testing.T) {
 	assertNotContains(t, text, "history_end_exchanges=1")
 }
 
+func TestFormatHistorySummaryPrompt_RendersMessageTemplate(t *testing.T) {
+	text := formatHistorySummaryPrompt(&HistorySummaryNode{
+		MessageTemplate:                     "Summary={summary}\nDropped={beginning_part_dropped_num_exchanges}\n{end_part_full}",
+		SummaryText:                         "compressed context",
+		HistoryBeginningDroppedNumExchanges: 3,
+		HistoryEnd: []map[string]interface{}{
+			{
+				"request_message": "tail request",
+				"response_text":   "tail response",
+			},
+		},
+	})
+
+	assertContains(t, text, "Summary=compressed context")
+	assertContains(t, text, "Dropped=3")
+	assertContains(t, text, "<exchange>")
+	assertContains(t, text, "tail request")
+	assertContains(t, text, "tail response")
+	assertNotContains(t, text, "[history_summary]")
+}
+
+func TestPreprocessHistoryForAPI_DropsHistoryBeforeLastSummary(t *testing.T) {
+	history, currentNodes := preprocessHistoryForAPI(&AugmentRequest{
+		ChatHistory: []ChatHistoryEntry{
+			{
+				RequestMessage: "old request",
+				ResponseText:   "old response",
+			},
+			{
+				RequestNodes: []Node{
+					{Type: 10, HistorySummary: &HistorySummaryNode{
+						MessageTemplate: "Summary:\n{summary}\n{end_part_full}",
+						SummaryText:     "compressed",
+						HistoryEnd: []map[string]interface{}{
+							{"request_message": "tail request", "response_text": "tail response"},
+						},
+					}},
+				},
+			},
+		},
+		Nodes: []Node{{Type: 0, TextNode: &TextNode{Content: "current request"}}},
+	})
+
+	if len(history) != 1 {
+		t.Fatalf("expected only the summary exchange to remain, got %d", len(history))
+	}
+	if history[0].RequestMessage != "" {
+		t.Fatalf("expected compacted summary exchange request_message empty, got %q", history[0].RequestMessage)
+	}
+	nodes := history[0].EffectiveRequestNodes()
+	if len(nodes) != 1 || nodes[0].Type != 0 || nodes[0].TextNode == nil {
+		t.Fatalf("expected compacted summary text node, got %#v", nodes)
+	}
+	text := nodes[0].TextNode.EffectiveContent()
+	assertContains(t, text, "Summary:")
+	assertContains(t, text, "compressed")
+	assertContains(t, text, "tail request")
+	assertNotContains(t, text, "old request")
+	assertNotContains(t, text, "old response")
+	if len(currentNodes) != 1 || currentNodes[0].TextNode == nil || currentNodes[0].TextNode.EffectiveContent() != "current request" {
+		t.Fatalf("expected current request nodes to remain untouched, got %#v", currentNodes)
+	}
+}
+
 func TestTransformAugmentToOpenAI_FallsBackToolResultImagesToText(t *testing.T) {
 	transformer, err := New("openai", "")
 	if err != nil {
@@ -476,13 +535,90 @@ func TestTransformAugmentToOpenAI_FallsBackToolResultImagesToText(t *testing.T) 
 	}
 
 	messages := output["messages"].([]interface{})
-	toolContent, ok := messages[1].(map[string]interface{})["content"].(string)
-	if !ok {
-		t.Fatalf("expected tool content to be string fallback, got %#v", messages[1].(map[string]interface{})["content"])
+	if len(messages) != 1 {
+		t.Fatalf("expected a single repaired orphan tool-result user message, got %d", len(messages))
 	}
+	toolContent, ok := messages[0].(map[string]interface{})["content"].(string)
+	if !ok {
+		t.Fatalf("expected tool content to be string fallback, got %#v", messages[0].(map[string]interface{})["content"])
+	}
+	assertContains(t, toolContent, "[orphan_tool_result")
 	assertContains(t, toolContent, "stderr: warning")
 	assertContains(t, toolContent, "[tool_result_image]")
 	assertContains(t, toolContent, "media_type=image/png")
+}
+
+func TestTransformAugmentToOpenAI_PairsHistoryToolCallsWithNextToolResults(t *testing.T) {
+	transformer, err := New("openai", "")
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	input := map[string]interface{}{
+		"model":   "gpt-4.1",
+		"message": "继续",
+		"chat_history": []interface{}{
+			map[string]interface{}{
+				"request_message": "读取文件",
+				"response_nodes": []interface{}{
+					map[string]interface{}{
+						"type": 5,
+						"tool_use": map[string]interface{}{
+							"tool_use_id": "call_hist_1",
+							"tool_name":   "read_file",
+							"input_json":  "{\"path\":\"README.md\"}",
+						},
+					},
+				},
+			},
+			map[string]interface{}{
+				"request_nodes": []interface{}{
+					map[string]interface{}{
+						"type": 1,
+						"tool_result_node": map[string]interface{}{
+							"tool_call_id": "call_hist_1",
+							"content":      "README content",
+						},
+					},
+				},
+				"response_text": "已读取完成",
+			},
+		},
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input failed: %v", err)
+	}
+
+	result, err := transformer.TransformRequest(inputJSON)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	var output map[string]interface{}
+	if err := json.Unmarshal(result, &output); err != nil {
+		t.Fatalf("unmarshal output failed: %v", err)
+	}
+
+	messages := output["messages"].([]interface{})
+	foundAssistantToolCall := false
+	foundToolResult := false
+	for _, raw := range messages {
+		msg := raw.(map[string]interface{})
+		if msg["role"] == "assistant" && msg["tool_calls"] != nil {
+			foundAssistantToolCall = true
+		}
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call_hist_1" && msg["content"] == "README content" {
+			foundToolResult = true
+		}
+	}
+	if !foundAssistantToolCall {
+		t.Fatalf("expected assistant tool_calls message in history")
+	}
+	if !foundToolResult {
+		t.Fatalf("expected paired tool result message in history")
+	}
 }
 
 func TestFormatHistorySummaryPrompt_ReadableHistoryEnd(t *testing.T) {

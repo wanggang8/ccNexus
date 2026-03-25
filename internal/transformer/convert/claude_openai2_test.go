@@ -311,6 +311,242 @@ func TestClaudeReqToOpenAI2MapsNamedToolChoice(t *testing.T) {
 	}
 }
 
+func TestClaudeReqToOpenAI2PreservesThinkingAsReasoningItem(t *testing.T) {
+	claudeReq := `{
+		"model":"claude-sonnet-4-20250514",
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"think first"},
+				{"type":"text","text":"answer"}
+			]}
+		]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	input := req["input"].([]interface{})
+	if len(input) != 2 {
+		t.Fatalf("expected reasoning + message items, got %d", len(input))
+	}
+	if input[0].(map[string]interface{})["type"] != "reasoning" {
+		t.Fatalf("expected first input item to be reasoning, got %#v", input[0])
+	}
+}
+
+func TestClaudeRespToOpenAI2IncludesReasoningOutputItem(t *testing.T) {
+	claudeResp := `{
+		"id":"msg_1",
+		"type":"message",
+		"role":"assistant",
+		"content":[
+			{"type":"thinking","thinking":"think first"},
+			{"type":"text","text":"answer"}
+		],
+		"usage":{"input_tokens":3,"output_tokens":5}
+	}`
+
+	respBytes, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("unmarshal transformed resp failed: %v", err)
+	}
+
+	output := resp["output"].([]interface{})
+	if len(output) != 2 || output[0].(map[string]interface{})["type"] != "reasoning" {
+		t.Fatalf("expected reasoning output item first, got %#v", output)
+	}
+	if resp["model"] != "" {
+		t.Fatalf("expected empty model when upstream omitted it, got %#v", resp["model"])
+	}
+	if output[0].(map[string]interface{})["id"] == "" {
+		t.Fatalf("expected reasoning id, got %#v", output[0])
+	}
+	if output[1].(map[string]interface{})["status"] != "completed" {
+		t.Fatalf("expected completed message item, got %#v", output[1])
+	}
+}
+
+func TestClaudeRespToOpenAI2MapsMaxTokensToIncomplete(t *testing.T) {
+	claudeResp := `{
+		"id":"msg_1",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-sonnet-4",
+		"stop_reason":"max_tokens",
+		"content":[{"type":"text","text":"answer"}],
+		"usage":{"input_tokens":3,"output_tokens":5}
+	}`
+
+	respBytes, err := ClaudeRespToOpenAI2([]byte(claudeResp))
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI2 failed: %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("unmarshal transformed resp failed: %v", err)
+	}
+
+	if resp["status"] != "incomplete" {
+		t.Fatalf("expected incomplete status, got %#v", resp["status"])
+	}
+	if resp["model"] != "claude-sonnet-4" {
+		t.Fatalf("expected model preserved, got %#v", resp["model"])
+	}
+}
+
+func TestOpenAI2ReqToClaudeInjectsReasoningThinkingBlock(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"input":[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"think first"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	messages := req["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	if first["type"] != "thinking" || first["thinking"] != "think first" {
+		t.Fatalf("expected leading thinking block, got %#v", first)
+	}
+}
+
+func TestOpenAI2RespToClaudeRestoresReasoningItemAsThinking(t *testing.T) {
+	openai2Resp := `{
+		"id":"resp_1",
+		"object":"response",
+		"status":"completed",
+		"output":[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"think first"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
+		],
+		"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+	}`
+
+	respBytes, err := OpenAI2RespToClaude([]byte(openai2Resp))
+	if err != nil {
+		t.Fatalf("OpenAI2RespToClaude failed: %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("unmarshal transformed resp failed: %v", err)
+	}
+
+	content := resp["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	if first["type"] != "thinking" || first["thinking"] != "think first" {
+		t.Fatalf("expected reasoning restored as thinking block, got %#v", first)
+	}
+}
+
+func TestClaudeStreamToOpenAI2EmitsReasoningEvents(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3}}}
+`,
+		`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think first"}}
+`,
+		`event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+`,
+	}
+
+	var all string
+	for _, event := range events {
+		out, err := ClaudeStreamToOpenAI2([]byte(event), ctx)
+		if err != nil {
+			t.Fatalf("ClaudeStreamToOpenAI2 failed: %v", err)
+		}
+		all += string(out)
+	}
+
+	if !strings.Contains(all, `"type":"response.reasoning_summary_text.delta"`) {
+		t.Fatalf("expected reasoning_summary_text delta event, got %s", all)
+	}
+	if !strings.Contains(all, `"type":"response.output_item.done"`) {
+		t.Fatalf("expected reasoning output item done event, got %s", all)
+	}
+}
+
+func TestOpenAI2ReqToClaudeSupportsEasyInputMessage(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"input":[
+			{"role":"assistant","content":"answer"}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	messages := req["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"]
+	if content != "answer" {
+		t.Fatalf("expected easy input message preserved as Claude content, got %#v", content)
+	}
+}
+
+func TestOpenAI2StreamToClaudeEmitsThinkingFromReasoningSummary(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+	ctx.ModelName = "claude-sonnet-4-20250514"
+
+	events := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"think first"}`,
+	}
+
+	var all string
+	for _, event := range events {
+		out, err := OpenAI2StreamToClaude([]byte(event), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+		}
+		all += string(out)
+	}
+
+	if !strings.Contains(all, `"type":"thinking_delta"`) || !strings.Contains(all, `"thinking":"think first"`) {
+		t.Fatalf("expected reasoning summary to become Claude thinking delta, got %s", all)
+	}
+}
+
 func TestClaudeReqToOpenAI2DefaultsToolChoiceRequiredWhenToolsPresent(t *testing.T) {
 	claudeReq := `{
 		"model": "claude-sonnet-4-20250514",

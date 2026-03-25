@@ -4,13 +4,20 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/lich0821/ccNexus/internal/config"
 )
 
-func proxyAuthMiddleware(token string) func(http.Handler) http.Handler {
-	trimmedToken := strings.TrimSpace(token)
+func proxyAuthMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if trimmedToken == "" || !requiresProxyAuth(r.URL.Path) {
+			if cfg == nil || !cfg.GetBasicAuthEnabled() || !requiresProxyAuth(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			trimmedToken := strings.TrimSpace(cfg.GetBasicAuthPassword())
+			if trimmedToken == "" {
 				next.ServeHTTP(w, r)
 				return
 			}

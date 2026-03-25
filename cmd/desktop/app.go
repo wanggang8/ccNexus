@@ -71,6 +71,7 @@ type App struct {
 	stats    *service.StatsService
 	endpoint *service.EndpointService
 	settings *service.SettingsService
+	traffic  *service.TrafficService
 	webdav   *service.WebDAVService
 	backup   *service.BackupService
 	archive  *service.ArchiveService
@@ -163,6 +164,7 @@ func (a *App) startup(ctx context.Context) {
 	a.stats = service.NewStatsService(a.proxy, a.config)
 	a.endpoint = service.NewEndpointService(a.config, a.proxy, a.storage)
 	a.settings = service.NewSettingsService(a.config, a.storage)
+	a.traffic = service.NewTrafficService(a.proxy)
 	a.webdav = service.NewWebDAVService(a.config, a.storage, version)
 	a.backup = service.NewBackupService(a.config, a.storage, version, a.webdav)
 	a.archive = service.NewArchiveService(a.storage)
@@ -898,6 +900,13 @@ func (a *App) GetLogsByLevel(level int) string      { return a.settings.GetLogsB
 func (a *App) ClearLogs()                           { a.settings.ClearLogs() }
 func (a *App) SetLogLevel(level int)                { a.settings.SetLogLevel(level) }
 func (a *App) GetLogLevel() int                     { return a.settings.GetLogLevel() }
+func (a *App) GetTrafficLogs(filterJSON string) string {
+	return a.traffic.GetLogs(filterJSON)
+}
+func (a *App) GetTrafficLogDetail(id string) string { return a.traffic.GetLogDetail(id) }
+func (a *App) SetTrafficRecording(enabled bool)     { a.traffic.SetRecording(enabled) }
+func (a *App) IsTrafficRecording() bool             { return a.traffic.IsRecording() }
+func (a *App) ClearTrafficLogs()                    { a.traffic.ClearLogs() }
 func (a *App) SetCloseWindowBehavior(behavior string) error {
 	return a.settings.SetCloseWindowBehavior(behavior)
 }

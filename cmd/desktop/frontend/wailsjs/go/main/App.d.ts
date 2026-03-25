@@ -55,6 +55,8 @@ export function GetArchiveData(arg1:string):Promise<string>;
 
 export function GetArchiveTrend(arg1:string):Promise<string>;
 
+export function GetAugmentConfig():Promise<string>;
+
 export function GetAutoDarkTheme():Promise<string>;
 
 export function GetAutoLightTheme():Promise<string>;
@@ -156,6 +158,8 @@ export function ReorderEndpoints(arg1:Array<string>):Promise<void>;
 export function RestoreFromProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RestoreFromWebDAV(arg1:string,arg2:string):Promise<void>;
+
+export function SaveAugmentConfig(arg1:string):Promise<void>;
 
 export function SaveSettings(arg1:string):Promise<void>;
 

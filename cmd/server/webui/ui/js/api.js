@@ -133,6 +133,46 @@ class APIClient {
     async updateLogLevel(logLevel) {
         return this.request('PUT', '/config/log-level', { logLevel });
     }
+
+    async getBasicAuthConfig() {
+        return this.request('GET', '/config/basic-auth');
+    }
+
+    async updateBasicAuthConfig(data) {
+        return this.request('PUT', '/config/basic-auth', data);
+    }
+
+    async resetBasicAuthPassword() {
+        return this.request('POST', '/config/basic-auth/reset-password');
+    }
+
+    async getTraffic(params = {}) {
+        const query = new URLSearchParams();
+        Object.entries(params).forEach(([key, value]) => {
+            if (value !== undefined && value !== null && value !== '') {
+                query.set(key, String(value));
+            }
+        });
+
+        const suffix = query.toString() ? `/traffic?${query.toString()}` : '/traffic';
+        return this.request('GET', suffix);
+    }
+
+    async getTrafficDetail(id) {
+        return this.request('GET', `/traffic/${encodeURIComponent(id)}`);
+    }
+
+    async getTrafficRecording() {
+        return this.request('GET', '/traffic/recording');
+    }
+
+    async setTrafficRecording(enabled) {
+        return this.request('PUT', '/traffic/recording', { enabled });
+    }
+
+    async clearTraffic() {
+        return this.request('POST', '/traffic/clear');
+    }
 }
 
 export const api = new APIClient();

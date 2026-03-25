@@ -349,6 +349,69 @@ func TestClaudeReqToOpenAIWithToolUseAndResult(t *testing.T) {
 	}
 }
 
+func TestClaudeRespToOpenAIPreservesThinkingAsReasoningContent(t *testing.T) {
+	claudeResp := `{
+		"id":"msg_1",
+		"type":"message",
+		"role":"assistant",
+		"content":[
+			{"type":"thinking","thinking":"think first"},
+			{"type":"text","text":"answer"}
+		],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":3,"output_tokens":5}
+	}`
+
+	openaiRespBytes, err := ClaudeRespToOpenAI([]byte(claudeResp), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI failed: %v", err)
+	}
+
+	var openaiResp map[string]interface{}
+	if err := json.Unmarshal(openaiRespBytes, &openaiResp); err != nil {
+		t.Fatalf("Failed to unmarshal OpenAI response: %v", err)
+	}
+
+	message := openaiResp["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if message["reasoning_content"] != "think first" {
+		t.Fatalf("expected reasoning_content preserved, got %#v", message["reasoning_content"])
+	}
+}
+
+func TestClaudeRespToOpenAIFixesMissingToolUseIDAndFinishReason(t *testing.T) {
+	claudeResp := `{
+		"id":"msg_2",
+		"type":"message",
+		"role":"assistant",
+		"content":[
+			{"type":"tool_use","name":"read_file","input":{"path":"README.md"}}
+		],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":1,"output_tokens":2}
+	}`
+
+	openaiRespBytes, err := ClaudeRespToOpenAI([]byte(claudeResp), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("ClaudeRespToOpenAI failed: %v", err)
+	}
+
+	var openaiResp map[string]interface{}
+	if err := json.Unmarshal(openaiRespBytes, &openaiResp); err != nil {
+		t.Fatalf("Failed to unmarshal OpenAI response: %v", err)
+	}
+
+	choice := openaiResp["choices"].([]interface{})[0].(map[string]interface{})
+	message := choice["message"].(map[string]interface{})
+	toolCalls := message["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	if !strings.HasPrefix(toolCall["id"].(string), "toolu_") {
+		t.Fatalf("expected synthesized tool_use id, got %#v", toolCall["id"])
+	}
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, got %#v", choice["finish_reason"])
+	}
+}
+
 func TestClaudeReqToOpenAISkipsInvalidToolBlocks(t *testing.T) {
 	claudeReq := `{
 		"model": "claude-3-opus-20240229",
@@ -415,8 +478,9 @@ func TestClaudeReqToOpenAIThinkingOnly(t *testing.T) {
 
 	var openaiReq struct {
 		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(openaiReqBytes, &openaiReq); err != nil {
@@ -433,5 +497,122 @@ func TestClaudeReqToOpenAIThinkingOnly(t *testing.T) {
 		if openaiReq.Messages[1].Role != "assistant" || openaiReq.Messages[1].Content != "(thinking...)" {
 			t.Errorf("Expected placeholder for assistant message, got %s: %s", openaiReq.Messages[1].Role, openaiReq.Messages[1].Content)
 		}
+		if openaiReq.Messages[1].ReasoningContent != "I should say hello back" {
+			t.Errorf("Expected reasoning_content preserved, got %s", openaiReq.Messages[1].ReasoningContent)
+		}
+	}
+}
+
+func TestClaudeReqToOpenAIPreservesThinkingBlocksAsReasoningContent(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-3-opus-20240229",
+		"messages": [
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"think first"},
+				{"type":"text","text":"answer"}
+			]}
+		],
+		"max_tokens": 128
+	}`
+
+	openaiReqBytes, err := ClaudeReqToOpenAI([]byte(claudeReq), "gpt-4")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq transformer.OpenAIRequest
+	if err := json.Unmarshal(openaiReqBytes, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal OpenAI request: %v", err)
+	}
+
+	if len(openaiReq.Messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(openaiReq.Messages))
+	}
+	if openaiReq.Messages[0].ReasoningContent != "think first" {
+		t.Fatalf("expected reasoning_content preserved, got %#v", openaiReq.Messages[0].ReasoningContent)
+	}
+}
+
+func TestClaudeReqToOpenAISynthesizesMissingToolUseID(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-3-opus-20240229",
+		"messages": [
+			{"role":"assistant","content":[
+				{"type":"tool_use","name":"read_file","input":{"path":"README.md"}}
+			]}
+		],
+		"max_tokens": 128
+	}`
+
+	openaiReqBytes, err := ClaudeReqToOpenAI([]byte(claudeReq), "gpt-4")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq transformer.OpenAIRequest
+	if err := json.Unmarshal(openaiReqBytes, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal OpenAI request: %v", err)
+	}
+
+	if len(openaiReq.Messages) != 1 || len(openaiReq.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("expected synthesized tool call, got %#v", openaiReq.Messages)
+	}
+	if !strings.HasPrefix(openaiReq.Messages[0].ToolCalls[0].ID, "toolu_") {
+		t.Fatalf("expected synthesized toolu_ id, got %#v", openaiReq.Messages[0].ToolCalls[0].ID)
+	}
+}
+
+func TestOpenAIReqToClaudeInjectsReasoningContentAsThinkingBlock(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"assistant","content":"answer","reasoning_content":"think first"}
+		]
+	}`
+
+	claudeReqBytes, err := OpenAIReqToClaude([]byte(openaiReq), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(claudeReqBytes, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal Claude request: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	if first["type"] != "thinking" || first["thinking"] != "think first" {
+		t.Fatalf("expected leading thinking block, got %#v", first)
+	}
+}
+
+func TestOpenAIReqToClaudePreservesRemoteImageURL(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}
+			]}
+		]
+	}`
+
+	claudeReqBytes, err := OpenAIReqToClaude([]byte(openaiReq), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(claudeReqBytes, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal Claude request: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	source := first["source"].(map[string]interface{})
+	if first["type"] != "image" || source["type"] != "url" || source["url"] != "https://example.com/cat.png" {
+		t.Fatalf("expected remote image url preserved, got %#v", first)
 	}
 }

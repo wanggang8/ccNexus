@@ -25,10 +25,11 @@ type OpenAITool struct {
 
 // OpenAIMessage represents a message in OpenAI format
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    interface{}      `json:"content,omitempty"` // Can be string or array of content parts
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          interface{}      `json:"content,omitempty"` // Can be string or array of content parts
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
 }
 
 // OpenAIRequest represents an OpenAI API request
@@ -59,9 +60,10 @@ type OpenAIResponse struct {
 	Choices []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role      string           `json:"role"`
-			Content   string           `json:"content"`
-			ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+			Role             string           `json:"role"`
+			Content          string           `json:"content"`
+			ReasoningContent string           `json:"reasoning_content,omitempty"`
+			ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -301,6 +303,7 @@ type GeminiResponse struct {
 	UsageMetadata *struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
 		TotalTokenCount      int `json:"totalTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
@@ -318,6 +321,7 @@ type GeminiStreamChunk struct {
 	UsageMetadata *struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
 		TotalTokenCount      int `json:"totalTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
@@ -369,7 +373,9 @@ type OpenAI2OutputItem struct {
 	Type    string               `json:"type"` // "message", "function_call"
 	ID      string               `json:"id,omitempty"`
 	Role    string               `json:"role,omitempty"`
+	Status  string               `json:"status,omitempty"`
 	Content []OpenAI2ContentPart `json:"content,omitempty"`
+	Summary []OpenAI2ContentPart `json:"summary,omitempty"`
 	// Function call fields
 	Name      string `json:"name,omitempty"`
 	CallID    string `json:"call_id,omitempty"`

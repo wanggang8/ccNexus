@@ -20,6 +20,7 @@ func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 	}
 	if len(tools) > 0 {
 		req["tools"] = tools
+		req["tool_choice"] = "auto"
 	}
 	if ar.IsStreaming() {
 		req["stream_options"] = map[string]interface{}{"include_usage": true}
@@ -31,6 +32,7 @@ func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 // buildOpenAIMessages converts chat history + current turn to OpenAI messages.
 func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	var messages []map[string]interface{}
+	history, currentNodes := preprocessHistoryForAPI(ar)
 
 	// System message from workspace_guidelines -> user_guidelines -> context(lang/path).
 	if systemText := buildCommonSystemText(ar); systemText != "" {
@@ -41,14 +43,17 @@ func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	}
 
 	// Chat history.
-	for _, entry := range ar.ChatHistory {
-		appendOpenAIHistoryEntry(&messages, &entry)
+	for i := range history {
+		entry := &history[i]
+		appendOpenAIHistoryEntry(&messages, entry)
+		if i+1 < len(history) {
+			appendOpenAIToolResultNodes(&messages, history[i+1].EffectiveRequestNodes())
+		}
 	}
 
 	// Current turn.
-	appendOpenAICurrentTurn(&messages, ar.EffectiveCurrentNodes(), ar.Message, ar.Images, ar.EffectiveContext())
-
-	return messages
+	appendOpenAICurrentTurn(&messages, currentNodes, ar.Message, ar.MessageSource, ar.DisableSelectedCodeDetails, ar.Images, ar.EffectiveContext())
+	return repairOpenAIToolCallMessages(messages)
 }
 
 func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistoryEntry) {
@@ -56,66 +61,28 @@ func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 
 	// User side.
 	if len(requestNodes) > 0 {
-		appendOpenAINodesAsUser(msgs, requestNodes, entry.RequestMessage, nil, nil)
+		appendOpenAINodesAsUser(msgs, requestNodes, entry.RequestMessage, "", false, nil, nil, false)
 	} else if entry.RequestMessage != "" {
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": entry.RequestMessage})
 	}
 
 	// Assistant side.
-	appendOpenAIResponseNodes(msgs, entry.ResponseText, entry.ResponseNodes)
+	appendOpenAIResponseNodes(msgs, entry.ResponseText, entry.EffectiveResponseNodes())
 }
 
-func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, images []string, ctx *ContextBlock) {
-	appendOpenAINodesAsUser(msgs, nodes, message, images, ctx)
+func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, messageSource string, disableSelectedCodeDetails bool, images []string, ctx *ContextBlock) {
+	appendOpenAIToolResultNodes(msgs, nodes)
+	appendOpenAINodesAsUser(msgs, nodes, message, messageSource, disableSelectedCodeDetails, images, ctx, true)
 }
 
-func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, topImages []string, ctx *ContextBlock) {
-	// Tool results (type=1) → tool role messages.
-	// OpenAI requires that tool messages are preceded by an assistant message with tool_calls.
-	// Check if the last message already has matching tool_calls; if not, synthesize one.
-	if toolResults := extractToolResultNodes(nodes); len(toolResults) > 0 {
-		if !lastMessageHasToolCalls(*msgs, toolResults) {
-			// Build tool_use_id→name map from response nodes (type=5) in the same node set.
-			toolIDToName := make(map[string]string)
-			for _, n := range nodes {
-				if n.Type == 5 && n.ToolUse != nil {
-					toolIDToName[n.ToolUse.ToolUseID] = n.ToolUse.ToolName
-				}
-			}
-			var syntheticToolCalls []map[string]interface{}
-			for _, tr := range toolResults {
-				toolID := tr.EffectiveToolUseID()
-				funcName := toolIDToName[toolID]
-				if funcName == "" {
-					funcName = "unknown_tool"
-				}
-				syntheticToolCalls = append(syntheticToolCalls, map[string]interface{}{
-					"id":   toolID,
-					"type": "function",
-					"function": map[string]interface{}{
-						"name":      funcName,
-						"arguments": "{}",
-					},
-				})
-			}
-			*msgs = append(*msgs, map[string]interface{}{
-				"role":       "assistant",
-				"content":    "",
-				"tool_calls": syntheticToolCalls,
-			})
-		}
-		for _, tr := range toolResults {
-			*msgs = append(*msgs, map[string]interface{}{
-				"role":         "tool",
-				"tool_call_id": tr.EffectiveToolUseID(),
-				"content":      buildOpenAIToolResultContent(tr),
-			})
-		}
+func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, messageSource string, disableSelectedCodeDetails bool, topImages []string, ctx *ContextBlock, includeContext bool) {
+	context := ctx
+	if !includeContext {
+		context = nil
 	}
-
-	// Text + IDE state + images → user message.
-	text := buildUserPromptText(*msgs, nodes, fallbackText, ctx)
-	imageBlocks := extractImageBlocks(nodes)
+	nonToolNodes := excludeToolResultNodes(nodes)
+	text := buildUserPromptText(*msgs, nonToolNodes, fallbackText, context, messageSource, disableSelectedCodeDetails)
+	imageBlocks := extractImageBlocks(nonToolNodes)
 
 	if text != "" || len(imageBlocks) > 0 || len(topImages) > 0 {
 		imageParts := make([]map[string]interface{}, 0, len(imageBlocks)+len(topImages))
@@ -129,6 +96,16 @@ func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallb
 		}
 		content := buildTextImageContent(text, imageParts)
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
+	}
+}
+
+func appendOpenAIToolResultNodes(msgs *[]map[string]interface{}, nodes []Node) {
+	for _, tr := range extractToolResultNodes(nodes) {
+		*msgs = append(*msgs, map[string]interface{}{
+			"role":         "tool",
+			"tool_call_id": tr.EffectiveToolUseID(),
+			"content":      buildOpenAIToolResultContent(tr),
+		})
 	}
 }
 
@@ -169,7 +146,7 @@ func appendOpenAIResponseNodes(msgs *[]map[string]interface{}, text string, node
 	}
 	msg := map[string]interface{}{"role": "assistant", "content": nil}
 
-	// Use ResponseText if present; otherwise extract text from type=0 nodes.
+	// Use ResponseText if present; otherwise extract text from assistant output nodes.
 	responseText := text
 	if responseText == "" {
 		responseText = extractText(nodes)
@@ -178,15 +155,16 @@ func appendOpenAIResponseNodes(msgs *[]map[string]interface{}, text string, node
 		msg["content"] = responseText
 	}
 
-	// Add tool_calls from type=5 nodes.
+	// Add tool_calls from type=5/7 nodes.
 	var toolCalls []map[string]interface{}
+	preferCompletedToolUse := hasCompletedToolUse(nodes)
 	hasThinking := false
 	for _, n := range nodes {
 		if n.Type == 8 && n.Thinking != nil {
 			hasThinking = true
 			continue
 		}
-		if n.Type == 5 && n.ToolUse != nil {
+		if n.ToolUse != nil && (n.Type == 5 || (n.Type == 7 && !preferCompletedToolUse)) {
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   n.ToolUse.ToolUseID,
 				"type": "function",
@@ -244,6 +222,15 @@ func buildOpenAIToolResultContent(tr *ToolResultNode) interface{} {
 		return strings.Join(parts, "\n\n")
 	}
 	return tr.EffectiveContent()
+}
+
+func hasCompletedToolUse(nodes []Node) bool {
+	for _, n := range nodes {
+		if n.Type == 5 && n.ToolUse != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // lastMessageHasToolCalls checks if the last assistant message already contains tool_calls

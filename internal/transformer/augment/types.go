@@ -9,30 +9,41 @@ import (
 // AugmentRequest is the wire format sent by the VSCode Augment plugin.
 // After decryption (or as-is for plaintext requests) it has this shape.
 type AugmentRequest struct {
-	Model                  string             `json:"model,omitempty"`
-	Message                string             `json:"message,omitempty"`
-	Nodes                  []Node             `json:"nodes,omitempty"`
-	StructuredRequestNodes []Node             `json:"structured_request_nodes,omitempty"`
-	RequestNodes           []Node             `json:"request_nodes,omitempty"`
-	ChatHistory            []ChatHistoryEntry `json:"chat_history,omitempty"`
-	ToolDefinitions        []ToolDefinition   `json:"tool_definitions,omitempty"`
-	ToolDefinitionsAlt     []ToolDefinition   `json:"toolDefinitions,omitempty"`
-	Tools                  []ToolDefinition   `json:"tools,omitempty"` // alias field
-	UserGuidelines         string             `json:"user_guidelines,omitempty"`
-	WorkspaceGuidelines    string             `json:"workspace_guidelines,omitempty"`
-	Context                *ContextBlock      `json:"context,omitempty"`
-	Prefix                 string             `json:"prefix,omitempty"`
-	SelectedCode           string             `json:"selected_code,omitempty"`
-	Suffix                 string             `json:"suffix,omitempty"`
-	Diff                   string             `json:"diff,omitempty"`
-	Lang                   string             `json:"lang,omitempty"`
-	Path                   string             `json:"path,omitempty"`
-	Images                 []string           `json:"images,omitempty"` // base64 image data
-	Thinking               interface{}        `json:"thinking,omitempty"`
-	EnableThinking         bool               `json:"enable_thinking,omitempty"`
-	MaxTokens              int                `json:"max_tokens,omitempty"`
-	Stream                 *bool              `json:"stream,omitempty"`
-	Metadata               map[string]string  `json:"metadata,omitempty"`
+	Model                      string                 `json:"model,omitempty"`
+	Message                    string                 `json:"message,omitempty"`
+	MessageSource              string                 `json:"message_source,omitempty"`
+	Nodes                      []Node                 `json:"nodes,omitempty"`
+	StructuredRequestNodes     []Node                 `json:"structured_request_nodes,omitempty"`
+	RequestNodes               []Node                 `json:"request_nodes,omitempty"`
+	ChatHistory                []ChatHistoryEntry     `json:"chat_history,omitempty"`
+	ToolDefinitions            []ToolDefinition       `json:"tool_definitions,omitempty"`
+	ToolDefinitionsAlt         []ToolDefinition       `json:"toolDefinitions,omitempty"`
+	Tools                      []ToolDefinition       `json:"tools,omitempty"` // alias field
+	UserGuidelines             string                 `json:"user_guidelines,omitempty"`
+	WorkspaceGuidelines        string                 `json:"workspace_guidelines,omitempty"`
+	AgentMemories              string                 `json:"agent_memories,omitempty"`
+	Mode                       string                 `json:"mode,omitempty"`
+	Context                    *ContextBlock          `json:"context,omitempty"`
+	Prefix                     string                 `json:"prefix,omitempty"`
+	SelectedCode               string                 `json:"selected_code,omitempty"`
+	DisableSelectedCodeDetails bool                   `json:"disable_selected_code_details,omitempty"`
+	Suffix                     string                 `json:"suffix,omitempty"`
+	Diff                       string                 `json:"diff,omitempty"`
+	Lang                       string                 `json:"lang,omitempty"`
+	Path                       string                 `json:"path,omitempty"`
+	Images                     []string               `json:"images,omitempty"` // base64 image data
+	Thinking                   interface{}            `json:"thinking,omitempty"`
+	EnableThinking             bool                   `json:"enable_thinking,omitempty"`
+	MaxTokens                  int                    `json:"max_tokens,omitempty"`
+	Stream                     *bool                  `json:"stream,omitempty"`
+	Metadata                   map[string]string      `json:"metadata,omitempty"`
+	Rules                      interface{}            `json:"rules,omitempty"`
+	FeatureDetectionFlags      map[string]interface{} `json:"feature_detection_flags,omitempty"`
+	PersonaType                int                    `json:"persona_type,omitempty"`
+	Silent                     bool                   `json:"silent,omitempty"`
+	CanvasID                   string                 `json:"canvas_id,omitempty"`
+	RequestIDOverride          string                 `json:"request_id_override,omitempty"`
+	ByokSystemPrompt           string                 `json:"byok_system_prompt,omitempty"`
 }
 
 // ContextBlock carries editor/file context from Augment requests.
@@ -110,14 +121,20 @@ func (r *AugmentRequest) IsStreaming() bool {
 //	type=8  thinking (response side)
 //	type=10 history_summary
 type Node struct {
-	Type           int                 `json:"type"`
-	TextNode       *TextNode           `json:"text_node,omitempty"`
-	ToolResultNode *ToolResultNode     `json:"tool_result_node,omitempty"`
-	ImageNode      *ImageNode          `json:"image_node,omitempty"`
-	IdeStateNode   *IdeStateNode       `json:"ide_state_node,omitempty"`
-	ToolUse        *ToolUseNode        `json:"tool_use,omitempty"`
-	Thinking       *ThinkingNode       `json:"thinking,omitempty"`
-	HistorySummary *HistorySummaryNode `json:"history_summary,omitempty"`
+	Type           int                    `json:"type"`
+	TextNode       *TextNode              `json:"text_node,omitempty"`
+	ToolResultNode *ToolResultNode        `json:"tool_result_node,omitempty"`
+	ImageNode      *ImageNode             `json:"image_node,omitempty"`
+	ImageIDNode    *ImageIDNode           `json:"image_id_node,omitempty"`
+	IdeStateNode   *IdeStateNode          `json:"ide_state_node,omitempty"`
+	EditEventsNode *EditEventsNode        `json:"edit_events_node,omitempty"`
+	CheckpointRef  *CheckpointRefNode     `json:"checkpoint_ref_node,omitempty"`
+	Personality    *ChangePersonalityNode `json:"change_personality_node,omitempty"`
+	FileNode       *FileNode              `json:"file_node,omitempty"`
+	FileIDNode     *FileIDNode            `json:"file_id_node,omitempty"`
+	ToolUse        *ToolUseNode           `json:"tool_use,omitempty"`
+	Thinking       *ThinkingNode          `json:"thinking,omitempty"`
+	HistorySummary *HistorySummaryNode    `json:"history_summary,omitempty"`
 }
 
 // TextNode holds the text content of a type=0 node.
@@ -260,6 +277,10 @@ type HistorySummaryNode struct {
 	HistoryMiddleAbridgedTextAlt           string                   `json:"historyMiddleAbridgedText,omitempty"`
 	MessageTemplate                        string                   `json:"message_template,omitempty"`
 	MessageTemplateAlt                     string                   `json:"messageTemplate,omitempty"`
+	EndPartFullMaxChars                    int                      `json:"end_part_full_max_chars,omitempty"`
+	EndPartFullMaxCharsAlt                 int                      `json:"endPartFullMaxChars,omitempty"`
+	EndPartFullTailChars                   int                      `json:"end_part_full_tail_chars,omitempty"`
+	EndPartFullTailCharsAlt                int                      `json:"endPartFullTailChars,omitempty"`
 	HistoryEnd                             []map[string]interface{} `json:"history_end,omitempty"`
 	HistoryEndAlt                          []map[string]interface{} `json:"historyEnd,omitempty"`
 }
@@ -271,10 +292,16 @@ type ImageNode struct {
 	Format    int    `json:"format,omitempty"`
 }
 
+type ImageIDNode struct {
+	ImageID string `json:"image_id,omitempty"`
+	Format  int    `json:"format,omitempty"`
+}
+
 // IdeStateNode holds IDE context (type=4).
 type IdeStateNode struct {
-	WorkspaceFolders []WorkspaceFolder `json:"workspace_folders,omitempty"`
-	CurrentTerminal  *TerminalState    `json:"current_terminal,omitempty"`
+	WorkspaceFolders          []WorkspaceFolder `json:"workspace_folders,omitempty"`
+	WorkspaceFoldersUnchanged *bool             `json:"workspace_folders_unchanged,omitempty"`
+	CurrentTerminal           *TerminalState    `json:"current_terminal,omitempty"`
 }
 
 // WorkspaceFolder represents an open workspace folder.
@@ -285,7 +312,49 @@ type WorkspaceFolder struct {
 
 // TerminalState holds terminal context within IdeStateNode.
 type TerminalState struct {
+	TerminalID              int    `json:"terminal_id,omitempty"`
 	CurrentWorkingDirectory string `json:"current_working_directory,omitempty"`
+}
+
+type EditEventsNode struct {
+	Source     string          `json:"source,omitempty"`
+	EditEvents []FileEditEvent `json:"edit_events,omitempty"`
+}
+
+type FileEditEvent struct {
+	Path           string         `json:"path,omitempty"`
+	BeforeBlobName string         `json:"before_blob_name,omitempty"`
+	AfterBlobName  string         `json:"after_blob_name,omitempty"`
+	Edits          []TextEditDiff `json:"edits,omitempty"`
+}
+
+type TextEditDiff struct {
+	AfterLineStart  int    `json:"after_line_start,omitempty"`
+	BeforeLineStart int    `json:"before_line_start,omitempty"`
+	BeforeText      string `json:"before_text,omitempty"`
+	AfterText       string `json:"after_text,omitempty"`
+}
+
+type CheckpointRefNode struct {
+	RequestID     string `json:"request_id,omitempty"`
+	FromTimestamp int64  `json:"from_timestamp,omitempty"`
+	ToTimestamp   int64  `json:"to_timestamp,omitempty"`
+	Source        string `json:"source,omitempty"`
+}
+
+type ChangePersonalityNode struct {
+	PersonalityType    int    `json:"personality_type,omitempty"`
+	CustomInstructions string `json:"custom_instructions,omitempty"`
+}
+
+type FileNode struct {
+	FileData string `json:"file_data,omitempty"`
+	Format   string `json:"format,omitempty"`
+}
+
+type FileIDNode struct {
+	FileID   string `json:"file_id,omitempty"`
+	FileName string `json:"file_name,omitempty"`
 }
 
 // ToolUseNode describes a tool invocation in a response node (type=5).
@@ -308,13 +377,20 @@ type ChatHistoryEntry struct {
 	RequestMessage         string `json:"request_message,omitempty"`
 	RequestNodes           []Node `json:"request_nodes,omitempty"`
 	StructuredRequestNodes []Node `json:"structured_request_nodes,omitempty"`
+	Nodes                  []Node `json:"nodes,omitempty"`
 	ResponseText           string `json:"response_text,omitempty"`
 	ResponseNodes          []Node `json:"response_nodes,omitempty"`
+	StructuredOutputNodes  []Node `json:"structured_output_nodes,omitempty"`
 }
 
 // EffectiveRequestNodes merges history request node variants.
 func (e *ChatHistoryEntry) EffectiveRequestNodes() []Node {
-	return mergeNodesDedup(e.RequestNodes, e.StructuredRequestNodes)
+	return mergeNodesDedup(e.RequestNodes, e.StructuredRequestNodes, e.Nodes)
+}
+
+// EffectiveResponseNodes merges history response node variants.
+func (e *ChatHistoryEntry) EffectiveResponseNodes() []Node {
+	return mergeNodesDedup(e.ResponseNodes, e.StructuredOutputNodes)
 }
 
 func mergeNodesDedup(groups ...[]Node) []Node {
@@ -351,20 +427,48 @@ func nodeFingerprint(n Node) string {
 			return "1|" + n.ToolResultNode.EffectiveToolUseID() + "|" + strings.TrimSpace(n.ToolResultNode.EffectiveContent()) + "|" + strconv.FormatBool(n.ToolResultNode.IsError) + "|" + toolResultContentNodesFingerprint(n.ToolResultNode.ContentNodes)
 		}
 	case 2:
+		if n.TextNode != nil {
+			return "2|" + strings.TrimSpace(n.TextNode.EffectiveContent())
+		}
 		if n.ImageNode != nil {
 			return imageNodeFingerprint(n.ImageNode)
+		}
+	case 3:
+		if n.ImageIDNode != nil {
+			return "3|" + n.ImageIDNode.ImageID + "|" + strconv.Itoa(n.ImageIDNode.Format)
 		}
 	case 4:
 		if n.IdeStateNode != nil {
 			return "4|" + stableJSONString(n.IdeStateNode)
 		}
 	case 5:
+		if n.EditEventsNode != nil {
+			return "5|" + stableJSONString(n.EditEventsNode)
+		}
 		if n.ToolUse != nil {
 			return "5|" + n.ToolUse.ToolUseID + "|" + n.ToolUse.ToolName + "|" + strings.TrimSpace(n.ToolUse.InputJSON)
 		}
+	case 6:
+		if n.CheckpointRef != nil {
+			return "6|" + stableJSONString(n.CheckpointRef)
+		}
+	case 7:
+		if n.Personality != nil {
+			return "7|" + stableJSONString(n.Personality)
+		}
+		if n.ToolUse != nil {
+			return "7|" + n.ToolUse.ToolUseID + "|" + n.ToolUse.ToolName + "|" + strings.TrimSpace(n.ToolUse.InputJSON)
+		}
 	case 8:
+		if n.FileNode != nil {
+			return "8|" + stableJSONString(n.FileNode)
+		}
 		if n.Thinking != nil {
 			return "8|" + n.Thinking.Summary + "|" + n.Thinking.Signature
+		}
+	case 9:
+		if n.FileIDNode != nil {
+			return "9|" + stableJSONString(n.FileIDNode)
 		}
 	case 10:
 		if n.HistorySummary != nil {

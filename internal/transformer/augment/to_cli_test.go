@@ -78,7 +78,7 @@ func TestToCliRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("common system text missing")
 	}
-	if commonText != "Follow workspace conventions.\n\nYou are a helpful assistant\n\n[context]\npath=internal/transformer/augment/to_cli.go\nlang=go" {
+	if commonText != "You are a helpful assistant\n\nFollow workspace conventions.\n\n[context]\npath=internal/transformer/augment/to_cli.go\nlang=go" {
 		t.Errorf("unexpected common system prompt: %s", commonText)
 	}
 

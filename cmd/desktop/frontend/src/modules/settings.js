@@ -1,6 +1,7 @@
 import { t } from '../i18n/index.js';
 import { changeLanguage } from './ui.js';
 import { destroyFestivalEffects, initFestivalEffects } from './festival.js';
+import { showNotification } from './modal.js';
 
 // Auto theme check interval ID
 let autoThemeIntervalId = null;
@@ -222,6 +223,17 @@ async function loadCurrentSettings() {
         if (notificationTypeSelect) {
             notificationTypeSelect.value = claudeNotificationType;
         }
+
+        const augmentConfigStr = await window.go.main.App.GetAugmentConfig();
+        const augmentConfig = JSON.parse(augmentConfigStr);
+        const augmentEnabled = document.getElementById('settingsAugmentEnabled');
+        const augmentPort = document.getElementById('settingsAugmentPort');
+        if (augmentEnabled) {
+            augmentEnabled.checked = Boolean(augmentConfig.data?.enabled);
+        }
+        if (augmentPort) {
+            augmentPort.value = augmentConfig.data?.port || 2346;
+        }
     } catch (error) {
         console.error('Failed to load settings:', error);
     }
@@ -309,6 +321,9 @@ export async function saveSettings() {
         const theme = document.getElementById('settingsTheme').value;
         const themeAuto = document.getElementById('settingsThemeAuto').checked;
         const proxyUrl = document.getElementById('settingsProxyUrl').value.trim();
+        const augmentEnabled = document.getElementById('settingsAugmentEnabled').checked;
+        const augmentPortInput = parseInt(document.getElementById('settingsAugmentPort').value, 10);
+        const augmentPort = Number.isFinite(augmentPortInput) && augmentPortInput > 0 && augmentPortInput <= 65535 ? augmentPortInput : 2346;
 
         // Get Claude notification settings
         const claudeNotificationType = document.getElementById('settingsNotificationType').value;
@@ -328,6 +343,10 @@ export async function saveSettings() {
             claudeNotificationType: claudeNotificationType
         };
         await window.go.main.App.SaveSettings(JSON.stringify(settings));
+        await window.go.main.App.SaveAugmentConfig(JSON.stringify({
+            enabled: augmentEnabled,
+            port: augmentPort
+        }));
 
         // Apply theme based on final settings
         stopAutoThemeCheck();
@@ -347,36 +366,9 @@ export async function saveSettings() {
 
         // Close modal
         closeSettingsModal();
+        showNotification(t('settings.saveSuccess'), 'success');
     } catch (error) {
         console.error('Failed to save settings:', error);
         showNotification(t('settings.saveFailed') + ': ' + error, 'error');
     }
-}
-
-// Show notification (reuse from webdav.js if available, or implement simple version)
-function showNotification(message, type = 'info') {
-    // Create notification element
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.textContent = message;
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        padding: 15px 20px;
-        background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6'};
-        color: white;
-        border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        z-index: 10000;
-        animation: slideInRight 0.3s ease-out;
-    `;
-
-    document.body.appendChild(notification);
-
-    // Auto remove after 3 seconds
-    setTimeout(() => {
-        notification.style.animation = 'slideOutRight 0.3s ease-out';
-        setTimeout(() => notification.remove(), 300);
-    }, 3000);
 }

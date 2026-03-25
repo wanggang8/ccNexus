@@ -158,6 +158,7 @@ func (s *Server) Start() error {
 
 	mux.HandleFunc("/v1/messages", s.handleRequest)
 	mux.HandleFunc("/v1/chat/completions", s.handleRequest)
+	mux.HandleFunc("/v1/responses", s.handleRequest)
 	mux.HandleFunc("/chat-stream", s.handleRequest)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.handleGetModels)
@@ -406,18 +407,9 @@ func (s *Server) parseAugmentRequest(body []byte) (*augment.AugmentRequest, []by
 		input = body
 	}
 
-	var ar augment.AugmentRequest
-	if err := json.Unmarshal(input, &ar); err == nil {
-		// Some clients send plaintext wrapper: {"data":"..."} which still unmarshals
-		// but does not populate AugmentRequest.Message. Detect and reconstruct.
-		if strings.TrimSpace(ar.Message) != "" {
-			return &ar, input, nil
-		}
-		var probe struct {
-			Data string `json:"data"`
-		}
-		if err := json.Unmarshal(input, &probe); err == nil && strings.TrimSpace(probe.Data) == "" {
-			return &ar, input, nil
+	if ar, err := augment.ParseRequest(input); err == nil {
+		if augmentLooksStructured(ar) {
+			return ar, input, nil
 		}
 	}
 
@@ -426,10 +418,27 @@ func (s *Server) parseAugmentRequest(body []byte) (*augment.AugmentRequest, []by
 	if err != nil {
 		return nil, nil, fmt.Errorf("Invalid request format")
 	}
-	if err := json.Unmarshal(reconstructed, &ar); err != nil {
+	ar, err := augment.ParseRequest(reconstructed)
+	if err != nil {
 		return nil, nil, fmt.Errorf("Invalid request format")
 	}
-	return &ar, reconstructed, nil
+	return ar, reconstructed, nil
+}
+
+func augmentLooksStructured(ar *augment.AugmentRequest) bool {
+	if ar == nil {
+		return false
+	}
+	if strings.TrimSpace(ar.Message) != "" {
+		return true
+	}
+	if len(ar.EffectiveCurrentNodes()) > 0 || len(ar.ChatHistory) > 0 || len(ar.EffectiveTools()) > 0 {
+		return true
+	}
+	if ctx := ar.EffectiveContext(); ctx != nil {
+		return true
+	}
+	return false
 }
 
 // selectTarget selects the target type and endpoint based on config.
@@ -637,7 +646,7 @@ func (s *Server) proxyToUpstream(
 			logger.Error("Augment: SSE conversion error: %v", convErr)
 		}
 	} else {
-		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp)
+		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp, targetType, toolContext)
 		if s.stats != nil && convErr == nil {
 			s.stats.RecordRequest(endpoint.Name)
 			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
@@ -684,6 +693,39 @@ func (s *Server) handleStreamingResponse(
 	toolContext map[string]*augment.ToolContext,
 	captureNDJSON bool,
 ) (inputTokens, outputTokens int, outBytes []byte, err error) {
+	if responseLooksLikeJSON(resp.Header.Get("Content-Type")) {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return 0, 0, nil, readErr
+		}
+		if resp.StatusCode >= 400 {
+			ndjson := buildStreamingErrorNDJSON(extractJSONErrorMessage(body))
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(ndjson)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return 0, 0, ndjson, nil
+		}
+
+		inputTokens, outputTokens, ndjson, convErr := augment.ConvertJSONToNDJSON(body, targetType, toolContext)
+		if convErr != nil {
+			return 0, 0, nil, convErr
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(ndjson)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		return inputTokens, outputTokens, ndjson, nil
+	}
+
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -713,7 +755,7 @@ func (s *Server) handleStreamingResponse(
 
 // handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
 // Augment clients expect NDJSON even for non-streaming responses.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, targetType string, toolContext map[string]*augment.ToolContext) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Augment: failed to read upstream response: %v", err)
@@ -734,43 +776,58 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 		return inputTokens, outputTokens, originalResp, originalResp, nil
 	}
 
-	// Convert the JSON response to a single NDJSON chunk with text + stop_reason.
-	text := extractTextFromResponse(body)
-
+	inputTokens, outputTokens, transformedResp, err = augment.ConvertJSONToNDJSON(body, targetType, toolContext)
+	if err != nil {
+		return inputTokens, outputTokens, originalResp, nil, err
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
-
-	// Build NDJSON in memory so we can both write and (optionally) record it.
-	var out bytes.Buffer
-	if text != "" {
-		textChunk := map[string]interface{}{
-			"text":                  text,
-			"unknown_blob_names":    []interface{}{},
-			"checkpoint_not_found":  false,
-			"workspace_file_chunks": []interface{}{},
-			"nodes":                 []interface{}{},
-		}
-		line, _ := json.Marshal(textChunk)
-		out.Write(line)
-		out.Write([]byte("\n"))
-	}
-
-	// Final chunk with stop_reason.
-	finalChunk := map[string]interface{}{
-		"text":                  "",
-		"unknown_blob_names":    []interface{}{},
-		"checkpoint_not_found":  false,
-		"workspace_file_chunks": []interface{}{},
-		"nodes":                 []interface{}{},
-		"stop_reason":           1, // END_TURN
-	}
-	line, _ := json.Marshal(finalChunk)
-	out.Write(line)
-	out.Write([]byte("\n"))
-
-	transformedResp = out.Bytes()
 	w.Write(transformedResp)
 	return inputTokens, outputTokens, originalResp, transformedResp, nil
+}
+
+func responseLooksLikeJSON(contentType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if ct == "" {
+		return false
+	}
+	if strings.Contains(ct, "text/event-stream") {
+		return false
+	}
+	return strings.Contains(ct, "json")
+}
+
+func extractJSONErrorMessage(body []byte) string {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return "Upstream request failed"
+	}
+	if errObj, ok := obj["error"].(map[string]interface{}); ok {
+		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+	if responseObj, ok := obj["response"].(map[string]interface{}); ok {
+		if errObj, ok := responseObj["error"].(map[string]interface{}); ok {
+			if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+				return msg
+			}
+		}
+	}
+	if msg, ok := obj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	return "Upstream request failed"
+}
+
+func buildStreamingErrorNDJSON(message string) []byte {
+	line, _ := json.Marshal(map[string]interface{}{
+		"type": "error",
+		"error": map[string]interface{}{
+			"message": message,
+		},
+	})
+	return append(line, '\n')
 }
 
 func min(a, b int) int {
@@ -813,6 +870,39 @@ func extractTextFromResponse(body []byte) string {
 		}
 	}
 
+	// OpenAI Responses format: output_text or output[].message/content
+	if text, ok := resp["output_text"].(string); ok && text != "" {
+		return text
+	}
+	if output, ok := resp["output"].([]interface{}); ok {
+		var parts []string
+		for _, item := range output {
+			entry, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if itemType, _ := entry["type"].(string); itemType == "message" {
+				if content, ok := entry["content"].([]interface{}); ok {
+					for _, raw := range content {
+						block, ok := raw.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if text, ok := block["text"].(string); ok && text != "" {
+							parts = append(parts, text)
+						}
+					}
+				}
+			}
+			if text, ok := entry["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "")
+		}
+	}
+
 	return ""
 }
 
@@ -838,6 +928,17 @@ func extractTokenUsageFromResponse(body []byte) (inputTokens, outputTokens int) 
 		completionTokens := parseIntFromMap(usage, "completion_tokens")
 		if promptTokens > 0 || completionTokens > 0 {
 			return promptTokens, completionTokens
+		}
+	}
+
+	// Try OpenAI Responses format nested in response
+	if responseObj, ok := resp["response"].(map[string]interface{}); ok {
+		if usage, ok := responseObj["usage"].(map[string]interface{}); ok {
+			inputTokens = parseIntFromMap(usage, "input_tokens")
+			outputTokens = parseIntFromMap(usage, "output_tokens")
+			if inputTokens > 0 || outputTokens > 0 {
+				return inputTokens, outputTokens
+			}
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -35,6 +36,7 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 		case []interface{}:
 			// Check for tool_result blocks
 			var textParts []string
+			var reasoningParts []string
 			var toolCalls []transformer.OpenAIToolCall
 			var toolResults []transformer.OpenAIMessage
 			hasThinking := false
@@ -50,15 +52,15 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 						textParts = append(textParts, text)
 					}
 				case "thinking":
-					// Skip thinking blocks - they are Claude's internal reasoning
-					// and should not be forwarded to other APIs
 					hasThinking = true
-					continue
+					if thinking, ok := m["thinking"].(string); ok && thinking != "" {
+						reasoningParts = append(reasoningParts, thinking)
+					}
 				case "tool_use":
 					args, _ := json.Marshal(m["input"])
-					id, ok := m["id"].(string)
-					if !ok || id == "" {
-						continue
+					id, _ := m["id"].(string)
+					if id == "" {
+						id = newAnthropicToolUseID()
 					}
 					name, ok := m["name"].(string)
 					if !ok || name == "" {
@@ -91,14 +93,18 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 				if len(textParts) > 0 {
 					openaiMsg.Content = strings.Join(textParts, "")
 				}
+				if len(reasoningParts) > 0 {
+					openaiMsg.ReasoningContent = strings.Join(reasoningParts, "")
+				}
 				if len(toolCalls) > 0 {
 					openaiMsg.ToolCalls = toolCalls
 				}
 				messages = append(messages, openaiMsg)
 			} else if hasThinking && msg.Role == "assistant" {
 				messages = append(messages, transformer.OpenAIMessage{
-					Role:    "assistant",
-					Content: "(thinking...)",
+					Role:             "assistant",
+					Content:          "(thinking...)",
+					ReasoningContent: strings.Join(reasoningParts, ""),
 				})
 			}
 
@@ -204,9 +210,25 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 		// Handle content
 		switch content := msg.Content.(type) {
 		case string:
-			claudeMsg["content"] = content
+			if msg.Role == "assistant" && msg.ReasoningContent != "" {
+				blocks := []map[string]interface{}{
+					{"type": "thinking", "thinking": msg.ReasoningContent},
+				}
+				if content != "" {
+					blocks = append(blocks, map[string]interface{}{"type": "text", "text": content})
+				}
+				claudeMsg["content"] = blocks
+			} else {
+				claudeMsg["content"] = content
+			}
 		case []interface{}:
-			claudeMsg["content"] = convertOpenAIContentToClaude(content)
+			blocks := convertOpenAIContentToClaude(content)
+			if msg.Role == "assistant" && msg.ReasoningContent != "" {
+				blocks = append([]map[string]interface{}{
+					{"type": "thinking", "thinking": msg.ReasoningContent},
+				}, blocks...)
+			}
+			claudeMsg["content"] = blocks
 		}
 
 		// Handle tool_calls
@@ -272,6 +294,7 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 	}
 
 	var textContent string
+	var reasoningContent string
 	var toolCalls []map[string]interface{}
 
 	for _, block := range resp.Content {
@@ -283,12 +306,17 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		case "text":
 			textContent += blockMap["text"].(string)
 		case "thinking":
-			// Skip thinking blocks in response
-			continue
+			if thinking, ok := blockMap["thinking"].(string); ok {
+				reasoningContent += thinking
+			}
 		case "tool_use":
 			args, _ := json.Marshal(blockMap["input"])
+			callID, _ := blockMap["id"].(string)
+			if callID == "" {
+				callID = newAnthropicToolUseID()
+			}
 			toolCalls = append(toolCalls, map[string]interface{}{
-				"id":   blockMap["id"],
+				"id":   callID,
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":      blockMap["name"],
@@ -299,12 +327,15 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 	}
 
 	message := map[string]interface{}{"role": "assistant", "content": textContent}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
 
 	finishReason := "stop"
-	if resp.StopReason == "tool_use" {
+	if resp.StopReason == "tool_use" || len(toolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
 
@@ -321,6 +352,10 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 	}
 
 	return json.Marshal(openaiResp)
+}
+
+func newAnthropicToolUseID() string {
+	return "toolu_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:24]
 }
 
 // OpenAIRespToClaude converts OpenAI Chat response to Claude response
@@ -685,13 +720,20 @@ func convertOpenAIContentToClaude(content []interface{}) []map[string]interface{
 			result = append(result, map[string]interface{}{"type": "text", "text": m["text"]})
 		case "image_url":
 			if urlObj, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := urlObj["url"].(string); ok && strings.HasPrefix(url, "data:") {
-					parts := strings.SplitN(url, ",", 2)
-					if len(parts) == 2 {
-						mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+				if url, ok := urlObj["url"].(string); ok {
+					if strings.HasPrefix(url, "data:") {
+						parts := strings.SplitN(url, ",", 2)
+						if len(parts) == 2 {
+							mediaType := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+							result = append(result, map[string]interface{}{
+								"type":   "image",
+								"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							})
+						}
+					} else if url != "" {
 						result = append(result, map[string]interface{}{
 							"type":   "image",
-							"source": map[string]interface{}{"type": "base64", "media_type": mediaType, "data": parts[1]},
+							"source": map[string]interface{}{"type": "url", "url": url},
 						})
 					}
 				}

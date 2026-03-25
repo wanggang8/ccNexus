@@ -95,8 +95,8 @@ func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 			tu, _ := n0["tool_use"].(map[string]interface{})
 			if tu["tool_name"] == "read_file" && tu["tool_use_id"] == "tool_1" {
 				foundStart = true
-				if tu["input_json"] != "" {
-					t.Fatalf("TOOL_USE_START should have empty input_json, got %#v", tu["input_json"])
+				if tu["input_json"] != "{\"path\":\"README.md\"}" {
+					t.Fatalf("TOOL_USE_START should include full input_json, got %#v", tu["input_json"])
 				}
 			}
 		}
@@ -109,9 +109,6 @@ func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 				if tu["input_json"] != "{\"path\":\"README.md\"}" {
 					t.Fatalf("unexpected input_json: %#v", tu["input_json"])
 				}
-				if obj["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
-					t.Fatalf("expected stop_reason tool_use_requested, got %#v", obj["stop_reason"])
-				}
 			}
 		}
 	}
@@ -121,6 +118,9 @@ func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 	}
 	if !foundTool {
 		t.Fatalf("expected TOOL_USE node (type=5) in output")
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
 	}
 }
 
@@ -147,15 +147,15 @@ func TestStreamConvertOpenAI_ToolCallsFinishEmitNodes(t *testing.T) {
 					if tu["input_json"] != "{\"q\":\"a\"}" {
 						t.Fatalf("unexpected input_json: %#v", tu["input_json"])
 					}
-					if obj["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
-						t.Fatalf("expected stop_reason tool_use_requested, got %#v", obj["stop_reason"])
-					}
 				}
 			}
 		}
 	}
 	if !found {
 		t.Fatalf("expected tool_calls -> nodes output")
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
 	}
 }
 
@@ -184,8 +184,8 @@ func TestStreamConvertClaude_StopReasonMapping(t *testing.T) {
 			if len(lines) == 0 {
 				t.Fatalf("expected at least one line")
 			}
-			if lines[0]["stop_reason"] != float64(tt.expectedReason) {
-				t.Fatalf("expected stop_reason %d, got %#v", tt.expectedReason, lines[0]["stop_reason"])
+			if lines[len(lines)-1]["stop_reason"] != float64(tt.expectedReason) {
+				t.Fatalf("expected stop_reason %d, got %#v", tt.expectedReason, lines[len(lines)-1]["stop_reason"])
 			}
 		})
 	}
@@ -213,8 +213,8 @@ func TestStreamConvertOpenAI_FinishReasonMapping(t *testing.T) {
 			if len(lines) == 0 {
 				t.Fatalf("expected at least one line")
 			}
-			if lines[0]["stop_reason"] != float64(tt.expectedReason) {
-				t.Fatalf("expected stop_reason %d, got %#v", tt.expectedReason, lines[0]["stop_reason"])
+			if lines[len(lines)-1]["stop_reason"] != float64(tt.expectedReason) {
+				t.Fatalf("expected stop_reason %d, got %#v", tt.expectedReason, lines[len(lines)-1]["stop_reason"])
 			}
 		})
 	}
@@ -392,8 +392,8 @@ func TestStreamConvertOpenAI_MCPFieldsInToolUse(t *testing.T) {
 					if tu["tool_use_id"] != "call_1" {
 						t.Errorf("Expected tool_use_id=call_1, got %v", tu["tool_use_id"])
 					}
-					if tu["input_json"] != "" {
-						t.Errorf("Expected empty input_json in TOOL_USE_START, got %v", tu["input_json"])
+					if tu["input_json"] != "{\"query\":\"test\"}" {
+						t.Errorf("Expected full input_json in TOOL_USE_START, got %v", tu["input_json"])
 					}
 					if tu["mcp_server_name"] != "web" {
 						t.Errorf("Expected mcp_server_name=web, got %v", tu["mcp_server_name"])
@@ -617,8 +617,8 @@ func TestStreamConvertOpenAI_ToolUseStartStructure(t *testing.T) {
 				if tu["tool_use_id"] != "call_1" {
 					t.Errorf("expected tool_use_id call_1, got %#v", tu["tool_use_id"])
 				}
-				if tu["input_json"] != "" {
-					t.Errorf("expected empty input_json in TOOL_USE_START, got %#v", tu["input_json"])
+				if tu["input_json"] != "{\"q\":\"test\"}" {
+					t.Errorf("expected full input_json in TOOL_USE_START, got %#v", tu["input_json"])
 				}
 			}
 		}
@@ -626,6 +626,201 @@ func TestStreamConvertOpenAI_ToolUseStartStructure(t *testing.T) {
 
 	if !foundStart {
 		t.Errorf("expected TOOL_USE_START node")
+	}
+}
+
+func TestStreamConvertOpenAIResponses_TextToolAndStop(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先检查上下文\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"你好\"}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"call_id\":\"call_1\",\"delta\":\"{\\\"q\\\":\\\"augment\\\"}\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"你好\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"先检查上下文\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"augment\\\"}\"}]}}\n\n" +
+		"data: [DONE]\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai2", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	if len(lines) == 0 {
+		t.Fatalf("expected output lines")
+	}
+
+	foundText := false
+	foundThinking := false
+	foundTool := false
+	foundUsage := false
+	for _, obj := range lines {
+		if text, _ := obj["text"].(string); text == "你好" {
+			foundText = true
+		}
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, raw := range nodes {
+			node, _ := raw.(map[string]interface{})
+			switch int(node["type"].(float64)) {
+			case augmentNodeTypeThinking:
+				thinking, _ := node["thinking"].(map[string]interface{})
+				if thinking["summary"] == "先检查上下文" {
+					foundThinking = true
+				}
+			case augmentNodeTypeToolUse:
+				tu, _ := node["tool_use"].(map[string]interface{})
+				if tu["tool_use_id"] == "call_1" && tu["tool_name"] == "search" && tu["input_json"] == "{\"q\":\"augment\"}" {
+					foundTool = true
+				}
+			case augmentNodeTypeTokenUsage:
+				usage, _ := node["token_usage"].(map[string]interface{})
+				if usage["input_tokens"] == float64(12) && usage["output_tokens"] == float64(7) {
+					foundUsage = true
+				}
+			}
+		}
+	}
+
+	if !foundText {
+		t.Fatalf("expected output text chunk")
+	}
+	if !foundThinking {
+		t.Fatalf("expected thinking node")
+	}
+	if !foundTool {
+		t.Fatalf("expected tool use node")
+	}
+	if !foundUsage {
+		t.Fatalf("expected token usage node")
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
+	}
+}
+
+func TestStreamConvertOpenAI_ThinkingAliasesAggregated(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"thinking\":\"先想一下\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"thinking_content\":\" 再补一句\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	foundThinking := false
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, raw := range nodes {
+			node := raw.(map[string]interface{})
+			if int(node["type"].(float64)) != augmentNodeTypeThinking {
+				continue
+			}
+			thinking := node["thinking"].(map[string]interface{})
+			if thinking["summary"] == "先想一下 再补一句" {
+				foundThinking = true
+			}
+		}
+	}
+	if !foundThinking {
+		t.Fatalf("expected thinking/thinking_content to aggregate into one thinking node")
+	}
+}
+
+func TestConvertJSONToNDJSON_SmokeMainTargets(t *testing.T) {
+	tests := []struct {
+		name         string
+		target       string
+		body         string
+		wantStop     int
+		wantText     string
+		wantThinking string
+		wantTool     string
+		wantIn       float64
+		wantOut      float64
+	}{
+		{
+			name:         "claude",
+			target:       "claude",
+			body:         `{"content":[{"type":"text","text":"hello"},{"type":"thinking","thinking":"reason"},{"type":"tool_use","id":"tool_1","name":"search","input":{"q":"a"}}],"usage":{"input_tokens":10,"output_tokens":4},"stop_reason":"tool_use"}`,
+			wantStop:     augmentStopReasonToolUseRequested,
+			wantText:     "hello",
+			wantThinking: "reason",
+			wantTool:     "search",
+			wantIn:       10,
+			wantOut:      4,
+		},
+		{
+			name:         "openai",
+			target:       "openai",
+			body:         `{"choices":[{"message":{"content":"hello","thinking":"reason","tool_calls":[{"id":"call_1","function":{"name":"search","arguments":"{\"q\":\"a\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":5}}`,
+			wantStop:     augmentStopReasonToolUseRequested,
+			wantText:     "hello",
+			wantThinking: "reason",
+			wantTool:     "search",
+			wantIn:       11,
+			wantOut:      5,
+		},
+		{
+			name:         "openai2",
+			target:       "openai2",
+			body:         `{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"reason"}]},{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"a\"}"}],"usage":{"input_tokens":12,"output_tokens":6}}`,
+			wantStop:     augmentStopReasonToolUseRequested,
+			wantText:     "hello",
+			wantThinking: "reason",
+			wantTool:     "search",
+			wantIn:       12,
+			wantOut:      6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, data, err := ConvertJSONToNDJSON([]byte(tt.body), tt.target, nil)
+			if err != nil {
+				t.Fatalf("ConvertJSONToNDJSON: %v", err)
+			}
+			lines := readNDJSONLines(t, string(data))
+			if len(lines) == 0 {
+				t.Fatalf("expected NDJSON lines")
+			}
+
+			foundText := tt.wantText == ""
+			foundThinking := tt.wantThinking == ""
+			foundTool := tt.wantTool == ""
+			foundUsage := false
+			for _, obj := range lines {
+				if text, _ := obj["text"].(string); text == tt.wantText {
+					foundText = true
+				}
+				nodes, _ := obj["nodes"].([]interface{})
+				for _, raw := range nodes {
+					node := raw.(map[string]interface{})
+					switch int(node["type"].(float64)) {
+					case augmentNodeTypeThinking:
+						thinking := node["thinking"].(map[string]interface{})
+						if thinking["summary"] == tt.wantThinking {
+							foundThinking = true
+						}
+					case augmentNodeTypeToolUse:
+						tool := node["tool_use"].(map[string]interface{})
+						if tool["tool_name"] == tt.wantTool {
+							foundTool = true
+						}
+					case augmentNodeTypeTokenUsage:
+						usage := node["token_usage"].(map[string]interface{})
+						if usage["input_tokens"] == tt.wantIn && usage["output_tokens"] == tt.wantOut {
+							foundUsage = true
+						}
+					}
+				}
+			}
+
+			if !foundText || !foundThinking || !foundTool || !foundUsage {
+				t.Fatalf("smoke expectations not met: text=%v thinking=%v tool=%v usage=%v", foundText, foundThinking, foundTool, foundUsage)
+			}
+			if lines[len(lines)-1]["stop_reason"] != float64(tt.wantStop) {
+				t.Fatalf("expected final stop_reason %d, got %#v", tt.wantStop, lines[len(lines)-1]["stop_reason"])
+			}
+		})
 	}
 }
 

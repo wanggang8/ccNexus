@@ -353,6 +353,63 @@ export function initUI() {
                     <textarea id="logContent" class="log-textarea" readonly></textarea>
                 </div>
             </div>
+
+            <div class="card">
+                <div class="traffic-card-header">
+                    <div>
+                        <h2 style="margin: 0;">🛰️ ${t('traffic.title')}</h2>
+                        <p class="traffic-card-subtitle">${t('traffic.subtitle')}</p>
+                    </div>
+                    <div class="traffic-toolbar">
+                        <div class="traffic-toggle-group">
+                            <span>${t('traffic.recording')}</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="trafficRecordingToggle" onchange="window.toggleTrafficRecording()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="window.applyTrafficFilters()">${t('traffic.refresh')}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="window.clearTrafficLogs()">${t('traffic.clear')}</button>
+                    </div>
+                </div>
+                <div class="traffic-filter-row">
+                    <input type="text" id="trafficEndpointFilter" placeholder="${t('traffic.endpointPlaceholder')}" oninput="window.applyTrafficFilters()">
+                    <select id="trafficFormatFilter" onchange="window.applyTrafficFilters()">
+                        <option value="">${t('traffic.allFormats')}</option>
+                        <option value="claude">Claude</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="openai2">Responses</option>
+                        <option value="gemini">Gemini</option>
+                    </select>
+                    <select id="trafficErrorFilter" onchange="window.applyTrafficFilters()">
+                        <option value="">${t('traffic.allResults')}</option>
+                        <option value="true">${t('traffic.onlyErrors')}</option>
+                        <option value="false">${t('traffic.onlySuccess')}</option>
+                    </select>
+                </div>
+                <div id="trafficSummary" class="traffic-summary">${t('traffic.loading')}</div>
+                <div class="traffic-table-wrapper">
+                    <table class="traffic-table">
+                        <thead>
+                            <tr>
+                                <th>${t('traffic.time')}</th>
+                                <th>${t('traffic.endpoint')}</th>
+                                <th>${t('traffic.client')}</th>
+                                <th>${t('traffic.event')}</th>
+                                <th>${t('traffic.status')}</th>
+                                <th>${t('traffic.duration')}</th>
+                                <th>${t('traffic.tokens')}</th>
+                                <th>${t('traffic.actions')}</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trafficTableBody">
+                            <tr>
+                                <td colspan="8" class="traffic-empty">${t('traffic.loading')}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <!-- Footer -->
@@ -756,6 +813,25 @@ export function initUI() {
                         </p>
                     </div>
                     <div class="form-group">
+                        <label>${t('settings.augment.title')}</label>
+                        <div class="settings-inline-group">
+                            <div class="settings-inline-item settings-inline-checkbox">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="settingsAugmentEnabled">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span>${t('settings.augment.enabled')}</span>
+                            </div>
+                            <div class="settings-inline-item">
+                                <label for="settingsAugmentPort">${t('settings.augment.port')}</label>
+                                <input type="number" id="settingsAugmentPort" min="1" max="65535" placeholder="2346">
+                            </div>
+                        </div>
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('settings.augment.help')}
+                        </p>
+                    </div>
+                    <div class="form-group">
                         <label><span class="required">*</span>${t('update.autoCheck')}</label>
                         <select id="check-interval">
                             <option value="1">${t('update.everyHour')}</option>
@@ -819,6 +895,36 @@ export function initUI() {
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="window.closeAutoThemeConfigModal()">${t('settings.cancel')}</button>
                     <button class="btn btn-primary" onclick="window.saveAutoThemeConfig()">${t('settings.save')}</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="trafficDetailModal" class="modal">
+            <div class="modal-content traffic-detail-modal-content">
+                <div class="modal-header">
+                    <h2>🛰️ ${t('traffic.detailTitle')}</h2>
+                    <button class="modal-close" onclick="window.closeTrafficDetailModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="trafficDetailMeta" class="traffic-detail-meta"></div>
+                    <div class="traffic-detail-grid">
+                        <div class="traffic-detail-panel">
+                            <h3>${t('traffic.originalRequest')}</h3>
+                            <pre id="trafficOriginalRequest"></pre>
+                        </div>
+                        <div class="traffic-detail-panel">
+                            <h3>${t('traffic.transformedRequest')}</h3>
+                            <pre id="trafficTransformedRequest"></pre>
+                        </div>
+                        <div class="traffic-detail-panel">
+                            <h3>${t('traffic.originalResponse')}</h3>
+                            <pre id="trafficOriginalResponse"></pre>
+                        </div>
+                        <div class="traffic-detail-panel">
+                            <h3>${t('traffic.transformedResponse')}</h3>
+                            <pre id="trafficTransformedResponse"></pre>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

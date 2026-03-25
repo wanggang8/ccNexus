@@ -36,9 +36,14 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 		}
 
 		var parts []map[string]interface{}
+		if msg.ReasoningContent != "" {
+			parts = append(parts, map[string]interface{}{"text": msg.ReasoningContent, "thought": true})
+		}
 		switch content := msg.Content.(type) {
 		case string:
-			parts = append(parts, map[string]interface{}{"text": content})
+			if content != "" {
+				parts = append(parts, map[string]interface{}{"text": content})
+			}
 		case []interface{}:
 			parts = convertOpenAIContentToGeminiParts(content)
 		}
@@ -128,13 +133,17 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 	}
 
 	var textContent string
+	var reasoningContent string
 	var toolCalls []map[string]interface{}
 	finishReason := "stop"
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
 		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
+			if part.Text != "" && part.Thought {
+				reasoningContent += part.Text
+			}
+			if part.Text != "" && !part.Thought {
 				textContent += part.Text
 			}
 			if part.FunctionCall != nil {
@@ -153,6 +162,9 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 	}
 
 	message := map[string]interface{}{"role": "assistant", "content": textContent}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
@@ -161,7 +173,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 	if resp.UsageMetadata != nil {
 		usage = map[string]interface{}{
 			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
-			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"completion_tokens": geminiOutputTokens(resp.UsageMetadata.CandidatesTokenCount, resp.UsageMetadata.ThoughtsTokenCount),
 			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
 		}
 	}
@@ -206,7 +218,25 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	hasToolCall := false
 
 	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
+		if part.Text != "" && part.Thought {
+			reasoningChunk := map[string]interface{}{
+				"id":     "gemini-chunk",
+				"object": "chat.completion.chunk",
+				"model":  model,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"delta": map[string]interface{}{
+							"reasoning_content": part.Text,
+						},
+						"finish_reason": nil,
+					},
+				},
+			}
+			encoded, _ := json.Marshal(reasoningChunk)
+			result.WriteString(fmt.Sprintf("data: %s\n\n", encoded))
+		}
+		if part.Text != "" && !part.Thought {
 			chunk, _ := buildOpenAIChunk("gemini-chunk", model, part.Text, nil, "")
 			result.Write(chunk)
 		}

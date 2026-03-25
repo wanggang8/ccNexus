@@ -2,6 +2,7 @@ package augment
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -259,10 +260,13 @@ func TestToClaudeRequest_ChatHistoryResponseNodeOrder(t *testing.T) {
 	}
 
 	msgs := req["messages"].([]interface{})
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 assistant message, got %d", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("expected assistant message plus repaired tool_result message, got %d", len(msgs))
 	}
 	msg := msgs[0].(map[string]interface{})
+	if msg["role"] != "assistant" {
+		t.Fatalf("expected first message role assistant, got %v", msg["role"])
+	}
 	content := msg["content"].([]interface{})
 	if len(content) != 3 {
 		t.Fatalf("expected 3 content blocks, got %d", len(content))
@@ -276,6 +280,219 @@ func TestToClaudeRequest_ChatHistoryResponseNodeOrder(t *testing.T) {
 	}
 	if content[2].(map[string]interface{})["type"] != "tool_use" {
 		t.Fatalf("expected third block to be tool_use, got %v", content[2])
+	}
+	repaired := msgs[1].(map[string]interface{})
+	if repaired["role"] != "user" {
+		t.Fatalf("expected repaired tool_result message role user, got %v", repaired["role"])
+	}
+	repairedBlocks := repaired["content"].([]interface{})
+	if len(repairedBlocks) != 1 {
+		t.Fatalf("expected one repaired tool_result block, got %d", len(repairedBlocks))
+	}
+	if repairedBlocks[0].(map[string]interface{})["type"] != "tool_result" {
+		t.Fatalf("expected repaired block type tool_result, got %v", repairedBlocks[0])
+	}
+}
+
+func TestToOpenAIRequest_IncludesSpecialRequestNodePrompts(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := AugmentRequest{
+		Message:          "继续处理",
+		PersonaType:      3,
+		ByokSystemPrompt: "extra system",
+		Nodes: []Node{
+			{Type: 3, ImageIDNode: &ImageIDNode{ImageID: "img_1", Format: 4}},
+			{Type: 5, EditEventsNode: &EditEventsNode{Source: "editor", EditEvents: []FileEditEvent{{Path: "a.go", Edits: []TextEditDiff{{AfterLineStart: 12, BeforeLineStart: 10, BeforeText: "old", AfterText: "new"}}}}}},
+			{Type: 6, CheckpointRef: &CheckpointRefNode{RequestID: "req_1", FromTimestamp: 1, ToTimestamp: 2, Source: "history"}},
+			{Type: 7, Personality: &ChangePersonalityNode{PersonalityType: 2, CustomInstructions: "think broad"}},
+			{Type: 8, FileNode: &FileNode{FileData: "SGVsbG8=", Format: "text/plain"}},
+			{Type: 9, FileIDNode: &FileIDNode{FileID: "file_1", FileName: "demo.txt"}},
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	msgs := req["messages"].([]interface{})
+	system := msgs[0].(map[string]interface{})["content"].(string)
+	if !strings.Contains(system, "Persona: REVIEWER") || !strings.Contains(system, "extra system") {
+		t.Fatalf("expected persona/byok system prompt in system message, got %q", system)
+	}
+	user := msgs[1].(map[string]interface{})["content"].(string)
+	for _, needle := range []string{"[IMAGE_ID]", "[EDIT_EVENTS]", "[CHECKPOINT_REF]", "[CHANGE_PERSONALITY]", "[FILE]", "[FILE_ID]"} {
+		if !strings.Contains(user, needle) {
+			t.Fatalf("expected %s in user message, got %q", needle, user)
+		}
+	}
+}
+
+func TestToOpenAIRequest_ToolChoiceAutoWhenToolsPresent(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := AugmentRequest{
+		Model: "gpt-4.1",
+		ToolDefinitions: []ToolDefinition{{
+			Name:        "search",
+			Description: "search docs",
+			Parameters:  map[string]interface{}{"type": "object"},
+		}},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if req["tool_choice"] != "auto" {
+		t.Fatalf("expected tool_choice auto, got %#v", req["tool_choice"])
+	}
+}
+
+func TestToClaudeRequest_ToolChoiceAutoWhenToolsPresent(t *testing.T) {
+	tr, _ := New("claude", "")
+	input := AugmentRequest{
+		Model: "claude-sonnet-4-20250514",
+		ToolDefinitions: []ToolDefinition{{
+			Name:        "search",
+			Description: "search docs",
+			Parameters:  map[string]interface{}{"type": "object"},
+		}},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	toolChoice, ok := req["tool_choice"].(map[string]interface{})
+	if !ok || toolChoice["type"] != "auto" {
+		t.Fatalf("expected anthropic tool_choice auto, got %#v", req["tool_choice"])
+	}
+}
+
+func TestToOpenAIRequest_PromptSourceSkipsSelectedCodeContext(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := map[string]interface{}{
+		"model":         "gpt-4.1",
+		"prompt":        "直接回答这个 prompt",
+		"selected_code": "should not be appended",
+		"diff":          "should also not be appended",
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	msgs := req["messages"].([]interface{})
+	user := msgs[0].(map[string]interface{})["content"].(string)
+	if strings.Contains(user, "[selected_code]") || strings.Contains(user, "[diff]") {
+		t.Fatalf("prompt source should not append extra code context, got %q", user)
+	}
+}
+
+func TestToOpenAIRequest_ResponseMainTextFinishedAndToolUseStart(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := AugmentRequest{
+		ChatHistory: []ChatHistoryEntry{
+			{
+				ResponseNodes: []Node{
+					{Type: 0, TextNode: &TextNode{Content: "partial"}},
+					{Type: 2, TextNode: &TextNode{Content: "final"}},
+					{Type: 7, ToolUse: &ToolUseNode{ToolName: "search", ToolUseID: "call_1", InputJSON: "{}"}},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 2 {
+		t.Fatalf("expected assistant message plus repaired tool result, got %d", len(msgs))
+	}
+	assistant := msgs[0].(map[string]interface{})
+	if assistant["content"] != "final" {
+		t.Fatalf("expected main_text_finished content to win, got %#v", assistant["content"])
+	}
+	toolCalls := assistant["tool_calls"].([]interface{})
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected one tool call from tool_use_start fallback, got %#v", toolCalls)
+	}
+}
+
+func TestToOpenAIRequest_HistorySummaryPreprocessesEarlierHistory(t *testing.T) {
+	tr, _ := New("openai", "")
+	input := AugmentRequest{
+		ChatHistory: []ChatHistoryEntry{
+			{
+				RequestMessage: "very old request",
+				ResponseText:   "very old response",
+			},
+			{
+				RequestNodes: []Node{
+					{Type: 10, HistorySummary: &HistorySummaryNode{
+						MessageTemplate: "Summary block\n{summary}\n{end_part_full}",
+						SummaryText:     "compressed summary",
+						HistoryEnd: []map[string]interface{}{
+							{"request_message": "tail request", "response_text": "tail response"},
+						},
+					}},
+				},
+			},
+		},
+		Message: "current turn",
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	msgs := req["messages"].([]interface{})
+	if len(msgs) != 2 {
+		t.Fatalf("expected summary user message plus current user message, got %d", len(msgs))
+	}
+	summary := msgs[0].(map[string]interface{})["content"].(string)
+	if strings.Contains(summary, "very old request") || strings.Contains(summary, "very old response") {
+		t.Fatalf("expected old history to be dropped, got %q", summary)
+	}
+	if !strings.Contains(summary, "Summary block") || !strings.Contains(summary, "tail request") {
+		t.Fatalf("expected rendered summary content, got %q", summary)
+	}
+	current := msgs[1].(map[string]interface{})["content"].(string)
+	if current != "current turn" {
+		t.Fatalf("expected current turn message preserved, got %q", current)
 	}
 }
 
@@ -528,18 +745,117 @@ func TestToOpenAIRequest_ToolResultsAsToolRole(t *testing.T) {
 	json.Unmarshal(out, &req)
 
 	msgs := req["messages"].([]interface{})
-	found := false
-	for _, m := range msgs {
-		msg := m.(map[string]interface{})
-		if msg["role"] == "tool" {
-			found = true
-			if msg["tool_call_id"] != "call_abc" {
-				t.Errorf("expected tool_call_id call_abc, got %v", msg["tool_call_id"])
+	if len(msgs) != 1 {
+		t.Fatalf("expected repaired orphan tool_result user message, got %d messages", len(msgs))
+	}
+	msg := msgs[0].(map[string]interface{})
+	if msg["role"] != "user" {
+		t.Fatalf("expected user role for orphan tool_result, got %v", msg["role"])
+	}
+	content, _ := msg["content"].(string)
+	if !strings.Contains(content, "[orphan_tool_result id=call_abc]") {
+		t.Fatalf("expected orphan tool_result marker, got %q", content)
+	}
+	if !strings.Contains(content, "result data") {
+		t.Fatalf("expected tool result payload in repaired user content, got %q", content)
+	}
+}
+
+func TestToOpenAI2Request_UsesResponsesAPIShape(t *testing.T) {
+	tr, _ := New("openai2", "")
+	input := AugmentRequest{
+		Model:          "gpt-5-codex",
+		Message:        "请继续",
+		UserGuidelines: "回复简洁。",
+		ToolDefinitions: []ToolDefinition{
+			{
+				Name:        "search",
+				Description: "Search docs",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"q": map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+		ChatHistory: []ChatHistoryEntry{
+			{
+				RequestMessage: "先查一下",
+				ResponseNodes: []Node{
+					{Type: 5, ToolUse: &ToolUseNode{ToolName: "search", ToolUseID: "call_1", InputJSON: "{\"q\":\"augment\"}"}},
+				},
+			},
+			{
+				RequestNodes: []Node{
+					{Type: 1, ToolResultNode: &ToolResultNode{ToolUseID: "call_1", Content: "docs found"}},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(input)
+	out, err := tr.TransformRequest(body)
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	if req["model"] != "gpt-5-codex" {
+		t.Fatalf("expected gpt-5-codex model, got %v", req["model"])
+	}
+	if req["instructions"] == "" {
+		t.Fatalf("expected instructions for responses api")
+	}
+	if req["tool_choice"] != "auto" {
+		t.Fatalf("expected tool_choice auto, got %v", req["tool_choice"])
+	}
+
+	inputItems := req["input"].([]interface{})
+	foundCall := false
+	foundOutput := false
+	foundUser := false
+	for _, raw := range inputItems {
+		item := raw.(map[string]interface{})
+		switch item["type"] {
+		case "function_call":
+			if item["call_id"] == "call_1" && item["name"] == "search" && item["arguments"] == "{\"q\":\"augment\"}" {
+				foundCall = true
+			}
+		case "function_call_output":
+			if item["call_id"] == "call_1" && strings.Contains(item["output"].(string), "docs found") {
+				foundOutput = true
+			}
+		case "message":
+			if item["role"] == "user" && item["content"] == "请继续" {
+				foundUser = true
 			}
 		}
 	}
-	if !found {
-		t.Error("expected tool role message")
+	if !foundCall {
+		t.Fatalf("expected function_call item in responses input")
+	}
+	if !foundOutput {
+		t.Fatalf("expected function_call_output item in responses input")
+	}
+	if !foundUser {
+		t.Fatalf("expected current user message item in responses input")
+	}
+
+	tools := req["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 responses tool, got %d", len(tools))
+	}
+	tool := tools[0].(map[string]interface{})
+	if tool["type"] != "function" || tool["name"] != "search" || tool["strict"] != true {
+		t.Fatalf("unexpected responses tool payload: %#v", tool)
+	}
+	params := tool["parameters"].(map[string]interface{})
+	if params["additionalProperties"] != false {
+		t.Fatalf("expected strict schema additionalProperties=false, got %#v", params["additionalProperties"])
 	}
 }
 
@@ -581,6 +897,9 @@ func TestTargetPath(t *testing.T) {
 	}
 	if TargetPath("openai") != "/v1/chat/completions" {
 		t.Error("openai should map to /v1/chat/completions")
+	}
+	if TargetPath("openai2") != "/v1/responses" {
+		t.Error("openai2 should map to /v1/responses")
 	}
 }
 

@@ -4,6 +4,8 @@ import { dashboard } from './components/dashboard.js';
 import { endpoints } from './components/endpoints.js';
 import { stats } from './components/stats.js';
 import { testing } from './components/testing.js';
+import { traffic } from './components/traffic.js';
+import { access } from './components/access.js';
 
 // Initialize theme
 function initTheme() {
@@ -61,6 +63,8 @@ function init() {
     router.register('endpoints', endpoints);
     router.register('stats', stats);
     router.register('testing', testing);
+    router.register('traffic', traffic);
+    router.register('access', access);
 
     // Initialize theme
     initTheme();

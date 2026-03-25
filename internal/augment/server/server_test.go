@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -120,5 +122,46 @@ func TestCreateUpstreamRequest_AddsThinkingBetaHeader(t *testing.T) {
 	beta := req.Header.Get("anthropic-beta")
 	if !strings.Contains(beta, "interleaved-thinking-2025-05-14") {
 		t.Fatalf("expected thinking beta header, got %q", beta)
+	}
+}
+
+func TestExtractTextFromResponse_OpenAIResponses(t *testing.T) {
+	body := []byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"你好"},{"type":"output_text","text":"，世界"}]}]}`)
+	if got := extractTextFromResponse(body); got != "你好，世界" {
+		t.Fatalf("expected joined responses text, got %q", got)
+	}
+}
+
+func TestExtractTokenUsageFromResponse_OpenAIResponses(t *testing.T) {
+	body := []byte(`{"response":{"usage":{"input_tokens":21,"output_tokens":8}}}`)
+	inputTokens, outputTokens := extractTokenUsageFromResponse(body)
+	if inputTokens != 21 || outputTokens != 8 {
+		t.Fatalf("expected (21,8), got (%d,%d)", inputTokens, outputTokens)
+	}
+}
+
+func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
+	s := &Server{config: config.DefaultConfig()}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]},{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"a\"}"}],"usage":{"input_tokens":7,"output_tokens":3}}`,
+		)),
+	}
+	rr := httptest.NewRecorder()
+
+	inputTokens, outputTokens, ndjson, err := s.handleStreamingResponse(rr, resp, "openai2", nil, false)
+	if err != nil {
+		t.Fatalf("handleStreamingResponse: %v", err)
+	}
+	if inputTokens != 7 || outputTokens != 3 {
+		t.Fatalf("expected tokens (7,3), got (%d,%d)", inputTokens, outputTokens)
+	}
+	if !strings.Contains(string(ndjson), `"tool_name":"search"`) {
+		t.Fatalf("expected tool node in ndjson, got %s", string(ndjson))
+	}
+	if rr.Header().Get("Content-Type") != "application/x-ndjson" {
+		t.Fatalf("expected ndjson content type, got %q", rr.Header().Get("Content-Type"))
 	}
 }

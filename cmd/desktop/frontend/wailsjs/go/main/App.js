@@ -110,6 +110,10 @@ export function GetArchiveTrend(arg1) {
   return window['go']['main']['App']['GetArchiveTrend'](arg1);
 }
 
+export function GetAugmentConfig() {
+  return window['go']['main']['App']['GetAugmentConfig']();
+}
+
 export function GetAutoDarkTheme() {
   return window['go']['main']['App']['GetAutoDarkTheme']();
 }
@@ -312,6 +316,10 @@ export function RestoreFromProvider(arg1, arg2, arg3) {
 
 export function RestoreFromWebDAV(arg1, arg2) {
   return window['go']['main']['App']['RestoreFromWebDAV'](arg1, arg2);
+}
+
+export function SaveAugmentConfig(arg1) {
+  return window['go']['main']['App']['SaveAugmentConfig'](arg1);
 }
 
 export function SaveSettings(arg1) {

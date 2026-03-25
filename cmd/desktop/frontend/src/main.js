@@ -7,6 +7,7 @@ import { loadConfig } from './modules/config.js'
 import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod, updateStatsIncremental, updateEndpointStatsCache, updateTotalStatsCache } from './modules/stats.js'
 import { renderEndpoints, toggleEndpointPanel, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen, updateEndpointStatsIncremental } from './modules/endpoints.js'
 import { loadLogs, toggleLogPanel, changeLogLevel, copyLogs, clearLogs } from './modules/logs.js'
+import { loadTraffic, showTrafficDetail, closeTrafficDetailModal, toggleTrafficRecording, clearTrafficLogs, applyTrafficFilters } from './modules/traffic.js'
 import { showDataSyncDialog } from './modules/webdav.js'
 import { initTips } from './modules/tips.js'
 import { initTerminal } from './modules/terminal.js'
@@ -146,6 +147,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     loadLogs();
+    loadTraffic();
 
     // Initialize tips
     initTips();
@@ -180,6 +182,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     // Refresh logs every 2 seconds
     setInterval(loadLogs, 2000);
+    setInterval(loadTraffic, 3000);
 
     // Show welcome modal on first launch
     showWelcomeModalIfFirstTime();
@@ -249,6 +252,11 @@ window.toggleLogPanel = toggleLogPanel;
 window.changeLogLevel = changeLogLevel;
 window.copyLogs = copyLogs;
 window.clearLogs = clearLogs;
+window.showTrafficDetail = showTrafficDetail;
+window.closeTrafficDetailModal = closeTrafficDetailModal;
+window.toggleTrafficRecording = toggleTrafficRecording;
+window.clearTrafficLogs = clearTrafficLogs;
+window.applyTrafficFilters = applyTrafficFilters;
 window.changeLanguage = changeLanguage;
 window.togglePasswordVisibility = togglePasswordVisibility;
 window.acceptConfirm = acceptConfirm;

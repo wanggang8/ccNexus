@@ -21,29 +21,54 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 	}
 
 	var input []map[string]interface{}
+	var instructions []string
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			if content, ok := msg.Content.(string); ok {
-				openai2Req["instructions"] = content
+			if content := extractOpenAIRequestText(msg.Content); content != "" {
+				instructions = append(instructions, content)
 			}
+			continue
+		}
+
+		if msg.Role == "tool" {
+			input = append(input, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": msg.ToolCallID,
+				"output":  stringifyOpenAIContent(msg.Content),
+			})
 			continue
 		}
 
 		item := map[string]interface{}{"type": "message", "role": msg.Role}
 		var contentParts []map[string]interface{}
 
-		switch content := msg.Content.(type) {
-		case string:
+		if content := extractOpenAIRequestText(msg.Content); content != "" {
 			textType := "input_text"
 			if msg.Role == "assistant" {
 				textType = "output_text"
 			}
 			contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
 		}
-		item["content"] = contentParts
-		input = append(input, item)
+
+		if len(contentParts) > 0 {
+			item["content"] = contentParts
+			input = append(input, item)
+		}
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				input = append(input, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				})
+			}
+		}
 	}
 	openai2Req["input"] = input
+	if len(instructions) > 0 {
+		openai2Req["instructions"] = strings.Join(instructions, "\n\n")
+	}
 	// TODO: max_output_tokens is standard OpenAI Responses API param but some
 	// third-party endpoints (e.g. SiliconFlow) don't support it. Skipping for compatibility.
 
@@ -92,6 +117,20 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 		messages = append(messages, transformer.OpenAIMessage{Role: "user", Content: v})
 	case []interface{}:
 		var pendingToolCalls []transformer.OpenAIToolCall
+		var pendingReasoning string
+
+		flushPendingToolCalls := func() {
+			if len(pendingToolCalls) == 0 {
+				return
+			}
+			msg := transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls}
+			if pendingReasoning != "" {
+				msg.ReasoningContent = pendingReasoning
+				pendingReasoning = ""
+			}
+			messages = append(messages, msg)
+			pendingToolCalls = nil
+		}
 
 		for _, item := range v {
 			itemMap, ok := item.(map[string]interface{})
@@ -100,18 +139,41 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			}
 
 			itemType, _ := itemMap["type"].(string)
-			switch itemType {
-			case "message":
-				// Flush pending tool calls
-				if len(pendingToolCalls) > 0 {
-					messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
-					pendingToolCalls = nil
+			role, _ := itemMap["role"].(string)
+			if role != "" && itemType == "" {
+				flushPendingToolCalls()
+				text := extractOpenAI2Text(itemMap["content"])
+				msg := transformer.OpenAIMessage{Role: role, Content: text}
+				if role == "assistant" && pendingReasoning != "" {
+					msg.ReasoningContent = pendingReasoning
+					pendingReasoning = ""
 				}
+				messages = append(messages, msg)
+				continue
+			}
+
+			switch itemType {
+			case "reasoning":
+				pendingReasoning += extractOpenAI2ReasoningText(itemMap)
+
+			case "message":
+				flushPendingToolCalls()
 				role, _ := itemMap["role"].(string)
 				text := extractOpenAI2Text(itemMap["content"])
-				messages = append(messages, transformer.OpenAIMessage{Role: role, Content: text})
+				msg := transformer.OpenAIMessage{Role: role, Content: text}
+				if role == "assistant" && pendingReasoning != "" {
+					msg.ReasoningContent = pendingReasoning
+					pendingReasoning = ""
+				}
+				messages = append(messages, msg)
 
 			case "function_call":
+				if pendingReasoning != "" && len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+					if messages[len(messages)-1].ReasoningContent == "" {
+						messages[len(messages)-1].ReasoningContent = pendingReasoning
+						pendingReasoning = ""
+					}
+				}
 				callID, _ := itemMap["call_id"].(string)
 				name, _ := itemMap["name"].(string)
 				args, _ := itemMap["arguments"].(string)
@@ -125,21 +187,14 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 				})
 
 			case "function_call_output":
-				// Flush pending tool calls first
-				if len(pendingToolCalls) > 0 {
-					messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
-					pendingToolCalls = nil
-				}
+				flushPendingToolCalls()
 				callID, _ := itemMap["call_id"].(string)
 				output, _ := itemMap["output"].(string)
 				messages = append(messages, transformer.OpenAIMessage{Role: "tool", Content: output, ToolCallID: callID})
 			}
 		}
 
-		// Flush remaining
-		if len(pendingToolCalls) > 0 {
-			messages = append(messages, transformer.OpenAIMessage{Role: "assistant", ToolCalls: pendingToolCalls})
-		}
+		flushPendingToolCalls()
 	}
 
 	openaiReq := transformer.OpenAIRequest{
@@ -259,29 +314,26 @@ func OpenAIRespToOpenAI2(openaiResp []byte) ([]byte, error) {
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		if choice.Message.ReasoningContent != "" {
+			output = append(output, buildResponsesReasoningOutputItem(choice.Message.ReasoningContent))
+		}
 		if choice.Message.Content != "" {
-			output = append(output, map[string]interface{}{
-				"type": "message",
-				"role": "assistant",
-				"content": []map[string]interface{}{
-					{"type": "output_text", "text": choice.Message.Content},
-				},
-			})
+			output = append(output, buildResponsesMessageOutputItem(choice.Message.Content))
 		}
 		for _, tc := range choice.Message.ToolCalls {
-			output = append(output, map[string]interface{}{
-				"type":      "function_call",
-				"call_id":   tc.ID,
-				"name":      tc.Function.Name,
-				"arguments": tc.Function.Arguments,
-			})
+			output = append(output, buildResponsesFunctionCallOutputItem(tc.ID, tc.Function.Name, tc.Function.Arguments))
 		}
 	}
 
+	status := "completed"
+	if len(resp.Choices) > 0 {
+		status = responseStatusFromFinishReason(resp.Choices[0].FinishReason)
+	}
 	openai2Resp := map[string]interface{}{
 		"id":     resp.ID,
 		"object": "response",
-		"status": "completed",
+		"status": status,
+		"model":  resp.Model,
 		"output": output,
 		"usage": map[string]interface{}{
 			"input_tokens":  resp.Usage.PromptTokens,
@@ -301,6 +353,7 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 	}
 
 	var textContent string
+	var reasoningContent string
 	var toolCalls []map[string]interface{}
 
 	for _, item := range resp.Output {
@@ -311,6 +364,8 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 					textContent += part.Text
 				}
 			}
+		case "reasoning":
+			reasoningContent += extractTypedOpenAI2ReasoningText(item)
 		case "function_call":
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   item.CallID,
@@ -324,6 +379,9 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 	}
 
 	message := map[string]interface{}{"role": "assistant", "content": textContent}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
@@ -331,6 +389,8 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 	finishReason := "stop"
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
+	} else if resp.Status == "incomplete" {
+		finishReason = "length"
 	}
 
 	openaiResp := map[string]interface{}{
@@ -416,23 +476,28 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		finishReason := chunk.Choices[0].FinishReason
 
 		// Handle text content
+		if delta.ReasoningContent != "" {
+			appendResponsesReasoningDelta(ctx, writeEvent, delta.ReasoningContent)
+		}
 		if delta.Content != "" {
+			closeResponsesReasoningItem(ctx, writeEvent)
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": 0,
+					"type": "response.output_item.added", "output_index": ctx.ContentIndex,
 					"item": map[string]interface{}{"type": "message", "role": "assistant", "status": "in_progress", "content": []interface{}{}},
 				})
 				writeEvent(map[string]interface{}{
-					"type": "response.content_part.added", "output_index": 0, "content_index": 0,
+					"type": "response.content_part.added", "output_index": ctx.ContentIndex, "content_index": 0,
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
-			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": delta.Content})
+			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": ctx.ContentIndex, "content_index": 0, "delta": delta.Content})
 		}
 
 		// Handle tool calls
 		for _, tc := range delta.ToolCalls {
+			closeResponsesReasoningItem(ctx, writeEvent)
 			idx := 0
 			if tc.Index != nil {
 				idx = *tc.Index
@@ -459,10 +524,11 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 		// Handle finish
 		if finishReason != nil && *finishReason != "" {
+			closeResponsesReasoningItem(ctx, writeEvent)
 			if ctx.ContentBlockStarted {
-				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
-				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+				writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": ctx.ContentIndex, "content_index": 0})
+				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": ctx.ContentIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": ctx.ContentIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 				ctx.ContentBlockStarted = false
 			}
 			if *finishReason == "tool_calls" && ctx.CurrentToolID != "" {
@@ -511,6 +577,9 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 			ctx.MessageID = evt.Response.ID
 		}
 		return nil, nil
+
+	case "response.reasoning_summary_text.delta":
+		return buildOpenAIReasoningChunk(ctx.MessageID, model, evt.Delta, "")
 
 	case "response.output_text.delta":
 		return buildOpenAIChunk(ctx.MessageID, model, evt.Delta, nil, "")
@@ -568,6 +637,9 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 }
 
 func extractOpenAI2Text(content interface{}) string {
+	if text, ok := content.(string); ok {
+		return text
+	}
 	arr, ok := content.([]interface{})
 	if !ok {
 		return ""
@@ -585,4 +657,28 @@ func extractOpenAI2Text(content interface{}) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func extractOpenAIRequestText(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []interface{}:
+		var parts []string
+		for _, item := range value {
+			partMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			partType, _ := partMap["type"].(string)
+			if partType == "text" || partType == "input_text" || partType == "output_text" {
+				if text, ok := partMap["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	default:
+		return ""
+	}
 }

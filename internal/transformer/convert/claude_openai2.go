@@ -206,6 +206,7 @@ func ClaudeRespToOpenAI2(claudeResp []byte) ([]byte, error) {
 	}
 
 	var outputContent []map[string]interface{}
+	var reasoningOutput []map[string]interface{}
 	var functionCalls []map[string]interface{}
 
 	for _, block := range resp.Content {
@@ -220,34 +221,39 @@ func ClaudeRespToOpenAI2(claudeResp []byte) ([]byte, error) {
 				"text": blockMap["text"],
 			})
 		case "thinking":
-			// Skip thinking blocks in response
-			continue
+			if thinking, _ := blockMap["thinking"].(string); thinking != "" {
+				reasoningOutput = append(reasoningOutput, buildResponsesReasoningOutputItem(thinking))
+			}
 		case "tool_use":
 			args, _ := json.Marshal(blockMap["input"])
-			functionCalls = append(functionCalls, map[string]interface{}{
-				"type":      "function_call",
-				"id":        blockMap["id"],
-				"call_id":   blockMap["id"],
-				"name":      blockMap["name"],
-				"arguments": string(args),
-			})
+			callID, _ := blockMap["id"].(string)
+			name, _ := blockMap["name"].(string)
+			functionCalls = append(functionCalls, buildResponsesFunctionCallOutputItem(callID, name, string(args)))
 		}
 	}
 
 	var output []map[string]interface{}
+	output = append(output, reasoningOutput...)
 	if len(outputContent) > 0 {
-		output = append(output, map[string]interface{}{
-			"type":    "message",
-			"role":    "assistant",
-			"content": outputContent,
-		})
+		var builder strings.Builder
+		for _, part := range outputContent {
+			if text, ok := part["text"].(string); ok {
+				builder.WriteString(text)
+			}
+		}
+		output = append(output, buildResponsesMessageOutputItem(builder.String()))
 	}
 	output = append(output, functionCalls...)
 
+	status := "completed"
+	if resp.StopReason == "max_tokens" {
+		status = "incomplete"
+	}
 	openai2Resp := map[string]interface{}{
 		"id":     resp.ID,
 		"object": "response",
-		"status": "completed",
+		"status": status,
+		"model":  resp.Model,
 		"output": output,
 		"usage": map[string]interface{}{
 			"input_tokens":  resp.Usage.InputTokens,
@@ -271,6 +277,10 @@ func OpenAI2RespToClaude(openai2Resp []byte) ([]byte, error) {
 
 	for _, item := range resp.Output {
 		switch item.Type {
+		case "reasoning":
+			if reasoning := extractTypedOpenAI2ReasoningText(item); reasoning != "" {
+				content = append(content, map[string]interface{}{"type": "thinking", "thinking": reasoning})
+			}
 		case "message":
 			for _, part := range item.Content {
 				if part.Type == "output_text" {
@@ -362,6 +372,9 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		blockIdx := int(idx)
 
 		switch block["type"] {
+		case "thinking":
+			ctx.ThinkingIndex = blockIdx
+			startResponsesReasoningItem(ctx, writeEvent)
 		case "text":
 			ctx.ContentBlockStarted = true
 			ctx.ContentIndex = blockIdx
@@ -400,6 +413,10 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			return nil, nil
 		}
 		switch delta["type"] {
+		case "thinking_delta":
+			if thinking, _ := delta["thinking"].(string); thinking != "" {
+				appendResponsesReasoningDelta(ctx, writeEvent, thinking)
+			}
 		case "text_delta":
 			writeEvent(map[string]interface{}{
 				"type": "response.output_text.delta", "output_index": ctx.ContentIndex,
@@ -435,6 +452,8 @@ func ClaudeStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			})
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
+		} else if ctx.ThinkingBlockStarted && blockIdx == ctx.ThinkingIndex {
+			closeResponsesReasoningItem(ctx, writeEvent)
 		} else if ctx.ContentBlockStarted && blockIdx == ctx.ContentIndex {
 			// output_text.done - need accumulated text, use empty for now
 			writeEvent(map[string]interface{}{
@@ -537,6 +556,11 @@ func OpenAI2StreamToClaude(event []byte, ctx *transformer.StreamContext) ([]byte
 				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens},
 			},
 		})...)
+
+	case "response.reasoning_summary_text.delta":
+		emitText, emitThinking := makeThinkEmitters(ctx, &result)
+		_ = emitText
+		emitThinking(evt.Delta)
 
 	case "response.output_text.delta":
 		content := ctx.ThinkingBuffer + evt.Delta
@@ -676,8 +700,13 @@ func convertClaudeMessageToOpenAI2Items(content []interface{}, role string) []ma
 			text, _ := m["text"].(string)
 			messageParts = append(messageParts, map[string]interface{}{"type": textType, "text": text})
 		case "thinking":
-			// Skip thinking blocks - they are Claude's internal reasoning
-			continue
+			flushMessage()
+			if thinking, _ := m["thinking"].(string); thinking != "" {
+				items = append(items, map[string]interface{}{
+					"type":    "reasoning",
+					"summary": []map[string]interface{}{{"type": "summary_text", "text": thinking}},
+				})
+			}
 		case "tool_use":
 			flushMessage()
 			callID, _ := m["id"].(string)
@@ -726,6 +755,21 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 	case []interface{}:
 		var pendingToolUses []map[string]interface{}
 		var pendingToolResults []map[string]interface{}
+		var pendingReasoning string
+
+		flushPendingToolUses := func() {
+			if len(pendingToolUses) == 0 {
+				return
+			}
+			var content []map[string]interface{}
+			if pendingReasoning != "" {
+				content = append(content, map[string]interface{}{"type": "thinking", "thinking": pendingReasoning})
+				pendingReasoning = ""
+			}
+			content = append(content, pendingToolUses...)
+			messages = append(messages, map[string]interface{}{"role": "assistant", "content": content})
+			pendingToolUses = nil
+		}
 
 		for _, item := range v {
 			itemMap, ok := item.(map[string]interface{})
@@ -734,13 +778,50 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 			}
 
 			itemType, _ := itemMap["type"].(string)
+			role, _ := itemMap["role"].(string)
+			if role != "" && itemType == "" {
+				flushPendingToolUses()
+				if len(pendingToolResults) > 0 {
+					messages = append(messages, map[string]interface{}{"role": "user", "content": pendingToolResults})
+					pendingToolResults = nil
+				}
+
+				content := itemMap["content"]
+				switch typed := content.(type) {
+				case string:
+					if role == "assistant" && pendingReasoning != "" {
+						content = []map[string]interface{}{
+							{"type": "thinking", "thinking": pendingReasoning},
+							{"type": "text", "text": typed},
+						}
+						pendingReasoning = ""
+					}
+				default:
+					content = convertOpenAI2ContentToClaude(typed, role)
+					if role == "assistant" && pendingReasoning != "" {
+						switch converted := content.(type) {
+						case string:
+							content = []map[string]interface{}{
+								{"type": "thinking", "thinking": pendingReasoning},
+								{"type": "text", "text": converted},
+							}
+						case []map[string]interface{}:
+							content = append([]map[string]interface{}{{"type": "thinking", "thinking": pendingReasoning}}, converted...)
+						}
+						pendingReasoning = ""
+					}
+				}
+				messages = append(messages, map[string]interface{}{"role": role, "content": content})
+				continue
+			}
+
 			switch itemType {
+			case "reasoning":
+				pendingReasoning += extractOpenAI2ReasoningText(itemMap)
+
 			case "message":
 				// Flush pending tool uses before user message
-				if len(pendingToolUses) > 0 {
-					messages = append(messages, map[string]interface{}{"role": "assistant", "content": pendingToolUses})
-					pendingToolUses = nil
-				}
+				flushPendingToolUses()
 				// Flush pending tool results before user message
 				if len(pendingToolResults) > 0 {
 					messages = append(messages, map[string]interface{}{"role": "user", "content": pendingToolResults})
@@ -749,6 +830,18 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 
 				role, _ := itemMap["role"].(string)
 				content := convertOpenAI2ContentToClaude(itemMap["content"], role)
+				if role == "assistant" && pendingReasoning != "" {
+					switch typed := content.(type) {
+					case string:
+						content = []map[string]interface{}{
+							{"type": "thinking", "thinking": pendingReasoning},
+							{"type": "text", "text": typed},
+						}
+					case []map[string]interface{}:
+						content = append([]map[string]interface{}{{"type": "thinking", "thinking": pendingReasoning}}, typed...)
+					}
+					pendingReasoning = ""
+				}
 				messages = append(messages, map[string]interface{}{"role": role, "content": content})
 
 			case "function_call":
@@ -769,10 +862,7 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 
 			case "function_call_output":
 				// Flush pending tool uses first
-				if len(pendingToolUses) > 0 {
-					messages = append(messages, map[string]interface{}{"role": "assistant", "content": pendingToolUses})
-					pendingToolUses = nil
-				}
+				flushPendingToolUses()
 				// Convert to Claude tool_result
 				callID, _ := itemMap["call_id"].(string)
 				output, _ := itemMap["output"].(string)
@@ -783,9 +873,7 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 		}
 
 		// Flush remaining
-		if len(pendingToolUses) > 0 {
-			messages = append(messages, map[string]interface{}{"role": "assistant", "content": pendingToolUses})
-		}
+		flushPendingToolUses()
 		if len(pendingToolResults) > 0 {
 			messages = append(messages, map[string]interface{}{"role": "user", "content": pendingToolResults})
 		}

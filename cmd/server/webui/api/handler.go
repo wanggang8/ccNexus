@@ -71,11 +71,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authMiddleware(http.HandlerFunc(h.handleBasicAuthConfig)).ServeHTTP(w, r)
 	case "/api/config/basic-auth/reset-password":
 		authMiddleware(http.HandlerFunc(h.handleResetBasicAuthPassword)).ServeHTTP(w, r)
+	case "/api/traffic":
+		authMiddleware(http.HandlerFunc(h.handleTraffic)).ServeHTTP(w, r)
+	case "/api/traffic/recording":
+		authMiddleware(http.HandlerFunc(h.handleTrafficRecording)).ServeHTTP(w, r)
+	case "/api/traffic/clear":
+		authMiddleware(http.HandlerFunc(h.handleTrafficClear)).ServeHTTP(w, r)
 	case "/api/events":
 		authMiddleware(http.HandlerFunc(h.handleEvents)).ServeHTTP(w, r)
 	default:
 		if strings.HasPrefix(path, "/api/endpoints/") {
 			authMiddleware(http.HandlerFunc(h.handleEndpointByName)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "/api/traffic/") {
+			authMiddleware(http.HandlerFunc(h.handleTrafficByID)).ServeHTTP(w, r)
 			return
 		}
 		http.NotFound(w, r)

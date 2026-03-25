@@ -3,7 +3,6 @@
 package augment
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
@@ -42,8 +41,8 @@ func (t *Transformer) Name() string {
 
 // TransformRequest converts an Augment-format request body to the target API format.
 func (t *Transformer) TransformRequest(req []byte) ([]byte, error) {
-	var ar AugmentRequest
-	if err := json.Unmarshal(req, &ar); err != nil {
+	ar, err := normalizeAugmentRequest(req)
+	if err != nil {
 		return nil, fmt.Errorf("augment transformer: unmarshal request: %w", err)
 	}
 
@@ -52,7 +51,14 @@ func (t *Transformer) TransformRequest(req []byte) ([]byte, error) {
 		ar.Model = t.model
 	}
 	if ar.Model == "" {
-		ar.Model = "claude-sonnet-4-5-20250929"
+		switch t.targetType {
+		case "openai":
+			ar.Model = "gpt-4.1"
+		case "openai2":
+			ar.Model = "gpt-5-codex"
+		default:
+			ar.Model = "claude-sonnet-4-5-20250929"
+		}
 	}
 
 	// Cache MCP tool context for response transformation
@@ -68,11 +74,13 @@ func (t *Transformer) TransformRequest(req []byte) ([]byte, error) {
 
 	switch t.targetType {
 	case "claude":
-		return toClaudeRequest(&ar)
+		return toClaudeRequest(ar)
 	case "cli":
-		return toCliRequest(&ar)
-	case "openai", "openai2":
-		return toOpenAIRequest(&ar)
+		return toCliRequest(ar)
+	case "openai":
+		return toOpenAIRequest(ar)
+	case "openai2":
+		return toOpenAI2Request(ar)
 	default:
 		return nil, fmt.Errorf("augment transformer: unknown target type %q", t.targetType)
 	}

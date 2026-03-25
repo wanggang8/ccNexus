@@ -2455,6 +2455,228 @@ body {
     color: white;
 }
 
+.traffic-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.traffic-card-subtitle {
+    margin: 6px 0 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.traffic-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.traffic-toggle-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.traffic-filter-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.2fr) repeat(2, minmax(160px, 0.8fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.traffic-filter-row input,
+.traffic-filter-row select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--input-bg);
+    color: var(--text-primary);
+}
+
+.traffic-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.traffic-table-wrapper {
+    overflow-x: auto;
+}
+
+.traffic-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.traffic-table th,
+.traffic-table td {
+    padding: 10px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: middle;
+}
+
+.traffic-table th {
+    color: var(--text-secondary);
+    font-weight: 600;
+    background: var(--bg-secondary);
+    position: sticky;
+    top: 0;
+}
+
+.traffic-table tbody tr:hover {
+    background: var(--hover-bg);
+}
+
+.traffic-empty {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 24px 12px;
+}
+
+.traffic-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 54px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.traffic-status-ok {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.traffic-status-warn {
+    background: rgba(245, 158, 11, 0.14);
+    color: #b45309;
+}
+
+.traffic-status-error {
+    background: rgba(239, 68, 68, 0.14);
+    color: #dc2626;
+}
+
+.traffic-status-info {
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563eb;
+}
+
+.traffic-detail-modal-content {
+    max-width: 1100px;
+    width: min(1100px, 92vw);
+}
+
+.traffic-detail-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.traffic-detail-pill {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-light);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.traffic-detail-pill span {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.traffic-detail-pill strong {
+    font-size: 13px;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.traffic-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.traffic-detail-panel {
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--card-bg);
+}
+
+.traffic-detail-panel h3 {
+    margin: 0;
+    padding: 12px 14px;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-secondary);
+}
+
+.traffic-detail-panel pre {
+    margin: 0;
+    padding: 14px;
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.55;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.settings-inline-group {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.settings-inline-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-inline-item input[type="number"] {
+    width: 120px;
+}
+
+.settings-inline-checkbox {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+@media (max-width: 900px) {
+    .traffic-card-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .traffic-filter-row {
+        grid-template-columns: 1fr;
+    }
+
+    .traffic-detail-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Broadcast Banner - inline with title */
 .broadcast-banner {
     display: inline-flex;

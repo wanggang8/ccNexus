@@ -479,6 +479,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		transformerName := trans.Name()
+		requestMeta.TransformerName = transformerName
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
@@ -502,6 +503,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				endpointAttempts = 0
 			}
 			continue
+		}
+		transformedBody, err = applyCursorTransformedRequestCompat(transformedBody, &requestMeta, transformerName)
+		if err != nil {
+			logger.Warn("[%s] Failed to apply cursor transformed request compatibility: %v", endpoint.Name, err)
 		}
 
 		logger.DebugLog("[%s] Transformer: %s", endpoint.Name, transformerName)

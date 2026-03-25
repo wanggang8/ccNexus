@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/lich0821/ccNexus/internal/tokencount"
 )
@@ -64,11 +67,33 @@ func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolC
 	switch targetType {
 	case "claude", "cli":
 		return streamConvertClaudeSSE(r, w, toolCtx)
-	case "openai", "openai2":
+	case "openai":
 		return streamConvertOpenAISSE(r, w, toolCtx)
+	case "openai2":
+		return streamConvertOpenAIResponsesSSE(r, w, toolCtx)
 	default:
 		return 0, 0, fmt.Errorf("augment response: unsupported target type %q", targetType)
 	}
+}
+
+// ConvertJSONToNDJSON converts a non-streaming JSON response body into the
+// NDJSON format expected by the Augment client.
+func ConvertJSONToNDJSON(body []byte, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, data []byte, err error) {
+	var out strings.Builder
+	switch targetType {
+	case "claude", "cli":
+		inputTokens, outputTokens, err = convertClaudeJSONToNDJSON(body, &out, toolCtx)
+	case "openai":
+		inputTokens, outputTokens, err = convertOpenAIJSONToNDJSON(body, &out, toolCtx)
+	case "openai2":
+		inputTokens, outputTokens, err = convertOpenAIResponsesJSONToNDJSON(body, &out, toolCtx)
+	default:
+		err = fmt.Errorf("augment response: unsupported target type %q", targetType)
+	}
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	return inputTokens, outputTokens, []byte(out.String()), nil
 }
 
 type toolUseBuffer struct {
@@ -132,16 +157,405 @@ func emitThinkingChunk(w io.Writer, text, signature string, nextNodeID *int) {
 	writeChunkLine(w, chunk)
 }
 
+func emitToolUseChunks(w io.Writer, toolUseID, toolName, inputJSON string, toolCtx map[string]*ToolContext, nextNodeID *int) bool {
+	if strings.TrimSpace(toolName) == "" {
+		return false
+	}
+	if strings.TrimSpace(toolUseID) == "" {
+		toolUseID = fmt.Sprintf("tool-%d", *nextNodeID)
+	}
+	if strings.TrimSpace(inputJSON) == "" {
+		inputJSON = "{}"
+	}
+
+	toolUse := map[string]interface{}{
+		"tool_name":   toolName,
+		"tool_use_id": toolUseID,
+		"input_json":  inputJSON,
+	}
+	if toolCtx != nil {
+		if ctx, ok := toolCtx[toolName]; ok {
+			if ctx.McpServerName != "" {
+				toolUse["mcp_server_name"] = ctx.McpServerName
+			}
+			if ctx.McpToolName != "" {
+				toolUse["mcp_tool_name"] = ctx.McpToolName
+			}
+		}
+	}
+
+	startNode := map[string]interface{}{
+		"id":       *nextNodeID,
+		"type":     augmentNodeTypeToolUseStart,
+		"content":  "",
+		"tool_use": toolUse,
+	}
+	*nextNodeID++
+	startChunk := newBaseChunk("")
+	startChunk["nodes"] = []interface{}{startNode}
+	writeChunkLine(w, startChunk)
+
+	node := map[string]interface{}{
+		"id":       *nextNodeID,
+		"type":     augmentNodeTypeToolUse,
+		"content":  "",
+		"tool_use": toolUse,
+	}
+	*nextNodeID++
+	chunk := newBaseChunk("")
+	chunk["nodes"] = []interface{}{node}
+	writeChunkLine(w, chunk)
+	return true
+}
+
+func emitFinalStopChunk(w io.Writer, stopReasonSeen bool, stopReason int, sawToolUse bool, endedCleanly bool) {
+	finalReason := augmentStopReasonUnspecified
+	if endedCleanly {
+		if stopReasonSeen {
+			finalReason = stopReason
+		} else if sawToolUse {
+			finalReason = augmentStopReasonToolUseRequested
+		} else {
+			finalReason = augmentStopReasonEndTurn
+		}
+		if sawToolUse && finalReason == augmentStopReasonEndTurn {
+			finalReason = augmentStopReasonToolUseRequested
+		}
+	}
+	chunk := newBaseChunk("")
+	chunk["stop_reason"] = finalReason
+	writeChunkLine(w, chunk)
+}
+
+func emitTokenUsageChunk(w io.Writer, tokenUsage map[string]interface{}, nextNodeID *int) bool {
+	if len(tokenUsage) == 0 {
+		return false
+	}
+	node := map[string]interface{}{
+		"id":          *nextNodeID,
+		"type":        augmentNodeTypeTokenUsage,
+		"content":     "",
+		"token_usage": tokenUsage,
+	}
+	*nextNodeID++
+	chunk := newBaseChunk("")
+	chunk["nodes"] = []interface{}{node}
+	writeChunkLine(w, chunk)
+	return true
+}
+
+func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return 0, 0, err
+	}
+
+	msg := obj
+	if nested, ok := obj["message"].(map[string]interface{}); ok && len(nested) > 0 {
+		msg = nested
+	}
+	if firstString(msg, "type") == "error" || firstMap(msg, "error") != nil {
+		return 0, 0, fmt.Errorf("augment response: claude upstream error")
+	}
+
+	nextNodeID := 1
+	sawToolUse := false
+	stopReasonSeen := false
+	stopReason := augmentStopReasonEndTurn
+	if sr := firstString(msg, "stop_reason", "stopReason"); sr != "" {
+		stopReasonSeen = true
+		stopReason = mapClaudeStopReason(sr)
+	}
+
+	var textBuf strings.Builder
+	flushText := func() {
+		if textBuf.Len() == 0 {
+			return
+		}
+		writeChunkLine(w, newBaseChunk(textBuf.String()))
+		textBuf.Reset()
+	}
+
+	for _, raw := range firstArray(msg, "content") {
+		block, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch firstString(block, "type") {
+		case "text":
+			if text := firstString(block, "text"); text != "" {
+				textBuf.WriteString(text)
+			}
+		case "thinking":
+			flushText()
+			emitThinkingChunk(w, firstString(block, "thinking", "summary", "text"), firstString(block, "signature"), &nextNodeID)
+		case "tool_use":
+			flushText()
+			inputJSON := "{}"
+			if input := firstValue(block, "input"); input != nil {
+				inputJSON = stableJSON(input)
+			}
+			if emitToolUseChunks(w, firstString(block, "id"), firstString(block, "name"), inputJSON, toolCtx, &nextNodeID) {
+				sawToolUse = true
+			}
+		}
+	}
+	flushText()
+
+	usage := firstMap(msg, "usage")
+	tokenUsage := map[string]interface{}{}
+	if usage != nil {
+		if v, ok := usageInt(usage, "input_tokens"); ok {
+			inputTokens = v
+			tokenUsage["input_tokens"] = v
+		}
+		if v, ok := usageInt(usage, "output_tokens"); ok {
+			outputTokens = v
+			tokenUsage["output_tokens"] = v
+		}
+		if v, ok := usageInt(usage, "cache_read_input_tokens"); ok {
+			tokenUsage["cache_read_input_tokens"] = v
+		}
+		if v, ok := usageInt(usage, "cache_creation_input_tokens"); ok {
+			tokenUsage["cache_creation_input_tokens"] = v
+		}
+	}
+	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
+	return inputTokens, outputTokens, nil
+}
+
+func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return 0, 0, err
+	}
+	if firstMap(obj, "error") != nil {
+		return 0, 0, fmt.Errorf("augment response: openai upstream error")
+	}
+
+	nextNodeID := 1
+	sawToolUse := false
+
+	text := extractOpenAIJSONText(obj)
+	if text != "" {
+		writeChunkLine(w, newBaseChunk(text))
+	}
+
+	if thinking := extractOpenAIJSONThinking(obj); thinking != "" {
+		emitThinkingChunk(w, thinking, "", &nextNodeID)
+	}
+
+	for _, tc := range extractOpenAIJSONToolCalls(obj) {
+		if emitToolUseChunks(w, tc.id, tc.name, tc.args, toolCtx, &nextNodeID) {
+			sawToolUse = true
+		}
+	}
+
+	tokenUsage := map[string]interface{}{}
+	if usage := firstMap(obj, "usage"); usage != nil {
+		if v, ok := usageInt(usage, "prompt_tokens"); ok {
+			inputTokens = v
+			tokenUsage["input_tokens"] = v
+		}
+		if v, ok := usageInt(usage, "completion_tokens"); ok {
+			outputTokens = v
+			tokenUsage["output_tokens"] = v
+		}
+		if details := firstMap(usage, "prompt_tokens_details"); details != nil {
+			if v, ok := usageInt(details, "cached_tokens", "cache_read_input_tokens", "cache_read_tokens"); ok {
+				tokenUsage["cache_read_input_tokens"] = v
+			}
+			if v, ok := usageInt(details, "cache_creation_tokens", "cache_creation_input_tokens"); ok {
+				tokenUsage["cache_creation_input_tokens"] = v
+			}
+		}
+	}
+	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+
+	stopReasonSeen := false
+	stopReason := augmentStopReasonEndTurn
+	if choices, ok := obj["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if fr := firstString(choice, "finish_reason"); fr != "" {
+				stopReasonSeen = true
+				stopReason = mapOpenAIFinishReason(fr)
+			}
+		}
+	}
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
+	return inputTokens, outputTokens, nil
+}
+
+func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return 0, 0, err
+	}
+
+	resp := obj
+	if nested, ok := obj["response"].(map[string]interface{}); ok && len(nested) > 0 {
+		resp = nested
+	}
+	if firstMap(resp, "error") != nil || firstMap(obj, "error") != nil {
+		return 0, 0, fmt.Errorf("augment response: openai responses upstream error")
+	}
+
+	nextNodeID := 1
+	sawToolUse := false
+
+	text := firstString(resp, "output_text", "outputText", "text")
+	if text == "" {
+		text = extractResponsesTextFromOutput(resp["output"])
+	}
+	if text != "" {
+		writeChunkLine(w, newBaseChunk(text))
+	}
+
+	if summary := extractResponsesReasoningSummaryFromOutput(resp["output"]); summary != "" {
+		emitThinkingChunk(w, summary, "", &nextNodeID)
+	}
+
+	for _, tc := range extractResponsesToolCalls(resp["output"]) {
+		if emitToolUseChunks(w, tc.callID, tc.name, tc.arguments, toolCtx, &nextNodeID) {
+			sawToolUse = true
+		}
+	}
+
+	tokenUsage := map[string]interface{}{}
+	if usage := extractResponsesUsage(resp); usage != nil {
+		if v, ok := usageInt(usage, "input_tokens"); ok {
+			inputTokens = v
+			tokenUsage["input_tokens"] = v
+		}
+		if v, ok := usageInt(usage, "output_tokens"); ok {
+			outputTokens = v
+			tokenUsage["output_tokens"] = v
+		}
+		if details := firstMap(usage, "input_tokens_details", "inputTokensDetails"); details != nil {
+			if v, ok := usageInt(details, "cached_tokens", "cache_read_input_tokens", "cache_read_tokens"); ok {
+				tokenUsage["cache_read_input_tokens"] = v
+			}
+		}
+	}
+	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+
+	stopReasonSeen, stopReason := extractResponsesStopReason(resp)
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
+	return inputTokens, outputTokens, nil
+}
+
+type openAIJSONToolCall struct {
+	id   string
+	name string
+	args string
+}
+
+func extractOpenAIJSONText(obj map[string]interface{}) string {
+	choices, _ := obj["choices"].([]interface{})
+	if len(choices) == 0 {
+		return ""
+	}
+	choice, _ := choices[0].(map[string]interface{})
+	if msg, ok := choice["message"].(map[string]interface{}); ok {
+		switch content := msg["content"].(type) {
+		case string:
+			return strings.TrimSpace(content)
+		case []interface{}:
+			var parts []string
+			for _, raw := range content {
+				block, ok := raw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if text := firstString(block, "text"); text != "" {
+					parts = append(parts, text)
+				}
+			}
+			return strings.TrimSpace(strings.Join(parts, ""))
+		}
+	}
+	return firstString(choice, "text")
+}
+
+func extractOpenAIJSONThinking(obj map[string]interface{}) string {
+	choices, _ := obj["choices"].([]interface{})
+	if len(choices) == 0 {
+		return ""
+	}
+	choice, _ := choices[0].(map[string]interface{})
+	msg, _ := choice["message"].(map[string]interface{})
+	return firstString(msg, "reasoning", "reasoning_content", "thinking", "thinking_content")
+}
+
+func startsWithWhitespace(text string) bool {
+	if text == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(text)
+	return unicode.IsSpace(r)
+}
+
+func endsWithWhitespace(text string) bool {
+	if text == "" {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(text)
+	return unicode.IsSpace(r)
+}
+
+func extractOpenAIJSONToolCalls(obj map[string]interface{}) []openAIJSONToolCall {
+	choices, _ := obj["choices"].([]interface{})
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]interface{})
+	msg, _ := choice["message"].(map[string]interface{})
+	var out []openAIJSONToolCall
+	if toolCalls, ok := msg["tool_calls"].([]interface{}); ok {
+		for _, raw := range toolCalls {
+			tc, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fn, _ := tc["function"].(map[string]interface{})
+			name := firstString(fn, "name")
+			if name == "" {
+				continue
+			}
+			args := firstString(fn, "arguments")
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
+			out = append(out, openAIJSONToolCall{id: firstString(tc, "id"), name: name, args: args})
+		}
+	}
+	if functionCall, ok := msg["function_call"].(map[string]interface{}); ok {
+		name := firstString(functionCall, "name")
+		if name != "" {
+			args := firstString(functionCall, "arguments")
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
+			out = append(out, openAIJSONToolCall{name: name, args: args})
+		}
+	}
+	return out
+}
+
 func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	scanner := bufio.NewScanner(r)
 	var lastEventType string
 	var buf toolUseBuffer
 	var thinking thinkingBuffer
 	nextNodeID := 1
-	hasEmittedToolUse := false // Track if any tool_use was emitted for stop_reason fallback
+	hasEmittedToolUse := false
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
 	usageEmitted := false
+	stopReasonSeen := false
+	stopReason := augmentStopReasonEndTurn
+	sawMessageStop := false
 
 	flushThinking := func() {
 		if !thinking.active {
@@ -230,35 +644,6 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				buf.active = true
 				buf.id, _ = cb["id"].(string)
 				buf.name, _ = cb["name"].(string)
-
-				// Emit TOOL_USE_START node (type=7)
-				toolUse := map[string]interface{}{
-					"tool_name":   buf.name,
-					"tool_use_id": buf.id,
-					"input_json":  "",
-				}
-				// Add MCP fields if available
-				if toolCtx != nil {
-					if ctx, ok := toolCtx[buf.name]; ok {
-						if ctx.McpServerName != "" {
-							toolUse["mcp_server_name"] = ctx.McpServerName
-						}
-						if ctx.McpToolName != "" {
-							toolUse["mcp_tool_name"] = ctx.McpToolName
-						}
-					}
-				}
-				startNode := map[string]interface{}{
-					"id":       nextNodeID,
-					"type":     augmentNodeTypeToolUseStart,
-					"content":  "",
-					"tool_use": toolUse,
-				}
-				nextNodeID++
-				chunk := newBaseChunk("")
-				chunk["nodes"] = []interface{}{startNode}
-				writeChunkLine(w, chunk)
-				buf.started = true
 			} else if cbType == "thinking" {
 				thinking = thinkingBuffer{active: true}
 			}
@@ -269,34 +654,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				continue
 			}
 			if buf.active {
-				// Emit TOOL_USE node (type=5) with complete input
-				toolUse := map[string]interface{}{
-					"tool_name":   buf.name,
-					"tool_use_id": buf.id,
-					"input_json":  buf.input.String(),
-				}
-				// Add MCP fields if available
-				if toolCtx != nil {
-					if ctx, ok := toolCtx[buf.name]; ok {
-						if ctx.McpServerName != "" {
-							toolUse["mcp_server_name"] = ctx.McpServerName
-						}
-						if ctx.McpToolName != "" {
-							toolUse["mcp_tool_name"] = ctx.McpToolName
-						}
-					}
-				}
-				node := map[string]interface{}{
-					"id":       nextNodeID,
-					"type":     augmentNodeTypeToolUse,
-					"content":  "",
-					"tool_use": toolUse,
-				}
-				nextNodeID++
-				chunk := newBaseChunk("")
-				chunk["nodes"] = []interface{}{node}
-				chunk["stop_reason"] = augmentStopReasonToolUseRequested
-				writeChunkLine(w, chunk)
+				emitToolUseChunks(w, buf.id, buf.name, buf.input.String(), toolCtx, &nextNodeID)
 				buf.active = false
 				hasEmittedToolUse = true
 			}
@@ -304,15 +662,8 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		case "message_delta":
 			delta, _ := ev["delta"].(map[string]interface{})
 			if sr, ok := delta["stop_reason"].(string); ok && sr != "" {
-				reason := mapClaudeStopReason(sr)
-				// Fallback: if we already emitted tool_use but upstream sends end_turn/stop,
-				// force TOOL_USE_REQUESTED so the Augment UI triggers tool execution.
-				if hasEmittedToolUse && reason == augmentStopReasonEndTurn {
-					reason = augmentStopReasonToolUseRequested
-				}
-				chunk := newBaseChunk("")
-				chunk["stop_reason"] = reason
-				writeChunkLine(w, chunk)
+				stopReasonSeen = true
+				stopReason = mapClaudeStopReason(sr)
 			}
 			// Extract usage from both delta["usage"] and top-level ev["usage"]
 			if usage, ok := delta["usage"].(map[string]interface{}); ok {
@@ -323,27 +674,23 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			}
 
 		case "message_stop":
+			sawMessageStop = true
 			if usage, ok := ev["usage"].(map[string]interface{}); ok {
 				usageAcc.merge(usage)
 			}
 			flushThinking()
-			usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
-			// Fallback: if tool_use was emitted, final stop_reason must be TOOL_USE_REQUESTED.
-			finalReason := augmentStopReasonEndTurn
-			if hasEmittedToolUse {
-				finalReason = augmentStopReasonToolUseRequested
+			if !usageEmitted {
+				usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 			}
-			chunk := newBaseChunk("")
-			chunk["stop_reason"] = finalReason
-			writeChunkLine(w, chunk)
 		}
 	}
 
 	flushThinking()
 
 	if !usageEmitted {
-		_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+		usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
 	}
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, hasEmittedToolUse, sawMessageStop || stopReasonSeen || hasEmittedToolUse)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
 	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
@@ -647,6 +994,10 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	var generatedText strings.Builder
 	var pendingReasoning strings.Builder
 	var pendingThinkTag strings.Builder
+	sawToolUse := false
+	stopReasonSeen := false
+	stopReason := augmentStopReasonEndTurn
+	sawDone := false
 
 	flushReasoning := func() {
 		if pendingReasoning.Len() == 0 {
@@ -677,7 +1028,11 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			sawDone = true
 			continue
 		}
 
@@ -696,8 +1051,18 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		choice, _ := choices[0].(map[string]interface{})
 		delta, _ := choice["delta"].(map[string]interface{})
 
-		// T1: Handle reasoning_content (DeepSeek, OpenAI reasoning models)
-		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+		// Handle reasoning/thinking side channels used by different OpenAI-compatible gateways.
+		reasoning := ""
+		for _, key := range []string{"reasoning", "reasoning_content", "thinking", "thinking_content"} {
+			if value, ok := delta[key].(string); ok && value != "" {
+				reasoning = value
+				break
+			}
+		}
+		if reasoning != "" {
+			if pendingReasoning.Len() > 0 && !startsWithWhitespace(reasoning) && !endsWithWhitespace(pendingReasoning.String()) {
+				pendingReasoning.WriteByte(' ')
+			}
 			generatedText.WriteString(reasoning)
 			pendingReasoning.WriteString(reasoning)
 		}
@@ -762,84 +1127,44 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				if args, ok := fn["arguments"].(string); ok && args != "" {
 					a.args.WriteString(args)
 				}
-
-				// Emit TOOL_USE_START node (type=7) on first detection
-				if !a.started && a.name != "" && a.id != "" {
-					a.started = true
-					toolUseStart := map[string]interface{}{
-						"tool_name":   a.name,
-						"tool_use_id": a.id,
-						"input_json":  "",
-					}
-					// Add MCP fields if available
-					if toolCtx != nil {
-						if ctx, ok := toolCtx[a.name]; ok {
-							if ctx.McpServerName != "" {
-								toolUseStart["mcp_server_name"] = ctx.McpServerName
-							}
-							if ctx.McpToolName != "" {
-								toolUseStart["mcp_tool_name"] = ctx.McpToolName
-							}
-						}
-					}
-					node := map[string]interface{}{
-						"id":       nextNodeID,
-						"type":     augmentNodeTypeToolUseStart,
-						"content":  "",           // Fixed: content should be empty string
-						"tool_use": toolUseStart, // Fixed: tool info goes in tool_use field
-					}
-					nextNodeID++
-					chunk := newBaseChunk("")
-					chunk["nodes"] = []interface{}{node}
-					writeChunkLine(w, chunk)
-				}
+			}
+		}
+		if functionCall, ok := delta["function_call"].(map[string]interface{}); ok {
+			flushAllThinking()
+			a := acc[0]
+			if a == nil {
+				a = &openAIToolCallAccum{}
+				acc[0] = a
+			}
+			if name, ok := functionCall["name"].(string); ok && name != "" {
+				a.name = name
+			}
+			if args, ok := functionCall["arguments"].(string); ok && args != "" {
+				a.args.WriteString(args)
 			}
 		}
 
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
 			flushAllThinking()
-			switch fr {
-			case "tool_calls":
-				var nodes []interface{}
-				for _, a := range acc {
+			stopReasonSeen = true
+			stopReason = mapOpenAIFinishReason(fr)
+			if fr == "tool_calls" || fr == "function_call" {
+				indexes := make([]int, 0, len(acc))
+				for idx := range acc {
+					indexes = append(indexes, idx)
+				}
+				sort.Ints(indexes)
+				for _, idx := range indexes {
+					a := acc[idx]
 					if a == nil {
 						continue
 					}
-					toolUse := map[string]interface{}{
-						"tool_name":   a.name,
-						"tool_use_id": a.id,
-						"input_json":  a.args.String(),
+					if emitToolUseChunks(w, a.id, a.name, a.args.String(), toolCtx, &nextNodeID) {
+						sawToolUse = true
 					}
-					// Add MCP fields if available
-					if toolCtx != nil {
-						if ctx, ok := toolCtx[a.name]; ok {
-							if ctx.McpServerName != "" {
-								toolUse["mcp_server_name"] = ctx.McpServerName
-							}
-							if ctx.McpToolName != "" {
-								toolUse["mcp_tool_name"] = ctx.McpToolName
-							}
-						}
-					}
-					nodes = append(nodes, map[string]interface{}{
-						"id":       nextNodeID,
-						"type":     augmentNodeTypeToolUse,
-						"content":  "",
-						"tool_use": toolUse,
-					})
-					nextNodeID++
 				}
-				chunk := newBaseChunk("")
-				chunk["nodes"] = nodes
-				chunk["stop_reason"] = augmentStopReasonToolUseRequested
-				writeChunkLine(w, chunk)
-				acc = map[int]*openAIToolCallAccum{}
-			default:
-				chunk := newBaseChunk("")
-				chunk["stop_reason"] = mapOpenAIFinishReason(fr)
-				writeChunkLine(w, chunk)
-				acc = map[int]*openAIToolCallAccum{}
 			}
+			acc = map[int]*openAIToolCallAccum{}
 			continue
 		}
 	}
@@ -847,6 +1172,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	flushAllThinking()
 
 	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
 	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
@@ -859,4 +1185,358 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		}
 	}
 	return inputTokens, outputTokens, scanner.Err()
+}
+
+type openAIResponsesToolCallAccum struct {
+	callID    string
+	name      string
+	arguments strings.Builder
+}
+
+func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+	scanner := bufio.NewScanner(r)
+	nextNodeID := 1
+	var usageAcc usageAccumulator
+	var generatedText strings.Builder
+	var thinking strings.Builder
+	textByIndex := make(map[int]string)
+	toolCallsByIndex := make(map[int]*openAIResponsesToolCallAccum)
+	var finalResponse map[string]interface{}
+	sawToolUse := false
+	stopReasonSeen := false
+	stopReason := augmentStopReasonEndTurn
+	sawDone := false
+
+	ensureToolCall := func(idx int) *openAIResponsesToolCallAccum {
+		if idx < 0 {
+			idx = 0
+		}
+		if toolCallsByIndex[idx] == nil {
+			toolCallsByIndex[idx] = &openAIResponsesToolCallAccum{}
+		}
+		return toolCallsByIndex[idx]
+	}
+
+	appendRemainingText := func(idx int, full string) {
+		if strings.TrimSpace(full) == "" {
+			return
+		}
+		current := textByIndex[idx]
+		rest := full
+		if strings.HasPrefix(full, current) {
+			rest = full[len(current):]
+		} else if full == current {
+			rest = ""
+		}
+		if rest == "" {
+			return
+		}
+		textByIndex[idx] = current + rest
+		generatedText.WriteString(rest)
+		writeChunkLine(w, newBaseChunk(rest))
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			sawDone = true
+			continue
+		}
+
+		var ev map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		eventType, _ := ev["type"].(string)
+
+		switch eventType {
+		case "response.output_item.added", "response.output_item.done":
+			item, _ := ev["item"].(map[string]interface{})
+			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
+			if itemType, _ := item["type"].(string); itemType == "function_call" {
+				acc := ensureToolCall(outputIndex)
+				if callID, _ := item["call_id"].(string); callID != "" {
+					acc.callID = callID
+				}
+				if name, _ := item["name"].(string); name != "" {
+					acc.name = name
+				}
+				if args, _ := item["arguments"].(string); args != "" {
+					acc.arguments.Reset()
+					acc.arguments.WriteString(args)
+				}
+			}
+			if itemType, _ := item["type"].(string); itemType == "reasoning" && thinking.Len() == 0 {
+				if summary := extractResponsesReasoningSummary(item); summary != "" {
+					thinking.WriteString(summary)
+				}
+			}
+
+		case "response.function_call_arguments.delta":
+			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
+			acc := ensureToolCall(outputIndex)
+			if callID := firstString(ev, "call_id", "callId", "callID"); callID != "" {
+				acc.callID = callID
+			}
+			if name := firstString(ev, "name"); name != "" {
+				acc.name = name
+			}
+			if delta, _ := ev["delta"].(string); delta != "" {
+				acc.arguments.WriteString(delta)
+			}
+
+		case "response.function_call_arguments.done":
+			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
+			acc := ensureToolCall(outputIndex)
+			if callID := firstString(ev, "call_id", "callId", "callID"); callID != "" {
+				acc.callID = callID
+			}
+			if name := firstString(ev, "name"); name != "" {
+				acc.name = name
+			}
+			if args, _ := ev["arguments"].(string); args != "" {
+				acc.arguments.Reset()
+				acc.arguments.WriteString(args)
+			}
+
+		case "response.output_text.delta":
+			idx := firstInt(ev, "output_index", "outputIndex", "index")
+			if delta, _ := ev["delta"].(string); delta != "" {
+				textByIndex[idx] += delta
+				generatedText.WriteString(delta)
+				writeChunkLine(w, newBaseChunk(delta))
+			}
+
+		case "response.output_text.done":
+			idx := firstInt(ev, "output_index", "outputIndex", "index")
+			appendRemainingText(idx, firstString(ev, "text"))
+
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			if delta, _ := ev["delta"].(string); delta != "" {
+				thinking.WriteString(delta)
+			}
+
+		case "response.reasoning_summary_text.done":
+			if full := firstString(ev, "text"); full != "" {
+				if thinking.Len() == 0 {
+					thinking.WriteString(full)
+				} else if !strings.Contains(thinking.String(), full) {
+					thinking.WriteString(full)
+				}
+			}
+
+		case "response.incomplete":
+			if resp, ok := ev["response"].(map[string]interface{}); ok {
+				finalResponse = resp
+				usageAcc.merge(extractResponsesUsage(resp))
+				stopReasonSeen, stopReason = extractResponsesStopReason(resp)
+			}
+
+		case "response.completed":
+			if resp, ok := ev["response"].(map[string]interface{}); ok {
+				finalResponse = resp
+				usageAcc.merge(extractResponsesUsage(resp))
+				stopReasonSeen, stopReason = extractResponsesStopReason(resp)
+				fullText := firstString(resp, "output_text", "outputText", "text")
+				if fullText == "" {
+					fullText = extractResponsesTextFromOutput(resp["output"])
+				}
+				appendRemainingText(0, fullText)
+			}
+
+		case "response.failed", "response.error", "error":
+			return 0, 0, fmt.Errorf("augment response: openai responses upstream error")
+		}
+	}
+
+	if finalResponse != nil {
+		finalText := firstString(finalResponse, "output_text", "outputText", "text")
+		if finalText == "" {
+			finalText = extractResponsesTextFromOutput(finalResponse["output"])
+		}
+		appendRemainingText(0, finalText)
+		if summary := extractResponsesReasoningSummaryFromOutput(finalResponse["output"]); summary != "" && thinking.Len() == 0 {
+			thinking.WriteString(summary)
+		}
+		for idx, tc := range extractResponsesToolCalls(finalResponse["output"]) {
+			acc := ensureToolCall(idx)
+			if tc.callID != "" {
+				acc.callID = tc.callID
+			}
+			if tc.name != "" {
+				acc.name = tc.name
+			}
+			if tc.arguments != "" {
+				acc.arguments.Reset()
+				acc.arguments.WriteString(tc.arguments)
+			}
+		}
+	}
+
+	if thinking.Len() > 0 {
+		emitThinkingChunk(w, thinking.String(), "", &nextNodeID)
+	}
+
+	indexes := make([]int, 0, len(toolCallsByIndex))
+	for idx := range toolCallsByIndex {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	for _, idx := range indexes {
+		acc := toolCallsByIndex[idx]
+		if acc == nil {
+			continue
+		}
+		if emitToolUseChunks(w, acc.callID, acc.name, acc.arguments.String(), toolCtx, &nextNodeID) {
+			sawToolUse = true
+		}
+	}
+
+	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || finalResponse != nil || stopReasonSeen)
+
+	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	if tokenUsage != nil {
+		if v, ok := tokenUsage["input_tokens"].(int); ok {
+			inputTokens = v
+		}
+		if v, ok := tokenUsage["output_tokens"].(int); ok {
+			outputTokens = v
+		}
+	}
+	return inputTokens, outputTokens, scanner.Err()
+}
+
+func extractResponsesUsage(resp map[string]interface{}) map[string]interface{} {
+	if resp == nil {
+		return nil
+	}
+	usage, _ := resp["usage"].(map[string]interface{})
+	return usage
+}
+
+func extractResponsesStopReason(resp map[string]interface{}) (bool, int) {
+	if resp == nil {
+		return false, augmentStopReasonEndTurn
+	}
+	status := strings.ToLower(strings.TrimSpace(firstString(resp, "status")))
+	details := firstMap(resp, "incomplete_details", "incompleteDetails")
+	reason := strings.ToLower(strings.TrimSpace(firstString(details, "reason")))
+	if status != "incomplete" && reason == "" {
+		return false, augmentStopReasonEndTurn
+	}
+	switch reason {
+	case "max_output_tokens", "max_tokens", "length":
+		return true, augmentStopReasonMaxTokens
+	case "content_filter", "contentfilter", "safety":
+		return true, augmentStopReasonSafety
+	default:
+		return true, augmentStopReasonUnspecified
+	}
+}
+
+func extractResponsesReasoningSummary(item map[string]interface{}) string {
+	summary, _ := item["summary"].([]interface{})
+	var parts []string
+	for _, raw := range summary {
+		block, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if firstString(block, "type") != "summary_text" {
+			continue
+		}
+		if text := firstString(block, "text"); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func extractResponsesReasoningSummaryFromOutput(output interface{}) string {
+	items, _ := output.([]interface{})
+	var parts []string
+	for _, raw := range items {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if firstString(item, "type") != "reasoning" {
+			continue
+		}
+		if summary := extractResponsesReasoningSummary(item); summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func extractResponsesTextFromOutput(output interface{}) string {
+	items, _ := output.([]interface{})
+	var parts []string
+	for _, raw := range items {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch firstString(item, "type") {
+		case "message":
+			content, _ := item["content"].([]interface{})
+			for _, rawBlock := range content {
+				block, ok := rawBlock.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				switch firstString(block, "type") {
+				case "output_text", "text":
+					if text := firstString(block, "text"); text != "" {
+						parts = append(parts, text)
+					}
+				}
+			}
+		case "output_text", "text":
+			if text := firstString(item, "text"); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+type responsesToolCall struct {
+	callID    string
+	name      string
+	arguments string
+}
+
+func extractResponsesToolCalls(output interface{}) []responsesToolCall {
+	items, _ := output.([]interface{})
+	out := make([]responsesToolCall, 0, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if firstString(item, "type") != "function_call" {
+			continue
+		}
+		callID := firstString(item, "call_id", "callId", "callID")
+		name := firstString(item, "name")
+		if callID == "" || name == "" {
+			continue
+		}
+		args := firstString(item, "arguments")
+		if args == "" {
+			args = "{}"
+		}
+		out = append(out, responsesToolCall{callID: callID, name: name, arguments: args})
+	}
+	return out
 }

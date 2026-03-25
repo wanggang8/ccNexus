@@ -87,12 +87,20 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 	}
 
 	var outputContent []map[string]interface{}
+	var reasoningOutput []map[string]interface{}
 	var functionCalls []map[string]interface{}
 
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
+				if part.Thought {
+					reasoningOutput = append(reasoningOutput, map[string]interface{}{
+						"type":    "reasoning",
+						"summary": []map[string]interface{}{{"type": "summary_text", "text": part.Text}},
+					})
+					continue
+				}
 				outputContent = append(outputContent, map[string]interface{}{
 					"type": "output_text",
 					"text": part.Text,
@@ -112,12 +120,15 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 	}
 
 	var output []map[string]interface{}
+	output = append(output, reasoningOutput...)
 	if len(outputContent) > 0 {
-		output = append(output, map[string]interface{}{
-			"type":    "message",
-			"role":    "assistant",
-			"content": outputContent,
-		})
+		var builder strings.Builder
+		for _, part := range outputContent {
+			if text, ok := part["text"].(string); ok {
+				builder.WriteString(text)
+			}
+		}
+		output = append(output, buildResponsesMessageOutputItem(builder.String()))
 	}
 	output = append(output, functionCalls...)
 
@@ -125,15 +136,19 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 	if resp.UsageMetadata != nil {
 		usage = map[string]interface{}{
 			"input_tokens":  resp.UsageMetadata.PromptTokenCount,
-			"output_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"output_tokens": geminiOutputTokens(resp.UsageMetadata.CandidatesTokenCount, resp.UsageMetadata.ThoughtsTokenCount),
 			"total_tokens":  resp.UsageMetadata.TotalTokenCount,
 		}
 	}
 
+	status := "completed"
+	if len(resp.Candidates) > 0 && resp.Candidates[0].FinishReason == "MAX_TOKENS" {
+		status = "incomplete"
+	}
 	openai2Resp := map[string]interface{}{
 		"id":     "gemini-resp",
 		"object": "response",
-		"status": "completed",
+		"status": status,
 		"output": output,
 	}
 	if usage != nil {
@@ -206,7 +221,7 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		ctx.MessageStartSent = true
 		ctx.MessageID = "gemini-resp"
 		writeEvent(map[string]interface{}{
-			"type": "response.created",
+			"type":     "response.created",
 			"response": map[string]interface{}{"id": ctx.MessageID, "object": "response", "status": "in_progress"},
 		})
 	}
@@ -214,20 +229,26 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	candidate := resp.Candidates[0]
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
+			if part.Thought {
+				appendResponsesReasoningDelta(ctx, writeEvent, part.Text)
+				continue
+			}
+			closeResponsesReasoningItem(ctx, writeEvent)
 			if !ctx.ContentBlockStarted {
 				ctx.ContentBlockStarted = true
 				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": 0,
+					"type": "response.output_item.added", "output_index": ctx.ContentIndex,
 					"item": map[string]interface{}{"type": "message", "role": "assistant", "status": "in_progress", "content": []interface{}{}},
 				})
 				writeEvent(map[string]interface{}{
-					"type": "response.content_part.added", "output_index": 0, "content_index": 0,
+					"type": "response.content_part.added", "output_index": ctx.ContentIndex, "content_index": 0,
 					"part": map[string]interface{}{"type": "output_text", "text": ""},
 				})
 			}
-			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": part.Text})
+			writeEvent(map[string]interface{}{"type": "response.output_text.delta", "output_index": ctx.ContentIndex, "content_index": 0, "delta": part.Text})
 		}
 		if part.FunctionCall != nil {
+			closeResponsesReasoningItem(ctx, writeEvent)
 			args, _ := json.Marshal(part.FunctionCall.Args)
 			callID := fmt.Sprintf("call_%d", ctx.ToolCallCounter)
 			ctx.ToolCallCounter++
@@ -245,10 +266,11 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 
 	// Check for finish
 	if candidate.FinishReason != "" {
+		closeResponsesReasoningItem(ctx, writeEvent)
 		if ctx.ContentBlockStarted {
-			writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": 0, "content_index": 0})
-			writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
-			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
+			writeEvent(map[string]interface{}{"type": "response.output_text.done", "output_index": ctx.ContentIndex, "content_index": 0})
+			writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": ctx.ContentIndex, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
+			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": ctx.ContentIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			ctx.ContentBlockStarted = false
 		}
 		totalTokens := ctx.InputTokens + ctx.OutputTokens
@@ -284,6 +306,15 @@ func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte
 	}
 
 	switch evt.Type {
+	case "response.reasoning_summary_text.delta":
+		chunk := map[string]interface{}{
+			"candidates": []map[string]interface{}{
+				{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{{"text": evt.Delta, "thought": true}}}},
+			},
+		}
+		d, _ := json.Marshal(chunk)
+		return []byte(fmt.Sprintf("data: %s\n\n", d)), nil
+
 	case "response.output_text.delta":
 		chunk := map[string]interface{}{
 			"candidates": []map[string]interface{}{
@@ -342,7 +373,21 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 	case []interface{}:
 		var pendingFuncCalls []map[string]interface{}
 		var pendingFuncResponses []map[string]interface{}
+		var pendingReasoning string
 		callIDToName := make(map[string]string) // Map call_id to function name
+
+		flushPendingFuncCalls := func() {
+			if len(pendingFuncCalls) == 0 {
+				return
+			}
+			parts := pendingFuncCalls
+			if pendingReasoning != "" {
+				parts = append([]map[string]interface{}{{"text": pendingReasoning, "thought": true}}, parts...)
+				pendingReasoning = ""
+			}
+			contents = append(contents, map[string]interface{}{"role": "model", "parts": parts})
+			pendingFuncCalls = nil
+		}
 
 		for _, item := range v {
 			itemMap, ok := item.(map[string]interface{})
@@ -351,13 +396,41 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 			}
 
 			itemType, _ := itemMap["type"].(string)
+			role, _ := itemMap["role"].(string)
+			if role != "" && itemType == "" {
+				flushPendingFuncCalls()
+				if len(pendingFuncResponses) > 0 {
+					contents = append(contents, map[string]interface{}{"role": "user", "parts": pendingFuncResponses})
+					pendingFuncResponses = nil
+				}
+
+				geminiRole := role
+				if geminiRole == "assistant" {
+					geminiRole = "model"
+				}
+
+				var parts []map[string]interface{}
+				switch typed := itemMap["content"].(type) {
+				case string:
+					parts = []map[string]interface{}{{"text": typed}}
+				default:
+					parts = convertOpenAI2ContentToGeminiParts(typed)
+				}
+				if geminiRole == "model" && pendingReasoning != "" {
+					parts = append([]map[string]interface{}{{"text": pendingReasoning, "thought": true}}, parts...)
+					pendingReasoning = ""
+				}
+				contents = append(contents, map[string]interface{}{"role": geminiRole, "parts": parts})
+				continue
+			}
+
 			switch itemType {
+			case "reasoning":
+				pendingReasoning += extractOpenAI2ReasoningText(itemMap)
+
 			case "message":
 				// Flush pending function calls
-				if len(pendingFuncCalls) > 0 {
-					contents = append(contents, map[string]interface{}{"role": "model", "parts": pendingFuncCalls})
-					pendingFuncCalls = nil
-				}
+				flushPendingFuncCalls()
 				// Flush pending function responses
 				if len(pendingFuncResponses) > 0 {
 					contents = append(contents, map[string]interface{}{"role": "user", "parts": pendingFuncResponses})
@@ -369,6 +442,10 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 					role = "model"
 				}
 				parts := convertOpenAI2ContentToGeminiParts(itemMap["content"])
+				if role == "model" && pendingReasoning != "" {
+					parts = append([]map[string]interface{}{{"text": pendingReasoning, "thought": true}}, parts...)
+					pendingReasoning = ""
+				}
 				contents = append(contents, map[string]interface{}{"role": role, "parts": parts})
 
 			case "function_call":
@@ -388,10 +465,7 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 
 			case "function_call_output":
 				// Flush pending function calls first
-				if len(pendingFuncCalls) > 0 {
-					contents = append(contents, map[string]interface{}{"role": "model", "parts": pendingFuncCalls})
-					pendingFuncCalls = nil
-				}
+				flushPendingFuncCalls()
 				callID, _ := itemMap["call_id"].(string)
 				name := callIDToName[callID]
 				output, _ := itemMap["output"].(string)
@@ -402,9 +476,7 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 		}
 
 		// Flush remaining
-		if len(pendingFuncCalls) > 0 {
-			contents = append(contents, map[string]interface{}{"role": "model", "parts": pendingFuncCalls})
-		}
+		flushPendingFuncCalls()
 		if len(pendingFuncResponses) > 0 {
 			contents = append(contents, map[string]interface{}{"role": "user", "parts": pendingFuncResponses})
 		}
@@ -437,4 +509,3 @@ func convertOpenAI2ContentToGeminiParts(content interface{}) []map[string]interf
 
 	return parts
 }
-
