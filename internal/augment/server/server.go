@@ -1,0 +1,1335 @@
+// Package server provides a standalone HTTP server for the Augment plugin integration.
+// It listens on a dedicated port (default 2346) and handles encrypted/plaintext requests
+// from the VSCode Augment plugin, converting them to Claude/OpenAI format and proxying
+// to the configured upstream endpoint.
+package server
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lich0821/ccNexus/internal/augment/decrypt"
+	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/proxy"
+	"github.com/lich0821/ccNexus/internal/transformer/augment"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
+)
+
+// Server is the standalone Augment HTTP server.
+type Server struct {
+	config          *config.Config
+	decryptor       *decrypt.Decryptor
+	trafficRecorder *proxy.TrafficRecorder
+	stats           *proxy.Stats
+	httpServer      *http.Server
+	httpClient      *http.Client
+	mu              sync.RWMutex
+	running         bool
+}
+
+// responseWriter wraps http.ResponseWriter to capture status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Flush implements http.Flusher interface
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// limitedBuffer captures at most limit bytes (best-effort) to avoid unbounded memory usage.
+type limitedBuffer struct {
+	data  []byte
+	limit int
+}
+
+func newLimitedBuffer(limit int) *limitedBuffer {
+	return &limitedBuffer{
+		data:  make([]byte, 0, min(limit, 16*1024)),
+		limit: limit,
+	}
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 || len(p) == 0 {
+		return len(p), nil
+	}
+
+	remaining := b.limit - len(b.data)
+	if remaining > 0 {
+		if len(p) <= remaining {
+			b.data = append(b.data, p...)
+		} else {
+			b.data = append(b.data, p[:remaining]...)
+		}
+	}
+	// Pretend we consumed the whole input to keep streaming conversion flowing.
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte {
+	return b.data
+}
+
+type teeCapture struct {
+	w   io.Writer
+	cap *limitedBuffer
+}
+
+func (t *teeCapture) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if n > 0 {
+		_, _ = t.cap.Write(p[:n])
+	}
+	return n, err
+}
+
+// Flush delegates to underlying response writer so streaming behaves as before.
+func (t *teeCapture) Flush() {
+	if f, ok := t.w.(interface{ Flush() }); ok {
+		f.Flush()
+	}
+}
+
+// New creates a new Augment server instance.
+func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
+	dec, err := decrypt.New(privateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("augment server: failed to create decryptor: %w", err)
+	}
+
+	httpClient := &http.Client{
+		Timeout: 300 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConns:           100,
+			MaxIdleConnsPerHost:    10,
+			IdleConnTimeout:        90 * time.Second,
+			TLSHandshakeTimeout:    10 * time.Second,
+			ExpectContinueTimeout:  1 * time.Second,
+			ResponseHeaderTimeout:  90 * time.Second,
+			WriteBufferSize:        128 * 1024,
+			ReadBufferSize:         128 * 1024,
+			MaxResponseHeaderBytes: 64 * 1024,
+		},
+	}
+
+	return &Server{
+		config:          cfg,
+		decryptor:       dec,
+		trafficRecorder: trafficRecorder,
+		stats:           stats,
+		httpClient:      httpClient,
+	}, nil
+}
+
+// Start starts the Augment server on the configured port.
+func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running {
+		return fmt.Errorf("augment server already running")
+	}
+
+	if !s.config.AugmentEnabled {
+		return fmt.Errorf("augment server is disabled in config")
+	}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/v1/messages", s.handleRequest)
+	mux.HandleFunc("/v1/chat/completions", s.handleRequest)
+	mux.HandleFunc("/chat-stream", s.handleRequest)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/v1/models", s.handleGetModels)
+	mux.HandleFunc("/usage/api/get-models", s.handleGetModels)
+	mux.HandleFunc("/usage/api/balance", s.handleGetBalance)
+	mux.HandleFunc("/usage/api/getLoginToken", s.handleGetLoginToken)
+
+	// Add logging middleware that logs all requests and catches 404s
+	loggedMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("Augment: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		// Create a response writer wrapper to capture status code
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		mux.ServeHTTP(rw, r)
+
+		// Log 404s with more details
+		if rw.statusCode == http.StatusNotFound {
+			logger.Warn("Augment: 404 Not Found - %s %s (headers: %v)", r.Method, r.URL.Path, r.Header)
+		}
+	})
+
+	addr := fmt.Sprintf(":%d", s.config.AugmentPort)
+	s.httpServer = &http.Server{
+		Addr:         addr,
+		Handler:      loggedMux,
+		ReadTimeout:  300 * time.Second,
+		WriteTimeout: 300 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	s.running = true
+	logger.Info("Augment server starting on %s", addr)
+
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Augment server error: %v", err)
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
+		}
+	}()
+
+	return nil
+}
+
+// Stop stops the Augment server gracefully.
+func (s *Server) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return nil
+	}
+
+	logger.Info("Stopping Augment server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		logger.Error("Augment server shutdown error: %v", err)
+		return err
+	}
+
+	s.running = false
+	logger.Info("Augment server stopped")
+	return nil
+}
+
+// IsRunning returns whether the server is currently running.
+func (s *Server) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.running
+}
+
+// handleHealth handles health check requests.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"service": "augment-proxy",
+	})
+}
+
+// handleRequest handles incoming Augment plugin requests.
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	clientFormat := "augment"
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read request body.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Error("Augment: failed to read request body: %v", err)
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		if s.trafficRecorder != nil {
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:    startTime,
+				ClientFormat: clientFormat,
+				Method:       r.Method,
+				Path:         r.URL.Path,
+				StatusCode:   http.StatusBadRequest,
+				Duration:     time.Since(startTime),
+				Error:        err.Error(),
+			})
+		}
+		return
+	}
+	defer r.Body.Close()
+
+	ar, decrypted, err := s.parseAugmentRequest(body)
+	if err != nil {
+		logger.Error("Augment: failed to parse request: %v", err)
+		s.writeErrorResponse(w, err.Error(), false)
+		if s.trafficRecorder != nil {
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      http.StatusInternalServerError,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: body,
+			})
+		}
+		return
+	}
+
+	// Determine target type and endpoint.
+	targetType, endpoint := s.selectTarget()
+	if endpoint == nil {
+		logger.Error("Augment: no available endpoint")
+		s.writeErrorResponse(w, "No available endpoint", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           "No available endpoint",
+				OriginalRequest: decrypted,
+			})
+		}
+		return
+	}
+
+	// Create transformer.
+	transformer, err := augment.New(targetType, endpoint.Model)
+	if err != nil {
+		logger.Error("Augment: failed to create transformer: %v", err)
+		s.writeErrorResponse(w, "Internal error", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    clientFormat,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           err.Error(),
+				OriginalRequest: decrypted,
+			})
+		}
+		return
+	}
+
+	// Transform request.
+	transformed, err := transformer.TransformRequest(decrypted)
+	if err != nil {
+		logger.Error("Augment: failed to transform request: %v", err)
+		s.writeErrorResponse(w, "Request transformation failed", ar.IsStreaming())
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if ar.IsStreaming() {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    clientFormat,
+				TransformerName: transformer.Name(),
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				StatusCode:      statusCode,
+				Duration:        time.Since(startTime),
+				IsStreaming:     ar.IsStreaming(),
+				Error:           err.Error(),
+				OriginalRequest: decrypted,
+			})
+		}
+		return
+	}
+
+	// Extract tool context for response transformation.
+	toolContext := transformer.GetToolContext()
+	transformerName := transformer.Name()
+
+	// Proxy to upstream.
+	s.proxyToUpstream(
+		w,
+		r,
+		transformed,
+		endpoint,
+		targetType,
+		ar.IsStreaming(),
+		toolContext,
+		decrypted,
+		transformerName,
+		startTime,
+		clientFormat,
+	)
+}
+
+// parseAugmentRequest returns the parsed AugmentRequest and the JSON bytes that
+// should be used as transformer input (decrypted or reconstructed).
+func (s *Server) parseAugmentRequest(body []byte) (*augment.AugmentRequest, []byte, error) {
+	var input []byte
+
+	// Encrypted wire format: {encrypted_data, iv}
+	if decrypt.IsEncrypted(body) {
+		decrypted, err := s.decryptor.Decrypt(body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("Decryption failed")
+		}
+		input = decrypted
+	} else {
+		input = body
+	}
+
+	var ar augment.AugmentRequest
+	if err := json.Unmarshal(input, &ar); err == nil {
+		// Some clients send plaintext wrapper: {"data":"..."} which still unmarshals
+		// but does not populate AugmentRequest.Message. Detect and reconstruct.
+		if strings.TrimSpace(ar.Message) != "" {
+			return &ar, input, nil
+		}
+		var probe struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(input, &probe); err == nil && strings.TrimSpace(probe.Data) == "" {
+			return &ar, input, nil
+		}
+	}
+
+	// Plaintext fallback: some clients send {data:"..."} instead of full AugmentRequest.
+	reconstructed, err := decrypt.ReconstructFromPlaintext(body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Invalid request format")
+	}
+	if err := json.Unmarshal(reconstructed, &ar); err != nil {
+		return nil, nil, fmt.Errorf("Invalid request format")
+	}
+	return &ar, reconstructed, nil
+}
+
+// selectTarget selects the target type and endpoint based on config.
+func (s *Server) selectTarget() (string, *config.Endpoint) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.config.Endpoints) == 0 {
+		return "", nil
+	}
+
+	// Use first enabled endpoint, mapped strictly by endpoint.Transformer.
+	for i := range s.config.Endpoints {
+		ep := &s.config.Endpoints[i]
+		if !ep.Enabled {
+			continue
+		}
+		targetType, ok := mapEndpointTransformerToTargetType(ep.Transformer)
+		if !ok {
+			// Unsupported transformer for Augment integration.
+			return "", nil
+		}
+		return targetType, ep
+	}
+
+	return "", nil
+}
+
+func mapEndpointTransformerToTargetType(transformerName string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(transformerName)) {
+	case "", "claude":
+		return "claude", true
+	case "cli", "cc_cli":
+		return "cli", true
+	case "openai":
+		return "openai", true
+	case "openai2":
+		return "openai2", true
+	case "gemini":
+		// Gemini endpoints use OpenAI-compatible format for Augment integration.
+		// The Augment request is converted to OpenAI Chat format, which most
+		// Gemini-compatible providers accept at /v1/chat/completions.
+		return "openai", true
+	default:
+		return "", false
+	}
+}
+
+// proxyToUpstream proxies the transformed request to the upstream API.
+func (s *Server) proxyToUpstream(
+	w http.ResponseWriter,
+	r *http.Request,
+	transformedRequest []byte,
+	endpoint *config.Endpoint,
+	targetType string,
+	isStreaming bool,
+	toolContext map[string]*augment.ToolContext,
+	originalRequest []byte,
+	transformerName string,
+	startTime time.Time,
+	clientFormat string,
+) {
+	// Build upstream URL.
+	path := augment.TargetPath(targetType)
+	upstreamURL := strings.TrimSuffix(endpoint.APIUrl, "/") + path
+
+	// Create upstream request with proper headers
+	req, err := s.createUpstreamRequest(r.Context(), http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
+	if err != nil {
+		logger.Error("Augment: failed to create upstream request: %v", err)
+		s.writeErrorResponse(w, "Failed to create upstream request", isStreaming)
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if isStreaming {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       clientFormat,
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         statusCode,
+				Duration:           time.Since(startTime),
+				IsStreaming:        isStreaming,
+				Error:              err.Error(),
+				OriginalRequest:    originalRequest,
+				TransformedRequest: transformedRequest,
+			})
+		}
+		return
+	}
+
+	// Log request details for debugging
+	logger.Debug("Augment: sending request to %s (%.1f KB)", upstreamURL, float64(len(transformedRequest))/1024)
+
+	// Execute request with retry logic
+	maxRetries := 2
+	var lastErr error
+	var resp *http.Response
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			logger.Warn("Augment: retrying request to %s (attempt %d/%d)", upstreamURL, attempt, maxRetries)
+			time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff: 1s, 2s
+
+			// Create new context for retry to avoid original request timeout
+			retryCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			// Recreate request for retry (http.Request cannot be reused)
+			req, lastErr = s.createUpstreamRequest(retryCtx, http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
+			if lastErr != nil {
+				logger.Error("Augment: failed to create retry request: %v", lastErr)
+				break
+			}
+		}
+
+		requestStart := time.Now()
+		resp, lastErr = s.httpClient.Do(req)
+		requestDuration := time.Since(requestStart)
+
+		if lastErr == nil {
+			logger.Debug("Augment: request succeeded in %v", requestDuration)
+			break // Success
+		}
+
+		// Check if error is retryable
+		if !isRetryableError(lastErr) {
+			logger.Error("Augment: non-retryable error to %s: %v", upstreamURL, lastErr)
+			break
+		}
+
+		logger.Warn("Augment: retryable error to %s (attempt %d/%d): %v", upstreamURL, attempt, maxRetries, lastErr)
+	}
+
+	if lastErr != nil {
+		logger.Error("Augment: upstream request failed after %d attempts: %v", maxRetries+1, lastErr)
+		s.writeErrorResponse(w, "Upstream request failed", isStreaming)
+		if s.trafficRecorder != nil {
+			statusCode := http.StatusInternalServerError
+			if isStreaming {
+				statusCode = http.StatusOK
+			}
+			s.trafficRecorder.Record(&proxy.TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       clientFormat,
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         statusCode,
+				Duration:           time.Since(startTime),
+				IsStreaming:        isStreaming,
+				Error:              lastErr.Error(),
+				OriginalRequest:    originalRequest,
+				TransformedRequest: transformedRequest,
+			})
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	// Log successful response details
+	logger.Debug("Augment: received response from %s: status=%d", upstreamURL, resp.StatusCode)
+
+	recordEnabled := s.trafficRecorder != nil && s.trafficRecorder.IsRecording()
+	// Handle response.
+	if isStreaming {
+		inputTokens, outputTokens, ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, recordEnabled)
+		if s.stats != nil && convErr == nil {
+			s.stats.RecordRequest(endpoint.Name)
+			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+		} else if s.stats != nil && convErr != nil {
+			s.stats.RecordError(endpoint.Name)
+		}
+		if recordEnabled {
+			log := &proxy.TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        clientFormat,
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				IsStreaming:         true,
+				OriginalRequest:     originalRequest,
+				TransformedRequest:  transformedRequest,
+				OriginalResponse:    ndjson,
+				TransformedResponse: ndjson,
+			}
+			// Only set error if the HTTP request actually failed
+			if resp.StatusCode >= 400 {
+				log.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			} else if convErr != nil {
+				// Log conversion errors but don't mark the request as failed
+				logger.Warn("Augment: SSE conversion warning: %v", convErr)
+			}
+			s.trafficRecorder.Record(log)
+		} else if convErr != nil {
+			logger.Error("Augment: SSE conversion error: %v", convErr)
+		}
+	} else {
+		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp)
+		if s.stats != nil && convErr == nil {
+			s.stats.RecordRequest(endpoint.Name)
+			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+		} else if s.stats != nil && convErr != nil {
+			s.stats.RecordError(endpoint.Name)
+		}
+		if recordEnabled {
+			log := &proxy.TrafficLog{
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        clientFormat,
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				IsStreaming:         false,
+				OriginalRequest:     originalRequest,
+				TransformedRequest:  transformedRequest,
+				OriginalResponse:    originalResp,
+				TransformedResponse: transformedResp,
+			}
+			// Only set error if the HTTP request actually failed
+			if resp.StatusCode >= 400 {
+				log.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			} else if convErr != nil {
+				// Log conversion errors but don't mark the request as failed
+				logger.Warn("Augment: response conversion warning: %v", convErr)
+			}
+			s.trafficRecorder.Record(log)
+		} else if convErr != nil {
+			logger.Error("Augment: response conversion error: %v", convErr)
+		}
+	}
+}
+
+// handleStreamingResponse handles SSE streaming responses and converts to NDJSON.
+func (s *Server) handleStreamingResponse(
+	w http.ResponseWriter,
+	resp *http.Response,
+	targetType string,
+	toolContext map[string]*augment.ToolContext,
+	captureNDJSON bool,
+) (inputTokens, outputTokens int, outBytes []byte, err error) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(resp.StatusCode)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		logger.Error("Augment: response writer does not support flushing")
+		return 0, 0, nil, fmt.Errorf("augment: response writer does not support flushing")
+	}
+
+	var capture *limitedBuffer
+	writer := io.Writer(w)
+	if captureNDJSON {
+		capture = newLimitedBuffer(proxy.MaxBodySize + 1)
+		writer = &teeCapture{w: w, cap: capture}
+	}
+
+	// Convert SSE to NDJSON on the fly.
+	inputTokens, outputTokens, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
+	flusher.Flush()
+	if capture != nil {
+		outBytes = capture.Bytes()
+	}
+	return inputTokens, outputTokens, outBytes, err
+}
+
+// handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
+// Augment clients expect NDJSON even for non-streaming responses.
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error("Augment: failed to read upstream response: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		return 0, 0, nil, nil, err
+	}
+	originalResp = body
+
+	// Extract token usage from the response.
+	inputTokens, outputTokens = extractTokenUsageFromResponse(body)
+
+	// If upstream returned an error status, pass through as JSON.
+	if resp.StatusCode >= 400 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return inputTokens, outputTokens, originalResp, originalResp, nil
+	}
+
+	// Convert the JSON response to a single NDJSON chunk with text + stop_reason.
+	text := extractTextFromResponse(body)
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+
+	// Build NDJSON in memory so we can both write and (optionally) record it.
+	var out bytes.Buffer
+	if text != "" {
+		textChunk := map[string]interface{}{
+			"text":                  text,
+			"unknown_blob_names":    []interface{}{},
+			"checkpoint_not_found":  false,
+			"workspace_file_chunks": []interface{}{},
+			"nodes":                 []interface{}{},
+		}
+		line, _ := json.Marshal(textChunk)
+		out.Write(line)
+		out.Write([]byte("\n"))
+	}
+
+	// Final chunk with stop_reason.
+	finalChunk := map[string]interface{}{
+		"text":                  "",
+		"unknown_blob_names":    []interface{}{},
+		"checkpoint_not_found":  false,
+		"workspace_file_chunks": []interface{}{},
+		"nodes":                 []interface{}{},
+		"stop_reason":           1, // END_TURN
+	}
+	line, _ := json.Marshal(finalChunk)
+	out.Write(line)
+	out.Write([]byte("\n"))
+
+	transformedResp = out.Bytes()
+	w.Write(transformedResp)
+	return inputTokens, outputTokens, originalResp, transformedResp, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// extractTextFromResponse extracts text content from Claude or OpenAI JSON responses.
+func extractTextFromResponse(body []byte) string {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return ""
+	}
+
+	// Claude format: content[].text
+	if content, ok := resp["content"].([]interface{}); ok {
+		var parts []string
+		for _, block := range content {
+			if b, ok := block.(map[string]interface{}); ok {
+				if text, ok := b["text"].(string); ok && text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "")
+		}
+	}
+
+	// OpenAI format: choices[].message.content
+	if choices, ok := resp["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if msg, ok := choice["message"].(map[string]interface{}); ok {
+				if text, ok := msg["content"].(string); ok {
+					return text
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// extractTokenUsageFromResponse extracts token usage from Claude or OpenAI JSON responses.
+func extractTokenUsageFromResponse(body []byte) (inputTokens, outputTokens int) {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, 0
+	}
+
+	// Try Claude format: usage.input_tokens/output_tokens
+	if usage, ok := resp["usage"].(map[string]interface{}); ok {
+		inputTokens = parseIntFromMap(usage, "input_tokens")
+		outputTokens = parseIntFromMap(usage, "output_tokens")
+		if inputTokens > 0 || outputTokens > 0 {
+			return inputTokens, outputTokens
+		}
+	}
+
+	// Try OpenAI format: usage.prompt_tokens/completion_tokens
+	if usage, ok := resp["usage"].(map[string]interface{}); ok {
+		promptTokens := parseIntFromMap(usage, "prompt_tokens")
+		completionTokens := parseIntFromMap(usage, "completion_tokens")
+		if promptTokens > 0 || completionTokens > 0 {
+			return promptTokens, completionTokens
+		}
+	}
+
+	return 0, 0
+}
+
+// parseIntFromMap parses an int from a map under multiple possible keys.
+func parseIntFromMap(m map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if val, ok := m[key]; ok {
+			switch v := val.(type) {
+			case int:
+				return v
+			case float64:
+				return int(v)
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					return int(i)
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// writeErrorResponse writes an error response in Augment format.
+func (s *Server) writeErrorResponse(w http.ResponseWriter, message string, isStreaming bool) {
+	if isStreaming {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		errorLine, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"message": message,
+			},
+		})
+		w.Write(errorLine)
+		w.Write([]byte("\n"))
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": message,
+			},
+		})
+	}
+}
+
+// ModelInfo represents basic model information from various API providers.
+type ModelInfo struct {
+	ID          string
+	DisplayName string
+	CreatedAt   time.Time
+}
+
+// fetchClaudeModels fetches model list from Claude API.
+func (s *Server) fetchClaudeModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("x-api-key", endpoint.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID          string    `json:"id"`
+			DisplayName string    `json:"display_name"`
+			CreatedAt   time.Time `json:"created_at"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.DisplayName,
+			CreatedAt:   m.CreatedAt,
+		})
+	}
+
+	return models, nil
+}
+
+// fetchOpenAIModels fetches model list from OpenAI-compatible API.
+func (s *Server) fetchOpenAIModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := strings.TrimSuffix(endpoint.APIUrl, "/") + "/v1/models"
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:          m.ID,
+			DisplayName: m.ID, // OpenAI doesn't provide display_name
+			CreatedAt:   time.Unix(m.Created, 0),
+		})
+	}
+
+	return models, nil
+}
+
+// fetchGeminiModels fetches model list from Gemini API.
+func (s *Server) fetchGeminiModels(endpoint *config.Endpoint) ([]ModelInfo, error) {
+	url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + endpoint.APIKey
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		// Extract model ID from "models/gemini-pro" format
+		modelID := strings.TrimPrefix(m.Name, "models/")
+
+		models = append(models, ModelInfo{
+			ID:          modelID,
+			DisplayName: m.DisplayName,
+			CreatedAt:   time.Now(), // Gemini doesn't provide creation time
+		})
+	}
+
+	return models, nil
+}
+
+// convertToAugmentFormat converts model list to Augment-compatible format.
+func (s *Server) convertToAugmentFormat(models []ModelInfo, targetType string) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for i, model := range models {
+		// Generate short name from model ID
+		shortName := model.ID
+		if strings.Contains(model.ID, "-") {
+			parts := strings.Split(model.ID, "-")
+			if len(parts) > 0 {
+				shortName = parts[0]
+			}
+		}
+
+		// Determine priority (lower number = higher priority)
+		priority := i + 1
+
+		// Create model entry in Augment-compatible format
+		modelEntry := map[string]interface{}{
+			"displayName":   model.ID,
+			"description":   model.DisplayName,
+			"shortName":     shortName,
+			"priority":      priority,
+			"isLegacyModel": false,
+		}
+
+		result[model.ID] = modelEntry
+	}
+
+	return result
+}
+
+// fetchModelsFromEndpoint fetches models from the endpoint based on its type.
+func (s *Server) fetchModelsFromEndpoint(endpoint *config.Endpoint, targetType string) (map[string]interface{}, error) {
+	var models []ModelInfo
+	var err error
+
+	switch targetType {
+	case "claude", "cli":
+		models, err = s.fetchClaudeModels(endpoint)
+	case "openai", "openai2":
+		models, err = s.fetchOpenAIModels(endpoint)
+	case "gemini":
+		// Try Gemini API first, fallback to OpenAI-compatible
+		models, err = s.fetchGeminiModels(endpoint)
+		if err != nil {
+			logger.Debug("Augment: Gemini API failed, trying OpenAI-compatible: %v", err)
+			models, err = s.fetchOpenAIModels(endpoint)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported target type: %s", targetType)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no models returned from endpoint")
+	}
+
+	return s.convertToAugmentFormat(models, targetType), nil
+}
+
+// getDefaultModels returns the default model list as fallback.
+func (s *Server) getDefaultModels() map[string]interface{} {
+	return map[string]interface{}{
+		"claude-sonnet-4-5-20250929": map[string]interface{}{
+			"displayName":   "claude-sonnet-4-5-20250929",
+			"description":   "Claude Sonnet 4.5",
+			"shortName":     "sonnet-4.5",
+			"priority":      10,
+			"isLegacyModel": false,
+		},
+		"claude-opus-4-20250514": map[string]interface{}{
+			"displayName":   "claude-opus-4-20250514",
+			"description":   "Claude Opus 4",
+			"shortName":     "opus-4",
+			"priority":      9,
+			"isLegacyModel": false,
+		},
+		"claude-3-5-sonnet-20241022": map[string]interface{}{
+			"displayName":   "claude-3-5-sonnet-20241022",
+			"description":   "Claude 3.5 Sonnet",
+			"shortName":     "3.5-sonnet",
+			"priority":      8,
+			"isLegacyModel": false,
+		},
+	}
+}
+
+// handleGetModels handles model list requests for Augment plugin.
+func (s *Server) handleGetModels(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/get-models from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Try to fetch models dynamically from endpoint
+	targetType, endpoint := s.selectTarget()
+	var models map[string]interface{}
+
+	if endpoint != nil {
+		logger.Debug("Augment: attempting to fetch models from endpoint (type: %s)", targetType)
+		fetchedModels, err := s.fetchModelsFromEndpoint(endpoint, targetType)
+		if err != nil {
+			logger.Debug("Augment: failed to fetch models from endpoint: %v, using defaults", err)
+			models = s.getDefaultModels()
+		} else {
+			logger.Debug("Augment: successfully fetched %d models from endpoint", len(fetchedModels))
+			models = fetchedModels
+		}
+	} else {
+		logger.Debug("Augment: no endpoint configured, using default models")
+		models = s.getDefaultModels()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
+	logger.Debug("Augment: returned model list with %d models", len(models))
+}
+
+// handleGetBalance handles balance query requests for Augment plugin.
+func (s *Server) handleGetBalance(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/balance from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Return balance info in Augment-compatible format
+	balance := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"name":          "ccNexus Proxy",
+			"remain_quota":  999999,
+			"remain_amount": 999999,
+			"unlimited":     false,
+			"expired_time":  4102444800,
+			"status":        1,
+			"status_text":   "enabled",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(balance)
+	logger.Debug("Augment: returned balance info")
+}
+
+// handleGetLoginToken handles login token requests for Augment plugin.
+func (s *Server) handleGetLoginToken(w http.ResponseWriter, r *http.Request) {
+	logger.Debug("Augment: GET /usage/api/getLoginToken from %s", r.RemoteAddr)
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get first enabled endpoint for tenantUrl and accessToken
+	s.mu.RLock()
+	var tenantUrl, accessToken string
+	if len(s.config.Endpoints) > 0 {
+		for i := range s.config.Endpoints {
+			ep := &s.config.Endpoints[i]
+			if ep.Enabled {
+				tenantUrl = strings.TrimSuffix(ep.APIUrl, "/")
+				accessToken = ep.APIKey
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	// Fallback to default values if no endpoint found
+	if tenantUrl == "" {
+		tenantUrl = "https://api.anthropic.com"
+	}
+	if accessToken == "" {
+		accessToken = "augment-proxy-token"
+	}
+
+	// Return login token in Augment-compatible format
+	// Note: data is duplicated at both top level and nested for compatibility
+	token := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"tenantUrl":   tenantUrl,
+			"accessToken": accessToken,
+		},
+		"tenantUrl":   tenantUrl,
+		"accessToken": accessToken,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(token)
+	logger.Debug("Augment: returned login token")
+}
+
+// isRetryableError checks if an error should trigger a retry
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Network-level errors that are typically temporary
+	if strings.Contains(errStr, "EOF") {
+		return true // Connection closed by remote server
+	}
+	if strings.Contains(errStr, "connection reset") {
+		return true // Connection reset
+	}
+	if strings.Contains(errStr, "broken pipe") {
+		return true // Broken pipe
+	}
+	if strings.Contains(errStr, "timeout") {
+		return true // Timeout
+	}
+	if strings.Contains(errStr, "temporary") {
+		return true // Temporary failure
+	}
+
+	// Check for specific error types
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Temporary() || netErr.Timeout()
+	}
+
+	return false
+}
+
+// createUpstreamRequest creates an HTTP request with proper headers for the target type
+func (s *Server) createUpstreamRequest(ctx context.Context, method, url string, body []byte, targetType string, endpoint *config.Endpoint) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// Set headers based on target type
+	if targetType == "cli" {
+		// CLI mode: use full CLI headers (includes auth, beta, user-agent, stainless-*)
+		var tools []map[string]interface{}
+		var reqBody struct {
+			Stream bool                     `json:"stream"`
+			Tools  []map[string]interface{} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &reqBody); err == nil {
+			tools = reqBody.Tools
+		}
+		betas := convert.BuildClaudeCliBetas(tools)
+		cliHeaders := convert.BuildClaudeCliHeaders(endpoint.APIKey, betas, reqBody.Stream)
+		for k, v := range cliHeaders {
+			req.Header.Set(k, v)
+		}
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		authHeaders := augment.BuildAuthHeaders(targetType, endpoint.APIKey)
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+		if targetType == "claude" && claudeThinkingEnabled(body) {
+			req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		}
+	}
+
+	return req, nil
+}
+
+func claudeThinkingEnabled(body []byte) bool {
+	var req struct {
+		Thinking map[string]interface{} `json:"thinking"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	if len(req.Thinking) == 0 {
+		return false
+	}
+	thinkingType, _ := req.Thinking["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(thinkingType)) {
+	case "enabled", "adaptive":
+		return true
+	default:
+		return false
+	}
+}

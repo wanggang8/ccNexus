@@ -159,46 +159,51 @@ type ProxyConfig struct {
 
 // Config represents the application configuration
 type Config struct {
-	Port                  int             `json:"port"`
-	BasicAuthEnabled     bool            `json:"basicAuthEnabled"`
-	BasicAuthUsername     string          `json:"basicAuthUsername"`
-	BasicAuthPassword    string          `json:"basicAuthPassword"`
-	Endpoints            []Endpoint      `json:"endpoints"`
-	LogLevel                  int             `json:"logLevel"`                      // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
-	Language                  string          `json:"language"`                      // UI language: en, zh-CN
-	Theme                     string          `json:"theme"`                         // UI theme: light, dark
-	ThemeAuto                 bool            `json:"themeAuto"`                     // Auto switch theme based on time
-	AutoLightTheme            string          `json:"autoLightTheme,omitempty"`      // Theme to use in daytime when auto mode is on
-	AutoDarkTheme             string          `json:"autoDarkTheme,omitempty"`       // Theme to use in nighttime when auto mode is on
-	WindowWidth               int             `json:"windowWidth"`                   // Window width in pixels
-	WindowHeight              int             `json:"windowHeight"`                  // Window height in pixels
-	CloseWindowBehavior       string          `json:"closeWindowBehavior,omitempty"` // "quit", "minimize", "ask"
-	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`     // Enable Claude Code task completion notification
-	ClaudeNotificationType    string          `json:"claudeNotificationType"`        // Notification type: toast, dialog, disabled
-	ModelsCacheTTL            int             `json:"modelsCacheTTL,omitempty"`      // /v1/models cache TTL in minutes, default 30
+	Port                      int             `json:"port"`
+	BasicAuthEnabled          bool            `json:"basicAuthEnabled"`
+	BasicAuthUsername         string          `json:"basicAuthUsername"`
+	BasicAuthPassword         string          `json:"basicAuthPassword"`
+	Endpoints                 []Endpoint      `json:"endpoints"`
+	LogLevel                  int             `json:"logLevel"`                            // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+	Language                  string          `json:"language"`                            // UI language: en, zh-CN
+	Theme                     string          `json:"theme"`                               // UI theme: light, dark
+	ThemeAuto                 bool            `json:"themeAuto"`                           // Auto switch theme based on time
+	AutoLightTheme            string          `json:"autoLightTheme,omitempty"`            // Theme to use in daytime when auto mode is on
+	AutoDarkTheme             string          `json:"autoDarkTheme,omitempty"`             // Theme to use in nighttime when auto mode is on
+	WindowWidth               int             `json:"windowWidth"`                         // Window width in pixels
+	WindowHeight              int             `json:"windowHeight"`                        // Window height in pixels
+	CloseWindowBehavior       string          `json:"closeWindowBehavior,omitempty"`       // "quit", "minimize", "ask"
+	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`           // Enable Claude Code task completion notification
+	ClaudeNotificationType    string          `json:"claudeNotificationType"`              // Notification type: toast, dialog, disabled
+	AugmentEnabled            bool            `json:"augmentEnabled"`                      // Enable Augment integration
+	AugmentPort               int             `json:"augmentPort"`                         // Augment server port (default 2346)
+	AugmentKeyPath            string          `json:"augmentKeyPath,omitempty"`            // Path to Augment private key
+	ModelsCacheTTL            int             `json:"modelsCacheTTL,omitempty"`            // /v1/models cache TTL in minutes, default 30
 	ModelsCacheRefreshEnabled bool            `json:"modelsCacheRefreshEnabled,omitempty"` // Enable ?refresh=true parameter, default false
-	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`              // WebDAV synchronization config
-	Backup                    *BackupConfig   `json:"backup,omitempty"`              // Backup/sync configuration
-	Update                    *UpdateConfig   `json:"update,omitempty"`              // Update configuration
-	Terminal                  *TerminalConfig `json:"terminal,omitempty"`            // Terminal launcher config
-	Proxy                     *ProxyConfig    `json:"proxy,omitempty"`               // HTTP proxy config
-	CodexProxy                *ProxyConfig    `json:"codexProxy,omitempty"`          // Codex dedicated proxy config
+	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`                    // WebDAV synchronization config
+	Backup                    *BackupConfig   `json:"backup,omitempty"`                    // Backup/sync configuration
+	Update                    *UpdateConfig   `json:"update,omitempty"`                    // Update configuration
+	Terminal                  *TerminalConfig `json:"terminal,omitempty"`                  // Terminal launcher config
+	Proxy                     *ProxyConfig    `json:"proxy,omitempty"`                     // HTTP proxy config
+	CodexProxy                *ProxyConfig    `json:"codexProxy,omitempty"`                // Codex dedicated proxy config
 	mu                        sync.RWMutex
 }
 
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Port:               3000,
-		BasicAuthEnabled:   true,
-		BasicAuthUsername:  "admin",
-		BasicAuthPassword: "",
-		LogLevel:          1,       // Default to INFO level
-		Language:     "zh-CN", // Default to Chinese
-		WindowWidth:  1024,    // Default window width
-		WindowHeight: 768,     // Default window height
-		ModelsCacheTTL:              30,    // Default 30 minutes
-		ModelsCacheRefreshEnabled:  false, // Default disabled
+		Port:                      3000,
+		BasicAuthEnabled:          true,
+		BasicAuthUsername:         "admin",
+		BasicAuthPassword:         "",
+		LogLevel:                  1,       // Default to INFO level
+		Language:                  "zh-CN", // Default to Chinese
+		WindowWidth:               1024,    // Default window width
+		WindowHeight:              768,     // Default window height
+		AugmentEnabled:            false,
+		AugmentPort:               2346,
+		ModelsCacheTTL:            30,    // Default 30 minutes
+		ModelsCacheRefreshEnabled: false, // Default disabled
 		Endpoints: []Endpoint{
 			{
 				Name:        "Claude Official",
@@ -546,6 +551,52 @@ func (c *Config) UpdateClaudeNotification(enabled bool, notifType string) {
 	c.ClaudeNotificationType = notifType
 }
 
+// GetAugmentConfig returns the Augment integration settings (thread-safe).
+func (c *Config) GetAugmentConfig() (enabled bool, port int, keyPath string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	p := c.AugmentPort
+	if p == 0 {
+		p = 2346
+	}
+	return c.AugmentEnabled, p, c.AugmentKeyPath
+}
+
+// GetAugmentEnabled returns whether Augment integration is enabled (thread-safe).
+func (c *Config) GetAugmentEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentEnabled
+}
+
+// GetAugmentPort returns the Augment port (thread-safe).
+func (c *Config) GetAugmentPort() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.AugmentPort == 0 {
+		return 2346
+	}
+	return c.AugmentPort
+}
+
+// GetAugmentKeyPath returns the Augment private key path (thread-safe).
+func (c *Config) GetAugmentKeyPath() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AugmentKeyPath
+}
+
+// UpdateAugmentConfig updates the Augment integration settings (thread-safe).
+func (c *Config) UpdateAugmentConfig(enabled bool, port int, keyPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AugmentEnabled = enabled
+	if port > 0 {
+		c.AugmentPort = port
+	}
+	c.AugmentKeyPath = keyPath
+}
+
 // StorageAdapter defines the interface needed for loading/saving config
 type StorageAdapter interface {
 	GetEndpoints() ([]StorageEndpoint, error)
@@ -809,6 +860,22 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		config.BasicAuthPassword = password
 	}
 
+	// Load Augment config
+	if augmentEnabledStr, err := storage.GetConfig("augment_enabled"); err == nil && augmentEnabledStr != "" {
+		config.AugmentEnabled = augmentEnabledStr == "true"
+	}
+	if augmentPortStr, err := storage.GetConfig("augment_port"); err == nil && augmentPortStr != "" {
+		if port, err := strconv.Atoi(augmentPortStr); err == nil {
+			config.AugmentPort = port
+		}
+	}
+	if config.AugmentPort == 0 {
+		config.AugmentPort = 2346
+	}
+	if augmentKeyPath, err := storage.GetConfig("augment_key_path"); err == nil {
+		config.AugmentKeyPath = augmentKeyPath
+	}
+
 	return config, nil
 }
 
@@ -1038,6 +1105,21 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	if err := storage.SetConfig("basicAuthPassword", c.BasicAuthPassword); err != nil {
 		return fmt.Errorf("failed to save basicAuthPassword config: %w", err)
+	}
+
+	// Save Augment config
+	if err := storage.SetConfig("augment_enabled", strconv.FormatBool(c.AugmentEnabled)); err != nil {
+		return fmt.Errorf("failed to save augment_enabled config: %w", err)
+	}
+	augmentPort := c.AugmentPort
+	if augmentPort == 0 {
+		augmentPort = 2346
+	}
+	if err := storage.SetConfig("augment_port", strconv.Itoa(augmentPort)); err != nil {
+		return fmt.Errorf("failed to save augment_port config: %w", err)
+	}
+	if err := storage.SetConfig("augment_key_path", c.AugmentKeyPath); err != nil {
+		return fmt.Errorf("failed to save augment_key_path config: %w", err)
 	}
 
 	return nil

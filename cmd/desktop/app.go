@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	augmentserver "github.com/lich0821/ccNexus/internal/augment/server"
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/proxy"
@@ -75,6 +76,7 @@ type App struct {
 	archive  *service.ArchiveService
 	update   *service.UpdateService
 	terminal *service.TerminalService
+	augment  *augmentserver.Server
 }
 
 // NewApp creates a new App application struct
@@ -175,6 +177,8 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}()
 
+	a.initAugmentServer(configDir, cfg)
+
 	time.Sleep(300 * time.Millisecond)
 	runtime.WindowShow(ctx)
 
@@ -183,6 +187,11 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown is called when the app is closing
 func (a *App) shutdown(ctx context.Context) {
+	if a.augment != nil {
+		if err := a.augment.Stop(); err != nil {
+			logger.Warn("Failed to stop Augment server: %v", err)
+		}
+	}
 	if a.proxy != nil {
 		a.proxy.Stop()
 	}
@@ -193,6 +202,52 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	logger.Info("Application stopped")
 	logger.GetLogger().Close()
+}
+
+func (a *App) initAugmentServer(configDir string, cfg *config.Config) {
+	defaultKeyPath := ensureDesktopAugmentKey(configDir)
+	srv, err := augmentserver.StartFromConfig(cfg, defaultKeyPath, a.proxy.GetTrafficRecorder(), a.proxy.GetStats())
+	if err != nil {
+		if cfg.GetAugmentEnabled() {
+			logger.Warn("Failed to start Augment server: %v", err)
+		}
+		return
+	}
+	if srv == nil {
+		logger.Info("Augment server disabled, skipping")
+		return
+	}
+	a.augment = srv
+	logger.Info("Augment server started on port %d", cfg.GetAugmentPort())
+}
+
+func ensureDesktopAugmentKey(configDir string) string {
+	defaultKeyPath := filepath.Join(configDir, "augment-private-key.pem")
+	if _, err := os.Stat(defaultKeyPath); err == nil {
+		return defaultKeyPath
+	}
+
+	candidates := []string{
+		filepath.Join("cmd", "desktop", "augment-private-key.pem"),
+	}
+	if exePath, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exePath), "augment-private-key.pem"))
+	}
+
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(candidate)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		if err := os.WriteFile(defaultKeyPath, data, 0600); err != nil {
+			logger.Warn("Failed to initialize Augment private key from %s: %v", candidate, err)
+			return defaultKeyPath
+		}
+		logger.Info("Augment private key initialized: %s", defaultKeyPath)
+		return defaultKeyPath
+	}
+
+	return defaultKeyPath
 }
 
 // initTray initializes the system tray
@@ -1094,4 +1149,36 @@ func (a *App) DeleteCodexSession(sessionID string) error {
 
 func (a *App) RenameCodexSession(sessionID, alias string) error {
 	return a.terminal.RenameCodexSession(sessionID, alias)
+}
+
+func (a *App) GetAugmentConfig() string {
+	enabled, port, _ := a.config.GetAugmentConfig()
+	return desktopSuccessJSON(map[string]interface{}{
+		"enabled": enabled,
+		"port":    port,
+	})
+}
+
+func (a *App) SaveAugmentConfig(settingsJSON string) error {
+	var input struct {
+		Enabled bool `json:"enabled"`
+		Port    int  `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(settingsJSON), &input); err != nil {
+		return fmt.Errorf("invalid Augment config JSON: %w", err)
+	}
+	if input.Port < 1 || input.Port > 65535 {
+		input.Port = 2346
+	}
+
+	_, _, keyPath := a.config.GetAugmentConfig()
+	a.config.UpdateAugmentConfig(input.Enabled, input.Port, keyPath)
+
+	configAdapter := storage.NewConfigStorageAdapter(a.storage)
+	if err := a.config.SaveToStorage(configAdapter); err != nil {
+		return fmt.Errorf("failed to save Augment config: %w", err)
+	}
+
+	logger.Info("Augment config saved: enabled=%v port=%d (restart required)", input.Enabled, input.Port)
+	return nil
 }
