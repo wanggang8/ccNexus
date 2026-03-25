@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -82,5 +83,40 @@ func TestShouldHandleAsStreamingResponseForCodexWithoutContentType(t *testing.T)
 	}
 	if !shouldHandleAsStreamingResponse("text/event-stream", false, endpoint, "cx_chat_openai2") {
 		t.Fatal("expected text/event-stream content-type to be treated as streaming")
+	}
+}
+
+func TestBuildProxyRequestForCLIUsesBetaPathAndHeaders(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions?trace=1", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "CLI",
+		APIUrl:      "https://api.anthropic.com",
+		APIKey:      "test-key",
+		Transformer: "cli",
+		Model:       "claude-sonnet-4-20250514",
+		Enabled:     true,
+	}
+	body := []byte(`{"stream":true,"tools":[{"name":"read_file"}]}`)
+
+	req, err := buildProxyRequest(r, endpoint, "test-key", body, "cx_chat_cli", nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.URL.String(); got != "https://api.anthropic.com/v1/messages?beta=true&trace=1" {
+		t.Fatalf("expected CLI URL with beta query, got %s", got)
+	}
+	if got := req.Header.Get("x-app"); got != "cli" {
+		t.Fatalf("expected x-app=cli, got %q", got)
+	}
+	if beta := req.Header.Get("anthropic-beta"); beta == "" {
+		t.Fatal("expected anthropic-beta header")
+	}
+	if got := req.Header.Get("x-api-key"); got != "test-key" {
+		t.Fatalf("expected x-api-key=test-key, got %q", got)
 	}
 }
