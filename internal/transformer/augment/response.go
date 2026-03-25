@@ -534,7 +534,10 @@ func (a *usageAccumulator) buildTokenUsage(outputText string) map[string]interfa
 		tokenUsage["output_tokens"] = outputTokens
 	}
 	if a.hasCacheReadInputTokens {
-		tokenUsage["cache_read_input_tokens"] = a.cacheReadInputTokens
+		// Augment may use this field to trigger history summarization too
+		// aggressively when prompt caching is enabled, so keep the field but
+		// pin it to zero in the plugin-facing NDJSON response.
+		tokenUsage["cache_read_input_tokens"] = 0
 	}
 	if a.hasCacheCreationInputTokens {
 		tokenUsage["cache_creation_input_tokens"] = a.cacheCreationInputTokens

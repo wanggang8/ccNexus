@@ -675,8 +675,8 @@ func TestStreamConvertClaude_MessageStartUsageMerged(t *testing.T) {
 	if usage["output_tokens"] != float64(20) {
 		t.Fatalf("expected output_tokens 20, got %#v", usage["output_tokens"])
 	}
-	if usage["cache_read_input_tokens"] != float64(30) {
-		t.Fatalf("expected cache_read_input_tokens 30, got %#v", usage["cache_read_input_tokens"])
+	if usage["cache_read_input_tokens"] != float64(0) {
+		t.Fatalf("expected cache_read_input_tokens 0, got %#v", usage["cache_read_input_tokens"])
 	}
 }
 

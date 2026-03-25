@@ -157,9 +157,20 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 			continue
 		}
 
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason == "function_call" {
+			choice["finish_reason"] = "tool_calls"
+			changed = true
+		}
+
 		delta, ok := choice["delta"].(map[string]interface{})
 		if !ok {
 			continue
+		}
+
+		if promotedToolCalls, promoted := promoteLegacyFunctionCallDelta(delta); promoted {
+			delta["tool_calls"] = promotedToolCalls
+			delete(delta, "function_call")
+			changed = true
 		}
 
 		toolCalls, ok := delta["tool_calls"].([]interface{})
@@ -187,6 +198,24 @@ func normalizeOpenAISSE(resp []byte, ctx *transformer.StreamContext) ([]byte, er
 		return nil, err
 	}
 	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
+}
+
+func promoteLegacyFunctionCallDelta(delta map[string]interface{}) ([]interface{}, bool) {
+	if _, hasToolCalls := delta["tool_calls"]; hasToolCalls {
+		return nil, false
+	}
+
+	functionCall, ok := delta["function_call"].(map[string]interface{})
+	if !ok || len(functionCall) == 0 {
+		return nil, false
+	}
+
+	promoted := map[string]interface{}{
+		"index": 0,
+		"type":  "function",
+		"function": functionCall,
+	}
+	return []interface{}{promoted}, true
 }
 
 func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamContext) ([]interface{}, bool) {
@@ -218,6 +247,7 @@ func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamCon
 		}
 
 		currentID, _ := tcMap["id"].(string)
+		currentID = strings.TrimSpace(currentID)
 		if currentID != "" {
 			if state.ID == "" {
 				state.ID = currentID
@@ -227,6 +257,7 @@ func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamCon
 		}
 
 		currentType, _ := tcMap["type"].(string)
+		currentType = strings.TrimSpace(currentType)
 		if currentType != "" {
 			if state.Type == "" {
 				state.Type = currentType
@@ -240,7 +271,8 @@ func normalizeToolCallDeltas(toolCalls []interface{}, ctx *transformer.StreamCon
 
 		var argumentFragment string
 		if functionMap, ok := tcMap["function"].(map[string]interface{}); ok {
-			if name, ok := functionMap["name"].(string); ok && name != "" {
+			if name, ok := functionMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+				name = strings.TrimSpace(name)
 				if state.Function.Name == "" {
 					state.Function.Name = name
 				} else if state.Function.Name != name {

@@ -341,6 +341,94 @@ func TestNormalizeOpenAISSE_ToolCallWithoutIndex_UsesZeroAndFillsType(t *testing
 	}
 }
 
+func TestNormalizeOpenAISSE_LegacyFunctionCallDelta_IsPromotedAndFinishReasonRewritten(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	chunk := []byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"function_call":{"name":"ReadFile","arguments":"{\"path\":\"/tmp/a.txt\"}"}},"finish_reason":"function_call"}]}`)
+
+	result, err := normalizeOpenAISSE(chunk, ctx)
+	if err != nil {
+		t.Fatalf("normalizeOpenAISSE failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected normalized SSE chunk, got nil")
+	}
+
+	_, payload := convert.ParseSSE(result)
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("failed to unmarshal normalized payload: %v", err)
+	}
+
+	choice := got["choices"].([]interface{})[0].(map[string]interface{})
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("expected finish_reason tool_calls, got %#v", choice["finish_reason"])
+	}
+
+	delta := choice["delta"].(map[string]interface{})
+	if _, exists := delta["function_call"]; exists {
+		t.Fatalf("expected legacy function_call removed, got %#v", delta["function_call"])
+	}
+
+	toolCall := delta["tool_calls"].([]interface{})[0].(map[string]interface{})
+	if toolCall["index"] != float64(0) {
+		t.Fatalf("expected promoted tool call index 0, got %#v", toolCall["index"])
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected promoted tool call type function, got %#v", toolCall["type"])
+	}
+
+	function := toolCall["function"].(map[string]interface{})
+	if function["name"] != "ReadFile" {
+		t.Fatalf("expected promoted function name preserved, got %#v", function["name"])
+	}
+	if function["arguments"] != `{"path":"/tmp/a.txt"}` {
+		t.Fatalf("expected promoted arguments preserved, got %#v", function["arguments"])
+	}
+}
+
+func TestNormalizeOpenAISSE_BlankToolCallFields_DoNotOverrideState(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	firstChunk := []byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"ReadFile","arguments":""}}]}}]}`)
+	if _, err := normalizeOpenAISSE(firstChunk, ctx); err != nil {
+		t.Fatalf("normalizeOpenAISSE first chunk failed: %v", err)
+	}
+
+	secondChunk := []byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"   ","type":" ","function":{"name":" ","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}}]}`)
+	result, err := normalizeOpenAISSE(secondChunk, ctx)
+	if err != nil {
+		t.Fatalf("normalizeOpenAISSE second chunk failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected normalized SSE chunk, got nil")
+	}
+
+	_, payload := convert.ParseSSE(result)
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("failed to unmarshal normalized payload: %v", err)
+	}
+
+	delta := got["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})
+	toolCall := delta["tool_calls"].([]interface{})[0].(map[string]interface{})
+	if toolCall["id"] != "call_123" {
+		t.Fatalf("expected blank id not to override state, got %#v", toolCall["id"])
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected blank type not to override state, got %#v", toolCall["type"])
+	}
+
+	function := toolCall["function"].(map[string]interface{})
+	if function["name"] != "ReadFile" {
+		t.Fatalf("expected blank function name not to override state, got %#v", function["name"])
+	}
+	if function["arguments"] != `{"path":"/tmp/a.txt"}` {
+		t.Fatalf("expected argument fragment preserved, got %#v", function["arguments"])
+	}
+}
+
+
 func TestOpenAITransformer_TransformResponse_Passthrough(t *testing.T) {
 	trans := NewOpenAITransformer("gpt-4")
 
