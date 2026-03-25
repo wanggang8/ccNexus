@@ -87,7 +87,11 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- p.StartWithMux(mux)
+		proxyToken := ""
+		if cfg.GetBasicAuthEnabled() {
+			proxyToken = cfg.GetBasicAuthPassword()
+		}
+		errCh <- p.StartWithMux(mux, proxyAuthMiddleware(proxyToken))
 	}()
 
 	logger.Info("ccNexus headless API listening on :%d (data dir: %s, db: %s)", cfg.GetPort(), dataDir, dbPath)

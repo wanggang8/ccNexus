@@ -108,13 +108,13 @@ func (p *Proxy) recordTrafficLog(requestID string, log *TrafficLog) {
 	p.trafficRecorder.Record(log)
 }
 
-// Start starts the proxy server
+// Start starts the proxy server.
 func (p *Proxy) Start() error {
 	return p.StartWithMux(nil)
 }
 
-// StartWithMux starts the proxy server with an optional custom mux
-func (p *Proxy) StartWithMux(customMux *http.ServeMux) error {
+// StartWithMux starts the proxy server with an optional custom mux and middleware chain.
+func (p *Proxy) StartWithMux(customMux *http.ServeMux, middlewares ...func(http.Handler) http.Handler) error {
 	port := p.config.GetPort()
 
 	var mux *http.ServeMux
@@ -131,9 +131,17 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux) error {
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.HandleFunc("/stats", p.handleStats)
 
+	var handler http.Handler = mux
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if middlewares[i] == nil {
+			continue
+		}
+		handler = middlewares[i](handler)
+	}
+
 	p.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Handler: handler,
 	}
 
 	logger.Info("ccNexus starting on port %d", port)
