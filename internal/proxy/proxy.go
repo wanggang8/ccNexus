@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -343,6 +344,16 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
 
+	setProxyCORSHeaders(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeProxyJSONError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		logger.Error("Failed to read request body: %v", err)
@@ -350,6 +361,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+
+	trimmedBody := bytes.TrimSpace(bodyBytes)
+	if len(trimmedBody) == 0 {
+		logger.Warn("Rejected empty JSON request: %s %s", r.Method, r.URL.Path)
+		writeProxyJSONError(w, http.StatusBadRequest, "Empty request body")
+		return
+	}
+	if !json.Valid(trimmedBody) {
+		logger.Warn("Rejected invalid JSON request: %s %s", r.Method, r.URL.Path)
+		writeProxyJSONError(w, http.StatusBadRequest, "Invalid JSON request body")
+		return
+	}
 
 	requestStart := time.Now()
 	reqBytes := len(bodyBytes)
@@ -483,26 +506,31 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
-			logger.Error("[%s] Failed to transform request: %v", endpoint.Name, err)
-			p.stats.RecordError(endpoint.Name)
-			p.markRequestInactive(endpoint.Name)
-			p.recordTrafficLog(requestID, &TrafficLog{
-				Timestamp:       startTime,
-				EndpointName:    endpoint.Name,
-				ClientFormat:    string(clientFormat),
-				TransformerName: transformerName,
-				Method:          r.Method,
-				Path:            requestMeta.OriginalPath,
-				Duration:        time.Since(startTime),
-				Error:           err.Error(),
-				OriginalRequest: bodyBytes,
-				EventType:       TrafficEventTypeTransformError,
-			})
-			if endpointAttempts >= 2 {
-				p.rotateEndpoint()
-				endpointAttempts = 0
+			if isIgnorableJSONTransformError(err) {
+				logger.Warn("[%s] TransformRequest JSON truncated; passthrough original request: %v", endpoint.Name, err)
+				transformedBody = bodyBytes
+			} else {
+				logger.Error("[%s] Failed to transform request: %v", endpoint.Name, err)
+				p.stats.RecordError(endpoint.Name)
+				p.markRequestInactive(endpoint.Name)
+				p.recordTrafficLog(requestID, &TrafficLog{
+					Timestamp:       startTime,
+					EndpointName:    endpoint.Name,
+					ClientFormat:    string(clientFormat),
+					TransformerName: transformerName,
+					Method:          r.Method,
+					Path:            requestMeta.OriginalPath,
+					Duration:        time.Since(startTime),
+					Error:           err.Error(),
+					OriginalRequest: bodyBytes,
+					EventType:       TrafficEventTypeTransformError,
+				})
+				if endpointAttempts >= 2 {
+					p.rotateEndpoint()
+					endpointAttempts = 0
+				}
+				continue
 			}
-			continue
 		}
 		transformedBody, err = applyCursorTransformedRequestCompat(transformedBody, &requestMeta, transformerName)
 		if err != nil {
@@ -895,6 +923,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "All endpoints failed", http.StatusServiceUnavailable)
+}
+
+func setProxyCORSHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token, x-api-key, anthropic-version")
+}
+
+func writeProxyJSONError(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":{"message":%q,"type":"invalid_request_error"}}`, message)))
 }
 
 func (p *Proxy) selectCredential(endpointName string) (*storage.EndpointCredential, error) {

@@ -28,6 +28,9 @@ func shouldRetry(statusCode int) bool {
 func cleanIncompleteToolCalls(bodyBytes []byte) ([]byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		if isIgnorableJSONTransformError(err) {
+			return bodyBytes, nil
+		}
 		return bodyBytes, err
 	}
 
@@ -88,6 +91,16 @@ func cleanIncompleteToolCalls(bodyBytes []byte) ([]byte, error) {
 
 	req["messages"] = messages
 	return json.Marshal(req)
+}
+
+func isIgnorableJSONTransformError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "unexpected end of json input") ||
+		strings.Contains(message, "unexpected eof") ||
+		message == "eof"
 }
 
 // estimateInputTokens estimates input tokens from request body

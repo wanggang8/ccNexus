@@ -6,6 +6,7 @@ class Traffic {
     constructor() {
         this.container = document.getElementById('view-container');
         this.modalContainer = document.getElementById('modal-container');
+        this.loadVersion = 0;
     }
 
     async render() {
@@ -117,13 +118,20 @@ class Traffic {
     }
 
     async loadTraffic() {
+        const loadVersion = ++this.loadVersion;
         try {
             const data = await api.getTraffic(this.buildFilter());
+            if (loadVersion !== this.loadVersion) {
+                return;
+            }
             const toggle = document.getElementById('traffic-recording-toggle');
             toggle.checked = Boolean(data.recording);
             document.getElementById('traffic-summary').textContent = `${data.count || 0} shown / ${data.total || 0} buffered`;
             this.renderTable(data.logs || []);
         } catch (error) {
+            if (loadVersion !== this.loadVersion) {
+                return;
+            }
             notifications.error('Failed to load traffic logs: ' + error.message);
         }
     }
@@ -203,7 +211,10 @@ class Traffic {
         }
 
         try {
+            this.loadVersion += 1;
             await api.clearTraffic();
+            document.getElementById('traffic-summary').textContent = '0 shown / 0 buffered';
+            this.renderTable([]);
             notifications.success('Traffic logs cleared');
             await this.loadTraffic();
         } catch (error) {

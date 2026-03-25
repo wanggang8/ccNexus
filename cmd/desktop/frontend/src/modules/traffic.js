@@ -2,6 +2,8 @@ import { t } from '../i18n/index.js';
 import { escapeHtml, formatTokens } from '../utils/format.js';
 import { showNotification } from './modal.js';
 
+let trafficLoadVersion = 0;
+
 function formatDateTime(timestamp) {
     if (!timestamp) return '-';
     return new Date(timestamp).toLocaleString();
@@ -48,11 +50,13 @@ function readTrafficFilter() {
 }
 
 export async function loadTraffic() {
+    const loadVersion = ++trafficLoadVersion;
     try {
         if (!window.go?.main?.App) return;
 
         const resultStr = await window.go.main.App.GetTrafficLogs(JSON.stringify(readTrafficFilter()));
         const result = JSON.parse(resultStr);
+        if (loadVersion !== trafficLoadVersion) return;
         renderTraffic(result.logs || []);
 
         const summary = document.getElementById('trafficSummary');
@@ -67,6 +71,7 @@ export async function loadTraffic() {
             recordingToggle.checked = Boolean(result.recording);
         }
     } catch (error) {
+        if (loadVersion !== trafficLoadVersion) return;
         console.error('Failed to load traffic logs:', error);
     }
 }
@@ -156,7 +161,15 @@ export async function clearTrafficLogs() {
     }
 
     try {
+        trafficLoadVersion++;
         await window.go.main.App.ClearTrafficLogs();
+        renderTraffic([]);
+        const summary = document.getElementById('trafficSummary');
+        if (summary) {
+            summary.textContent = t('traffic.summary')
+                .replace('{count}', 0)
+                .replace('{total}', 0);
+        }
         showNotification(t('traffic.cleared'), 'success');
         await loadTraffic();
     } catch (error) {
