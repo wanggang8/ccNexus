@@ -12,8 +12,9 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
-// handleNonStreamingResponse processes non-streaming responses
-func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer) (int, int, error) {
+// handleNonStreamingResponse processes non-streaming responses.
+// Returns: inputTokens, outputTokens, originalResponse, transformedResponse, error.
+func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer) (int, int, []byte, []byte, error) {
 	var bodyBytes []byte
 	var err error
 
@@ -21,13 +22,13 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 		bodyBytes, err = decompressGzip(resp.Body)
 		if err != nil {
 			logger.Error("[%s] Failed to decompress gzip response: %v", endpoint.Name, err)
-			return 0, 0, err
+			return 0, 0, nil, nil, err
 		}
 	} else {
 		bodyBytes, err = io.ReadAll(resp.Body)
 		if err != nil {
 			logger.Error("[%s] Failed to read response body: %v", endpoint.Name, err)
-			return 0, 0, err
+			return 0, 0, nil, nil, err
 		}
 	}
 	resp.Body.Close()
@@ -38,7 +39,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 	transformedResp, err := trans.TransformResponse(bodyBytes, false)
 	if err != nil {
 		logger.Error("[%s] Failed to transform response: %v", endpoint.Name, err)
-		return 0, 0, err
+		return 0, 0, bodyBytes, nil, err
 	}
 
 	logger.DebugLog("[%s] Transformed Response: %s", endpoint.Name, string(transformedResp))
@@ -64,7 +65,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 	w.WriteHeader(resp.StatusCode)
 	w.Write(transformedResp)
 
-	return inputTokens, outputTokens, nil
+	return inputTokens, outputTokens, bodyBytes, transformedResp, nil
 }
 
 // extractTokenUsage extracts token counts from response

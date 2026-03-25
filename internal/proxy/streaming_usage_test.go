@@ -63,7 +63,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	in, out, _ := p.handleStreamingResponse(
+	in, out, _, _, _ := p.handleStreamingResponse(
 		rec,
 		resp,
 		endpoint,

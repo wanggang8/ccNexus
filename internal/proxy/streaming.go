@@ -16,8 +16,9 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
-// handleStreamingResponse processes streaming SSE responses
-func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string) {
+// handleStreamingResponse processes streaming SSE responses.
+// Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse.
+func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string, []byte, []byte) {
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -36,7 +37,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	if !ok {
 		logger.Error("[%s] ResponseWriter does not support flushing", endpoint.Name)
 		resp.Body.Close()
-		return 0, 0, ""
+		return 0, 0, "", nil, nil
 	}
 
 	// Handle gzip-encoded response body
@@ -46,7 +47,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		if err != nil {
 			logger.Error("[%s] Failed to create gzip reader: %v", endpoint.Name, err)
 			resp.Body.Close()
-			return 0, 0, ""
+			return 0, 0, "", nil, nil
 		}
 		defer gzipReader.Close()
 		reader = gzipReader
@@ -75,8 +76,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	var inputTokens, outputTokens int
 	var buffer bytes.Buffer
 	var outputText strings.Builder
+	var originalRespBuffer bytes.Buffer
+	var transformedRespBuffer bytes.Buffer
 	eventCount := 0
 	streamDone := false
+	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
 
 	for scanner.Scan() && !streamDone {
 		line := scanner.Text()
@@ -110,10 +114,16 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			buffer.WriteString(line + "\n")
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
+			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+				originalRespBuffer.Write(eventData)
+			}
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
+				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+					transformedRespBuffer.Write(transformedEvent)
+				}
 				w.Write(transformedEvent)
 				flusher.Flush()
 			}
@@ -126,6 +136,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			eventCount++
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
+			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+				originalRespBuffer.Write(eventData)
+			}
 
 			p.captureCodexRateLimitsFromEvent(endpoint, credentialID, eventData)
 
@@ -156,6 +169,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
 			} else if len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
+				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+					transformedRespBuffer.Write(transformedEvent)
+				}
 
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
@@ -198,7 +214,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	resp.Body.Close()
-	return inputTokens, outputTokens, outputText.String()
+	return inputTokens, outputTokens, outputText.String(), originalRespBuffer.Bytes(), transformedRespBuffer.Bytes()
 }
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.

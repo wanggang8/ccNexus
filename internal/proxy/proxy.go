@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
@@ -40,7 +41,8 @@ type Proxy struct {
 	currentIndex      int
 	mu                sync.RWMutex
 	server            *http.Server
-	httpClient        *http.Client                  // Reusable HTTP client with connection pool
+	httpClient        *http.Client // Reusable HTTP client with connection pool
+	trafficRecorder   *TrafficRecorder
 	activeRequests    map[string]bool               // tracks active requests by endpoint name
 	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
 	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
@@ -72,21 +74,38 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 	}
 
 	return &Proxy{
-		config:         cfg,
-		storage:        sqliteStorage,
-		stats:          stats,
-		currentIndex:   0,
-		httpClient:     httpClient,
-		activeRequests: make(map[string]bool),
-		endpointCtx:    make(map[string]context.Context),
-		endpointCancel: make(map[string]context.CancelFunc),
-		modelsCache:    NewModelsCache(cfg.ModelsCacheTTL),
+		config:          cfg,
+		storage:         sqliteStorage,
+		stats:           stats,
+		currentIndex:    0,
+		httpClient:      httpClient,
+		trafficRecorder: NewTrafficRecorder(),
+		activeRequests:  make(map[string]bool),
+		endpointCtx:     make(map[string]context.Context),
+		endpointCancel:  make(map[string]context.CancelFunc),
+		modelsCache:     NewModelsCache(cfg.ModelsCacheTTL),
 	}
 }
 
 // SetOnEndpointSuccess sets the callback for successful endpoint requests
 func (p *Proxy) SetOnEndpointSuccess(callback func(endpointName string)) {
 	p.onEndpointSuccess = callback
+}
+
+// GetTrafficRecorder returns the traffic recorder.
+func (p *Proxy) GetTrafficRecorder() *TrafficRecorder {
+	return p.trafficRecorder
+}
+
+func (p *Proxy) recordTrafficLog(requestID string, log *TrafficLog) {
+	if p == nil || p.trafficRecorder == nil || log == nil {
+		return
+	}
+	log.RequestID = requestID
+	if log.EventType == "" {
+		log.EventType = TrafficEventTypeUnified
+	}
+	p.trafficRecorder.Record(log)
 }
 
 // Start starts the proxy server
@@ -310,6 +329,9 @@ func detectClientFormat(path string) ClientFormat {
 
 // handleProxy handles the main proxy logic
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	requestID := uuid.New().String()
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		logger.Error("Failed to read request body: %v", err)
@@ -420,6 +442,16 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Error("[%s] %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    string(clientFormat),
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: bodyBytes,
+			})
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -434,6 +466,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Error("[%s] Failed to transform request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    string(clientFormat),
+				TransformerName: transformerName,
+				Method:          r.Method,
+				Path:            r.URL.Path,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: bodyBytes,
+				EventType:       TrafficEventTypeTransformError,
+			})
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -474,6 +518,19 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				Duration:           time.Since(startTime),
+				Error:              err.Error(),
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+				EventType:          TrafficEventTypeRequestBuildError,
+			})
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -512,6 +569,19 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				Duration:           time.Since(startTime),
+				Error:              err.Error(),
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+				EventType:          TrafficEventTypeRequestSendError,
+			})
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -561,7 +631,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
-			inputTokens, outputTokens, outputText := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID)
+			inputTokens, outputTokens, outputText, originalResp, transformedResp := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID)
 
 			// Fallback: estimate tokens when usage is 0
 			if inputTokens == 0 || outputTokens == 0 {
@@ -573,6 +643,25 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
 			p.markCredentialSuccess(credentialID)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				ID:                  requestID,
+				Timestamp:           startTime,
+				EndpointName:        endpoint.Name,
+				ClientFormat:        string(clientFormat),
+				TransformerName:     transformerName,
+				Method:              r.Method,
+				Path:                r.URL.Path,
+				StatusCode:          resp.StatusCode,
+				Duration:            time.Since(startTime),
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				IsStreaming:         true,
+				EventType:           TrafficEventTypeStreamingSuccess,
+				OriginalRequest:     bodyBytes,
+				TransformedRequest:  transformedBody,
+				OriginalResponse:    originalResp,
+				TransformedResponse: transformedResp,
+			})
 			if p.onEndpointSuccess != nil {
 				p.onEndpointSuccess(endpoint.Name)
 			}
@@ -582,20 +671,62 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			inputTokens, outputTokens, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
+			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
 			if err == nil {
 				p.stats.RecordRequest(endpoint.Name)
 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
 				p.markCredentialSuccess(credentialID)
-			p.markRequestInactive(endpoint.Name)
-			if p.onEndpointSuccess != nil {
-				p.onEndpointSuccess(endpoint.Name)
+				p.markRequestInactive(endpoint.Name)
+				p.recordTrafficLog(requestID, &TrafficLog{
+					Timestamp:           startTime,
+					EndpointName:        endpoint.Name,
+					ClientFormat:        string(clientFormat),
+					TransformerName:     transformerName,
+					Method:              r.Method,
+					Path:                r.URL.Path,
+					StatusCode:          resp.StatusCode,
+					Duration:            time.Since(startTime),
+					InputTokens:         inputTokens,
+					OutputTokens:        outputTokens,
+					IsStreaming:         false,
+					EventType:           TrafficEventTypeNonStreamingSuccess,
+					OriginalRequest:     bodyBytes,
+					TransformedRequest:  transformedBody,
+					OriginalResponse:    originalResp,
+					TransformedResponse: transformedResp,
+				})
+				if p.onEndpointSuccess != nil {
+					p.onEndpointSuccess(endpoint.Name)
+				}
+				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+				logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
+				return
 			}
+
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         http.StatusBadGateway,
+				Duration:           time.Since(startTime),
+				IsStreaming:        false,
+				Error:              err.Error(),
+				EventType:          TrafficEventTypeNonStreamingError,
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+				OriginalResponse:   originalResp,
+			})
+			p.stats.RecordRequest(endpoint.Name)
+			p.stats.RecordError(endpoint.Name)
+			p.markRequestInactive(endpoint.Name)
+			http.Error(w, fmt.Sprintf(`{"error":{"message":"response transformation failed: %s","type":"proxy_error"}}`, err.Error()), http.StatusBadGateway)
 			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
-			logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
+			logger.Debug("[%s] Transform error latency=%s cred_id=%d", endpoint.Name, totalElapsed, credentialID)
 			return
-		}
 		}
 
 		if shouldRetry(resp.StatusCode) {
@@ -616,6 +747,21 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
 			p.stats.RecordError(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:          startTime,
+				EndpointName:       endpoint.Name,
+				ClientFormat:       string(clientFormat),
+				TransformerName:    transformerName,
+				Method:             r.Method,
+				Path:               r.URL.Path,
+				StatusCode:         resp.StatusCode,
+				Duration:           time.Since(startTime),
+				Error:              errMsg,
+				EventType:          TrafficEventTypeRetryError,
+				OriginalRequest:    bodyBytes,
+				TransformedRequest: transformedBody,
+				OriginalResponse:   errBody,
+			})
 			if endpointAttempts >= 2 {
 				p.rotateEndpoint()
 				endpointAttempts = 0
@@ -706,6 +852,21 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
+		p.recordTrafficLog(requestID, &TrafficLog{
+			Timestamp:           startTime,
+			EndpointName:        endpoint.Name,
+			ClientFormat:        string(clientFormat),
+			TransformerName:     transformerName,
+			Method:              r.Method,
+			Path:                r.URL.Path,
+			StatusCode:          resp.StatusCode,
+			Duration:            time.Since(startTime),
+			EventType:           TrafficEventTypePassthroughResponse,
+			OriginalRequest:     bodyBytes,
+			TransformedRequest:  transformedBody,
+			OriginalResponse:    respBody,
+			TransformedResponse: respBody,
+		})
 		return
 	}
 
