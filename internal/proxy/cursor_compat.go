@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,6 +20,15 @@ type proxyRequestMeta struct {
 	EffectivePath string
 	ClientFormat  ClientFormat
 	ClientModel   string
+	CursorState   *cursorCompatState
+}
+
+type cursorCompatState struct {
+	InThinkingTag         bool
+	ToolCallsSeen         bool
+	MessagesReasoningBuf  string
+	MessagesThinkingShown bool
+	MessagesIndexOffset   int
 }
 
 func prepareProxyRequest(r *http.Request, body []byte) (*http.Request, []byte, proxyRequestMeta, error) {
@@ -29,6 +40,7 @@ func prepareProxyRequest(r *http.Request, body []byte) (*http.Request, []byte, p
 	if strippedPath, ok := stripCursorPrefix(r.URL.Path); ok {
 		meta.CursorMode = true
 		meta.EffectivePath = strippedPath
+		meta.CursorState = &cursorCompatState{}
 	}
 	meta.ClientFormat = detectClientFormat(meta.EffectivePath)
 
@@ -173,7 +185,7 @@ func normalizeCursorChatRequest(body []byte) []byte {
 	}
 
 	if messages, ok := payload["messages"].([]interface{}); ok {
-		payload["messages"] = convertCursorMessages(messages)
+		payload["messages"] = normalizeCursorChatMessages(convertCursorMessages(messages))
 	}
 
 	if tools, ok := payload["tools"].([]interface{}); ok {
@@ -191,6 +203,22 @@ func normalizeCursorChatRequest(body []byte) []byte {
 		return body
 	}
 	return updated
+}
+
+func normalizeCursorChatMessages(messages []interface{}) []interface{} {
+	normalized := make([]interface{}, 0, len(messages))
+	for _, messageValue := range messages {
+		message, ok := messageValue.(map[string]interface{})
+		if !ok {
+			normalized = append(normalized, messageValue)
+			continue
+		}
+		if toolCalls, ok := message["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+			fixCursorToolCalls(message, map[string]interface{}{})
+		}
+		normalized = append(normalized, message)
+	}
+	return normalized
 }
 
 func convertCursorMessages(messages []interface{}) []interface{} {
@@ -421,6 +449,8 @@ func fixCursorResponseBody(body []byte, meta proxyRequestMeta) ([]byte, error) {
 		return fixCursorChatResponseBody(body, meta.ClientModel)
 	case ClientFormatOpenAIResponses:
 		return fixCursorResponsesBody(body, meta.ClientModel)
+	case ClientFormatClaude:
+		return fixCursorMessagesResponseBody(body)
 	default:
 		return body, nil
 	}
@@ -463,17 +493,200 @@ func fixCursorStreamBundle(bundle []byte, meta proxyRequestMeta) ([]byte, error)
 
 		switch meta.ClientFormat {
 		case ClientFormatOpenAIChat:
-			payload = fixCursorChatChunkPayload(payload, meta.ClientModel)
-			writeSSEChunk(&output, eventName, payload)
+			for _, item := range formatCursorChatStreamEvent(eventName, payload, meta) {
+				writeSSEChunk(&output, item.eventName, item.payload)
+			}
 		case ClientFormatOpenAIResponses:
 			outputEvent, outputPayload := formatCursorResponsesStreamEvent(eventName, payload, meta.ClientModel)
 			writeSSEChunk(&output, outputEvent, outputPayload)
+		case ClientFormatClaude:
+			for _, item := range formatCursorMessagesStreamEvent(eventName, payload, meta) {
+				writeSSEChunk(&output, item.eventName, item.payload)
+			}
 		default:
 			writeSSEChunk(&output, eventName, payload)
 		}
 	}
 
 	return output.Bytes(), nil
+}
+
+type cursorSSEItem struct {
+	eventName string
+	payload   map[string]interface{}
+}
+
+func formatCursorChatStreamEvent(eventName string, payload map[string]interface{}, meta proxyRequestMeta) []cursorSSEItem {
+	payload = fixCursorChatChunkPayload(payload, meta.ClientModel)
+	state := meta.CursorState
+	if state == nil {
+		return []cursorSSEItem{{eventName: eventName, payload: payload}}
+	}
+
+	choices, ok := payload["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return []cursorSSEItem{{eventName: eventName, payload: payload}}
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return []cursorSSEItem{{eventName: eventName, payload: payload}}
+	}
+	delta, ok := choice["delta"].(map[string]interface{})
+	if !ok {
+		return []cursorSSEItem{{eventName: eventName, payload: payload}}
+	}
+
+	results := make([]cursorSSEItem, 0)
+	finishReason := choice["finish_reason"]
+	toolCalls, hasToolCalls := delta["tool_calls"].([]interface{})
+	content, hasContent := delta["content"].(string)
+	reasoning, hasReasoning := delta["reasoning_content"].(string)
+
+	if hasContent && content != "" {
+		results = append(results, splitCursorChatContentIntoItems(payload, eventName, content, finishReason, hasToolCalls, state)...)
+		delete(delta, "content")
+	}
+	if hasReasoning && reasoning != "" {
+		results = append(results, cursorSSEItem{eventName: eventName, payload: cloneCursorChatChunk(payload, map[string]interface{}{
+			"reasoning_content": reasoning,
+		}, nil)})
+		delete(delta, "reasoning_content")
+	}
+	if hasToolCalls && len(toolCalls) > 0 {
+		if !state.ToolCallsSeen {
+			state.ToolCallsSeen = true
+			results = append(results, cursorSSEItem{eventName: eventName, payload: cloneCursorChatChunk(payload, map[string]interface{}{
+				"content": "\n",
+			}, nil)})
+		}
+		results = append(results, cursorSSEItem{eventName: eventName, payload: cloneCursorChatChunk(payload, map[string]interface{}{
+			"tool_calls": toolCalls,
+		}, finishReason)})
+		delete(delta, "tool_calls")
+	}
+
+	if len(delta) > 0 || finishReason != nil && len(results) == 0 {
+		results = append(results, cursorSSEItem{eventName: eventName, payload: payload})
+	}
+	return results
+}
+
+func splitCursorChatContentIntoItems(template map[string]interface{}, eventName, content string, finishReason interface{}, hasToolCalls bool, state *cursorCompatState) []cursorSSEItem {
+	if state == nil {
+		return []cursorSSEItem{{eventName: eventName, payload: cloneCursorChatChunk(template, map[string]interface{}{"content": content}, finishReason)}}
+	}
+
+	items := make([]cursorSSEItem, 0)
+	appendContent := func(text string) {
+		if text == "" {
+			return
+		}
+		items = append(items, cursorSSEItem{
+			eventName: eventName,
+			payload:   cloneCursorChatChunk(template, map[string]interface{}{"content": text}, nil),
+		})
+	}
+	appendReasoning := func(text string) {
+		if text == "" {
+			return
+		}
+		items = append(items, cursorSSEItem{
+			eventName: eventName,
+			payload:   cloneCursorChatChunk(template, map[string]interface{}{"reasoning_content": text}, nil),
+		})
+	}
+
+	remaining := content
+	for len(remaining) > 0 {
+		if state.InThinkingTag {
+			closeIdx := strings.Index(remaining, "</think>")
+			if closeIdx == -1 {
+				appendReasoning(remaining)
+				remaining = ""
+				break
+			}
+			appendReasoning(remaining[:closeIdx])
+			remaining = strings.TrimLeft(remaining[closeIdx+len("</think>"):], "\n")
+			state.InThinkingTag = false
+			continue
+		}
+
+		openIdx := strings.Index(remaining, "<think>")
+		if openIdx == -1 {
+			appendContent(remaining)
+			remaining = ""
+			break
+		}
+		if openIdx > 0 {
+			appendContent(remaining[:openIdx])
+		}
+		remaining = remaining[openIdx+len("<think>"):]
+		closeIdx := strings.Index(remaining, "</think>")
+		if closeIdx == -1 {
+			state.InThinkingTag = true
+			appendReasoning(remaining)
+			remaining = ""
+			break
+		}
+		appendReasoning(remaining[:closeIdx])
+		remaining = strings.TrimLeft(remaining[closeIdx+len("</think>"):], "\n")
+	}
+
+	if len(items) == 0 {
+		items = append(items, cursorSSEItem{
+			eventName: eventName,
+			payload:   cloneCursorChatChunk(template, map[string]interface{}{"content": content}, nil),
+		})
+	}
+	if finishReason != nil && !hasToolCalls {
+		last := &items[len(items)-1]
+		last.payload = cloneCursorChatChunk(last.payload, extractCursorDelta(last.payload), finishReason)
+	}
+	return items
+}
+
+func formatCursorMessagesStreamEvent(eventName string, payload map[string]interface{}, meta proxyRequestMeta) []cursorSSEItem {
+	state := meta.CursorState
+	if state == nil {
+		return []cursorSSEItem{{eventName: eventName, payload: payload}}
+	}
+
+	modified := cloneJSONObject(payload)
+	reasoning := ""
+	for _, key := range []string{"message", "delta"} {
+		container, ok := modified[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if rc := stringValue(container["reasoning_content"]); rc != "" {
+			reasoning += rc
+			delete(container, "reasoning_content")
+		}
+		if rc := stringValue(container["reasoningContent"]); rc != "" {
+			reasoning += rc
+			delete(container, "reasoningContent")
+		}
+	}
+	if reasoning != "" {
+		state.MessagesReasoningBuf += reasoning
+	}
+
+	results := make([]cursorSSEItem, 0)
+	if state.MessagesReasoningBuf != "" && !state.MessagesThinkingShown && isCursorMessagesTextDelta(modified) {
+		state.MessagesThinkingShown = true
+		state.MessagesIndexOffset = 1
+		results = append(results, emitCursorMessagesThinking(state.MessagesReasoningBuf)...)
+		state.MessagesReasoningBuf = ""
+	}
+
+	if state.MessagesIndexOffset > 0 {
+		if index, ok := modified["index"].(float64); ok {
+			modified["index"] = index + float64(state.MessagesIndexOffset)
+		}
+	}
+
+	results = append(results, cursorSSEItem{eventName: eventName, payload: modified})
+	return results
 }
 
 func fixCursorChatResponseBody(body []byte, clientModel string) ([]byte, error) {
@@ -654,6 +867,7 @@ func fixCursorToolCalls(message map[string]interface{}, choice map[string]interf
 		case nil:
 			functionData["arguments"] = "{}"
 		}
+		normalizeCursorToolArguments(functionData)
 	}
 
 	if finishReason := stringValue(choice["finish_reason"]); finishReason != "tool_calls" {
@@ -730,6 +944,15 @@ func fixCursorResponsesBody(body []byte, clientModel string) ([]byte, error) {
 	if clientModel != "" {
 		payload["model"] = clientModel
 	}
+	return json.Marshal(payload)
+}
+
+func fixCursorMessagesResponseBody(body []byte) ([]byte, error) {
+	payload, ok := decodeJSONObject(body)
+	if !ok {
+		return body, nil
+	}
+	injectCursorMessagesThinking(payload)
 	return json.Marshal(payload)
 }
 
@@ -865,6 +1088,273 @@ func extractThinkTags(text string) (string, string) {
 	}
 
 	return strings.TrimSpace(cleaned), strings.TrimSpace(strings.Join(reasoningParts, "\n"))
+}
+
+func injectCursorMessagesThinking(payload map[string]interface{}) {
+	reasoning := stringValue(payload["reasoning_content"])
+	if reasoning == "" {
+		reasoning = stringValue(payload["reasoningContent"])
+	}
+	if reasoning == "" {
+		return
+	}
+	delete(payload, "reasoning_content")
+	delete(payload, "reasoningContent")
+
+	content, ok := payload["content"].([]interface{})
+	if !ok {
+		content = []interface{}{}
+	}
+	for _, blockValue := range content {
+		block, ok := blockValue.(map[string]interface{})
+		if ok && stringValue(block["type"]) == "thinking" {
+			return
+		}
+	}
+	payload["content"] = append([]interface{}{
+		map[string]interface{}{"type": "thinking", "thinking": reasoning},
+	}, content...)
+}
+
+func isCursorMessagesTextDelta(payload map[string]interface{}) bool {
+	delta, ok := payload["delta"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if stringValue(delta["type"]) != "text_delta" {
+		return false
+	}
+	return stringValue(delta["text"]) != ""
+}
+
+func emitCursorMessagesThinking(text string) []cursorSSEItem {
+	if text == "" {
+		return nil
+	}
+	return []cursorSSEItem{
+		{
+			eventName: "content_block_start",
+			payload: map[string]interface{}{
+				"type":          "content_block_start",
+				"index":         0,
+				"content_block": map[string]interface{}{"type": "thinking", "thinking": ""},
+			},
+		},
+		{
+			eventName: "content_block_delta",
+			payload: map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]interface{}{"type": "thinking_delta", "thinking": text},
+			},
+		},
+		{
+			eventName: "content_block_stop",
+			payload: map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": 0,
+			},
+		},
+	}
+}
+
+func cloneCursorChatChunk(template map[string]interface{}, delta map[string]interface{}, finishReason interface{}) map[string]interface{} {
+	cloned := cloneJSONObject(template)
+	choices, ok := template["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return cloned
+	}
+	firstChoice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return cloned
+	}
+
+	newChoice := cloneJSONObject(firstChoice)
+	newChoice["delta"] = delta
+	if finishReason != nil {
+		newChoice["finish_reason"] = finishReason
+	} else {
+		newChoice["finish_reason"] = nil
+	}
+	cloned["choices"] = []interface{}{newChoice}
+	return cloned
+}
+
+func extractCursorDelta(payload map[string]interface{}) map[string]interface{} {
+	choices, ok := payload["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return map[string]interface{}{}
+	}
+	firstChoice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	delta, ok := firstChoice["delta"].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return delta
+}
+
+func normalizeCursorToolArguments(functionData map[string]interface{}) {
+	rawArgs := functionData["arguments"]
+	if rawArgs == nil {
+		return
+	}
+
+	argsStr, ok := rawArgs.(string)
+	if !ok {
+		return
+	}
+
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+		return
+	}
+
+	args = normalizeCursorArgs(args)
+	args = repairCursorStrReplaceArgs(stringValue(functionData["name"]), args)
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return
+	}
+	functionData["arguments"] = string(encoded)
+}
+
+func normalizeCursorArgs(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return args
+	}
+	if _, ok := args["path"]; !ok {
+		if filePath, ok := args["file_path"]; ok {
+			args["path"] = filePath
+			delete(args, "file_path")
+		}
+	}
+	return args
+}
+
+var (
+	cursorSmartDouble = []rune{'«', '»', '\u201c', '\u201d', '\u275e', '\u201f', '\u201e', '\u275d'}
+	cursorSmartSingle = []rune{'\u2018', '\u2019', '\u201a', '\u201b'}
+)
+
+func repairCursorStrReplaceArgs(toolName string, args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return args
+	}
+	nameLower := strings.ToLower(strings.TrimSpace(toolName))
+	if !strings.Contains(nameLower, "str_replace") && !strings.Contains(nameLower, "search_replace") {
+		return args
+	}
+
+	oldValue, _ := args["old_string"].(string)
+	if oldValue == "" {
+		oldValue, _ = args["old_str"].(string)
+	}
+	if oldValue == "" {
+		return args
+	}
+
+	filePath, _ := args["path"].(string)
+	if filePath == "" {
+		filePath, _ = args["file_path"].(string)
+	}
+	if filePath == "" {
+		return args
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return args
+	}
+	contentStr := string(content)
+	if strings.Contains(contentStr, oldValue) {
+		return args
+	}
+	normalizedOld := replaceCursorSmartQuotes(oldValue)
+	if normalizedOld != oldValue && strings.Contains(contentStr, normalizedOld) {
+		if _, ok := args["old_string"]; ok {
+			args["old_string"] = normalizedOld
+		}
+		if _, ok := args["old_str"]; ok {
+			args["old_str"] = normalizedOld
+		}
+		if newValue, ok := args["new_string"].(string); ok {
+			args["new_string"] = replaceCursorSmartQuotes(newValue)
+		}
+		if newValue, ok := args["new_str"].(string); ok {
+			args["new_str"] = replaceCursorSmartQuotes(newValue)
+		}
+		return args
+	}
+
+	pattern, err := regexp.Compile(buildCursorFuzzyPattern(oldValue))
+	if err != nil {
+		return args
+	}
+	matches := pattern.FindAllString(contentStr, -1)
+	if len(matches) != 1 {
+		return args
+	}
+
+	if _, ok := args["old_string"]; ok {
+		args["old_string"] = matches[0]
+	}
+	if _, ok := args["old_str"]; ok {
+		args["old_str"] = matches[0]
+	}
+
+	if newValue, ok := args["new_string"].(string); ok {
+		args["new_string"] = replaceCursorSmartQuotes(newValue)
+	}
+	if newValue, ok := args["new_str"].(string); ok {
+		args["new_str"] = replaceCursorSmartQuotes(newValue)
+	}
+	return args
+}
+
+func buildCursorFuzzyPattern(text string) string {
+	var builder strings.Builder
+	for _, ch := range text {
+		switch {
+		case containsRune(cursorSmartDouble, ch) || ch == '"':
+			builder.WriteString(`["\u00ab\u201c\u201d\u275e\u201f\u201e\u275d\u00bb]`)
+		case containsRune(cursorSmartSingle, ch) || ch == '\'':
+			builder.WriteString(`['\u2018\u2019\u201a\u201b]`)
+		case ch == ' ' || ch == '\t':
+			builder.WriteString(`\s+`)
+		case ch == '\\':
+			builder.WriteString(`\\{1,2}`)
+		default:
+			builder.WriteString(regexp.QuoteMeta(string(ch)))
+		}
+	}
+	return builder.String()
+}
+
+func replaceCursorSmartQuotes(text string) string {
+	var builder strings.Builder
+	for _, ch := range text {
+		switch {
+		case containsRune(cursorSmartDouble, ch):
+			builder.WriteRune('"')
+		case containsRune(cursorSmartSingle, ch):
+			builder.WriteRune('\'')
+		default:
+			builder.WriteRune(ch)
+		}
+	}
+	return builder.String()
+}
+
+func containsRune(values []rune, target rune) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func stringValue(value interface{}) string {

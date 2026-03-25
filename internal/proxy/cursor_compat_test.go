@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -163,6 +164,115 @@ func TestFixCursorStreamBundleRewritesResponsesEvents(t *testing.T) {
 	}
 	if !strings.Contains(fixedStr, `"type":"response.output_text.delta"`) {
 		t.Fatalf("expected delta payload to be preserved for text extraction, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorResponseBodyInjectsMessagesThinkingBlock(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1",
+		"type":"message",
+		"content":[{"type":"text","text":"hello"}],
+		"reasoningContent":"think first"
+	}`)
+
+	fixed, err := fixCursorResponseBody(body, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatClaude,
+	})
+	if err != nil {
+		t.Fatalf("fixCursorResponseBody failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(fixed, &payload); err != nil {
+		t.Fatalf("fixed body is not valid json: %v", err)
+	}
+	content := payload["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	if first["type"] != "thinking" || first["thinking"] != "think first" {
+		t.Fatalf("expected injected thinking block, got %#v", first)
+	}
+}
+
+func TestFixCursorStreamBundleSplitsThinkTagsForChat(t *testing.T) {
+	bundle := []byte("data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<think>reason</think>Hello\"},\"finish_reason\":null}]}\n\n")
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIChat,
+		ClientModel:  "cursor-model",
+		CursorState:  &cursorCompatState{},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `"reasoning_content":"reason"`) {
+		t.Fatalf("expected reasoning_content split, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"content":"Hello"`) {
+		t.Fatalf("expected content chunk preserved, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundleInjectsMessagesThinkingEvents(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello","reasoningContent":"think"}}`,
+		"",
+	}, "\n"))
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatClaude,
+		CursorState:  &cursorCompatState{},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, "event: content_block_start") || !strings.Contains(fixedStr, `"thinking":"think"`) {
+		t.Fatalf("expected injected thinking SSE events, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"index":1`) {
+		t.Fatalf("expected original text block index offset, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorToolCallsNormalizesArguments(t *testing.T) {
+	tempFile, err := os.CreateTemp(t.TempDir(), "cursor-tool-*.txt")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := tempFile.WriteString("hello \"world\""); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	message := map[string]interface{}{
+		"tool_calls": []interface{}{
+			map[string]interface{}{
+				"function": map[string]interface{}{
+					"name":      "str_replace",
+					"arguments": "{\"file_path\":\"" + tempFile.Name() + "\",\"old_string\":\"hello \\u201cworld\\u201d\",\"new_string\":\"bye\\u201d\"}",
+				},
+			},
+		},
+	}
+	choice := map[string]interface{}{}
+	fixCursorToolCalls(message, choice)
+
+	toolCall := message["tool_calls"].([]interface{})[0].(map[string]interface{})
+	functionData := toolCall["function"].(map[string]interface{})
+	args := functionData["arguments"].(string)
+	if !strings.Contains(args, `"path":"`) {
+		t.Fatalf("expected file_path to normalize to path, got %s", args)
+	}
+	if !strings.Contains(args, `hello \"world\"`) {
+		t.Fatalf("expected old_string to be repaired to exact file content, got %s", args)
+	}
+	if strings.Contains(args, "”") {
+		t.Fatalf("expected smart quotes in new_string to be normalized, got %s", args)
 	}
 }
 
