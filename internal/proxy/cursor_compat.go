@@ -968,7 +968,6 @@ func formatCursorResponsesStreamEvent(eventName string, payload map[string]inter
 	case "response.created", "response.completed":
 		if response, ok := payload["response"].(map[string]interface{}); ok {
 			rewritten := cloneJSONObject(response)
-			rewritten["type"] = eventName
 			if clientModel != "" {
 				rewritten["model"] = clientModel
 			}
@@ -982,11 +981,43 @@ func formatCursorResponsesStreamEvent(eventName string, payload map[string]inter
 		if part, ok := payload["part"].(map[string]interface{}); ok {
 			return eventName, cloneJSONObject(part)
 		}
+	case "response.output_text.delta":
+		return eventName, map[string]interface{}{
+			"type":  "output_text",
+			"delta": stringValue(payload["delta"]),
+		}
+	case "response.output_text.done":
+		return eventName, map[string]interface{}{
+			"type": "output_text",
+			"text": stringValue(payload["text"]),
+		}
+	case "response.reasoning_summary_text.delta":
+		return eventName, map[string]interface{}{
+			"type":  "summary_text",
+			"delta": stringValue(payload["delta"]),
+		}
+	case "response.reasoning_summary_text.done":
+		return eventName, map[string]interface{}{
+			"type": "summary_text",
+			"text": stringValue(payload["text"]),
+		}
+	case "response.function_call_arguments.delta":
+		return eventName, map[string]interface{}{
+			"type":  "function_call",
+			"delta": stringValue(payload["delta"]),
+		}
+	case "response.function_call_arguments.done":
+		return eventName, map[string]interface{}{
+			"type":      "function_call",
+			"arguments": stringValue(payload["arguments"]),
+		}
 	}
 
 	rewritten := cloneJSONObject(payload)
 	if clientModel != "" {
-		rewritten["model"] = clientModel
+		if _, ok := rewritten["model"]; ok {
+			rewritten["model"] = clientModel
+		}
 	}
 	return eventName, rewritten
 }

@@ -162,8 +162,11 @@ func TestFixCursorStreamBundleRewritesResponsesEvents(t *testing.T) {
 	if !strings.Contains(fixedStr, `"model":"cursor-model"`) {
 		t.Fatalf("expected model rewrite in responses events, got %s", fixedStr)
 	}
-	if !strings.Contains(fixedStr, `"type":"response.output_text.delta"`) {
-		t.Fatalf("expected delta payload to be preserved for text extraction, got %s", fixedStr)
+	if !strings.Contains(fixedStr, `"type":"output_text"`) || !strings.Contains(fixedStr, `"delta":"hello"`) {
+		t.Fatalf("expected output_text delta payload shape, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, `"type":"response.created"`) {
+		t.Fatalf("did not expect event type echoed inside created payload, got %s", fixedStr)
 	}
 }
 
