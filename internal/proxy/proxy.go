@@ -126,8 +126,11 @@ func (p *Proxy) StartWithMux(customMux *http.ServeMux, middlewares ...func(http.
 
 	// Register proxy routes
 	mux.HandleFunc("/", p.handleProxy)
+	mux.HandleFunc("/cursor/", p.handleProxy)
 	mux.HandleFunc("/v1/messages/count_tokens", p.handleCountTokens)
+	mux.HandleFunc("/cursor/v1/messages/count_tokens", withCursorPathStripped(p.handleCountTokens))
 	mux.HandleFunc("/v1/models", p.handleModels)
+	mux.HandleFunc("/cursor/v1/models", withCursorPathStripped(p.handleModels))
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.HandleFunc("/stats", p.handleStats)
 
@@ -351,11 +354,19 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	requestStart := time.Now()
 	reqBytes := len(bodyBytes)
 
+	effectiveRequest, normalizedBody, requestMeta, err := prepareProxyRequest(r, bodyBytes)
+	if err != nil {
+		logger.Error("Failed to prepare request: %v", err)
+		http.Error(w, "Failed to prepare request", http.StatusBadRequest)
+		return
+	}
+	bodyBytes = normalizedBody
+
 	// Detect client format
-	clientFormat := detectClientFormat(r.URL.Path)
+	clientFormat := requestMeta.ClientFormat
 
 	logger.DebugLog("=== Proxy Request ===")
-	logger.DebugLog("Method: %s, Path: %s, ClientFormat: %s", r.Method, r.URL.Path, clientFormat)
+	logger.DebugLog("Method: %s, Path: %s, ClientFormat: %s", r.Method, requestMeta.OriginalPath, clientFormat)
 	logger.DebugLog("Request Body: %s", string(bodyBytes))
 
 	var streamReq struct {
@@ -455,7 +466,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				EndpointName:    endpoint.Name,
 				ClientFormat:    string(clientFormat),
 				Method:          r.Method,
-				Path:            r.URL.Path,
+				Path:            requestMeta.OriginalPath,
 				Duration:        time.Since(startTime),
 				Error:           err.Error(),
 				OriginalRequest: bodyBytes,
@@ -480,7 +491,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ClientFormat:    string(clientFormat),
 				TransformerName: transformerName,
 				Method:          r.Method,
-				Path:            r.URL.Path,
+				Path:            requestMeta.OriginalPath,
 				Duration:        time.Since(startTime),
 				Error:           err.Error(),
 				OriginalRequest: bodyBytes,
@@ -521,7 +532,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
+		proxyReq, err := buildProxyRequest(effectiveRequest, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
 		if err != nil {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)
@@ -532,7 +543,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ClientFormat:       string(clientFormat),
 				TransformerName:    transformerName,
 				Method:             r.Method,
-				Path:               r.URL.Path,
+				Path:               requestMeta.OriginalPath,
 				Duration:           time.Since(startTime),
 				Error:              err.Error(),
 				OriginalRequest:    bodyBytes,
@@ -607,7 +618,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// Codex backend enforces stream=true upstream for /responses in some environments.
 		// Bridge to non-stream client responses regardless of upstream Content-Type quirks.
 		if resp.StatusCode == http.StatusOK && !streamReq.Stream && shouldAggregateCodexStreaming(endpoint, transformerName) {
-			inputTokens, outputTokens, outputText, err := p.handleStreamingAsNonStreaming(w, resp, endpoint, trans, credentialID)
+			inputTokens, outputTokens, outputText, err := p.handleStreamingAsNonStreaming(w, resp, endpoint, trans, credentialID, requestMeta)
 			if err == nil {
 				// Fallback: estimate tokens when usage is missing.
 				if inputTokens == 0 || outputTokens == 0 {
@@ -639,7 +650,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
-			inputTokens, outputTokens, outputText, originalResp, transformedResp := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID)
+			inputTokens, outputTokens, outputText, originalResp, transformedResp := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID, requestMeta)
 
 			// Fallback: estimate tokens when usage is 0
 			if inputTokens == 0 || outputTokens == 0 {
@@ -658,7 +669,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ClientFormat:        string(clientFormat),
 				TransformerName:     transformerName,
 				Method:              r.Method,
-				Path:                r.URL.Path,
+				Path:                requestMeta.OriginalPath,
 				StatusCode:          resp.StatusCode,
 				Duration:            time.Since(startTime),
 				InputTokens:         inputTokens,
@@ -679,7 +690,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
+			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans, requestMeta)
 			if err == nil {
 				p.stats.RecordRequest(endpoint.Name)
 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
@@ -692,7 +703,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					ClientFormat:        string(clientFormat),
 					TransformerName:     transformerName,
 					Method:              r.Method,
-					Path:                r.URL.Path,
+					Path:                requestMeta.OriginalPath,
 					StatusCode:          resp.StatusCode,
 					Duration:            time.Since(startTime),
 					InputTokens:         inputTokens,
@@ -718,7 +729,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ClientFormat:       string(clientFormat),
 				TransformerName:    transformerName,
 				Method:             r.Method,
-				Path:               r.URL.Path,
+				Path:               requestMeta.OriginalPath,
 				StatusCode:         http.StatusBadGateway,
 				Duration:           time.Since(startTime),
 				IsStreaming:        false,
@@ -761,7 +772,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ClientFormat:       string(clientFormat),
 				TransformerName:    transformerName,
 				Method:             r.Method,
-				Path:               r.URL.Path,
+				Path:               requestMeta.OriginalPath,
 				StatusCode:         resp.StatusCode,
 				Duration:           time.Since(startTime),
 				Error:              errMsg,
@@ -866,7 +877,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			ClientFormat:        string(clientFormat),
 			TransformerName:     transformerName,
 			Method:              r.Method,
-			Path:                r.URL.Path,
+			Path:                requestMeta.OriginalPath,
 			StatusCode:          resp.StatusCode,
 			Duration:            time.Since(startTime),
 			EventType:           TrafficEventTypePassthroughResponse,

@@ -14,7 +14,7 @@ import (
 
 // handleNonStreamingResponse processes non-streaming responses.
 // Returns: inputTokens, outputTokens, originalResponse, transformedResponse, error.
-func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer) (int, int, []byte, []byte, error) {
+func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, requestMeta proxyRequestMeta) (int, int, []byte, []byte, error) {
 	var bodyBytes []byte
 	var err error
 
@@ -39,6 +39,11 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 	transformedResp, err := trans.TransformResponse(bodyBytes, false)
 	if err != nil {
 		logger.Error("[%s] Failed to transform response: %v", endpoint.Name, err)
+		return 0, 0, bodyBytes, nil, err
+	}
+	transformedResp, err = fixCursorResponseBody(transformedResp, requestMeta)
+	if err != nil {
+		logger.Error("[%s] Failed to apply cursor response compatibility: %v", endpoint.Name, err)
 		return 0, 0, bodyBytes, nil, err
 	}
 

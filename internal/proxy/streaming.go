@@ -18,7 +18,7 @@ import (
 
 // handleStreamingResponse processes streaming SSE responses.
 // Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse.
-func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string, []byte, []byte) {
+func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64, requestMeta proxyRequestMeta) (int, int, string, []byte, []byte) {
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -120,6 +120,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
+				transformedEvent, err = fixCursorStreamBundle(transformedEvent, requestMeta)
+			}
+			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
 				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
 					transformedRespBuffer.Write(transformedEvent)
@@ -167,7 +170,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
-			} else if len(transformedEvent) > 0 {
+			} else {
+				transformedEvent, err = fixCursorStreamBundle(transformedEvent, requestMeta)
+				if err != nil {
+					logger.Error("[%s] Failed to apply cursor SSE compatibility: %v", endpoint.Name, err)
+					continue
+				}
+			}
+			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
 				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
 					transformedRespBuffer.Write(transformedEvent)
@@ -219,7 +229,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.
 // This is used for Codex endpoints that require stream=true upstream while client requested non-stream.
-func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, credentialID int64) (int, int, string, error) {
+func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, credentialID int64, requestMeta proxyRequestMeta) (int, int, string, error) {
 	var reader io.Reader = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzipReader, err := gzip.NewReader(resp.Body)
@@ -282,6 +292,10 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 	}
 
 	transformedResp, err := trans.TransformResponse(completedPayload, false)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	transformedResp, err = fixCursorResponseBody(transformedResp, requestMeta)
 	if err != nil {
 		return 0, 0, "", err
 	}

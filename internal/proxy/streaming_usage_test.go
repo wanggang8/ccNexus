@@ -73,6 +73,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		"gpt-4.1",
 		[]byte(`{}`),
 		0,
+		proxyRequestMeta{},
 	)
 
 	if in != 7 || out != 5 {
