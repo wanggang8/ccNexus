@@ -922,6 +922,30 @@ func TestStreamConvertOpenAI_EmitSingleFinalTokenUsageNode(t *testing.T) {
 	}
 }
 
+func TestStreamConvertOpenAI_DoesNotDeriveMissingInputUsageFromTotalTokens(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":40,\"total_tokens\":120}}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if _, ok := usage["input_tokens"]; ok {
+		t.Fatalf("expected input_tokens to stay absent when upstream only returns total_tokens+completion_tokens, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(40) {
+		t.Fatalf("expected output_tokens 40, got %#v", usage["output_tokens"])
+	}
+}
+
 func TestStreamConvertOpenAI_PreservesUpstreamOutputUsageWhenSmallerThanTextEstimate(t *testing.T) {
 	longText := strings.Repeat("This is a long answer segment. ", 90)
 
@@ -1012,5 +1036,36 @@ func TestStreamConvertOpenAI_AllowsLargeSSEDataLines(t *testing.T) {
 	usage := usageNodes[0]
 	if usage["input_tokens"] != float64(20) || usage["output_tokens"] != float64(30) {
 		t.Fatalf("unexpected usage node %#v", usage)
+	}
+}
+
+func TestConvertOpenAIJSON_PinsCacheReadUsageToZero(t *testing.T) {
+	body := []byte(`{
+		"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],
+		"usage":{
+			"prompt_tokens":12,
+			"completion_tokens":6,
+			"prompt_tokens_details":{"cached_tokens":200,"cache_creation_tokens":5}
+		}
+	}`)
+
+	var b strings.Builder
+	if _, _, err := convertOpenAIJSONToNDJSON(body, &b, nil); err != nil {
+		t.Fatalf("convertOpenAIJSONToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(12) || usage["output_tokens"] != float64(6) {
+		t.Fatalf("unexpected usage node %#v", usage)
+	}
+	if usage["cache_read_input_tokens"] != float64(0) {
+		t.Fatalf("expected cache_read_input_tokens 0, got %#v", usage["cache_read_input_tokens"])
+	}
+	if usage["cache_creation_input_tokens"] != float64(5) {
+		t.Fatalf("expected cache_creation_input_tokens 5, got %#v", usage["cache_creation_input_tokens"])
 	}
 }

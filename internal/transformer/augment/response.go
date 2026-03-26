@@ -264,6 +264,7 @@ func emitFinalStopChunk(w io.Writer, stopReasonSeen bool, stopReason int, sawToo
 }
 
 func emitTokenUsageChunk(w io.Writer, tokenUsage map[string]interface{}, nextNodeID *int) bool {
+	tokenUsage = normalizePluginFacingTokenUsage(tokenUsage)
 	if len(tokenUsage) == 0 {
 		return false
 	}
@@ -782,13 +783,11 @@ func mapOpenAIFinishReason(fr string) int {
 type usageAccumulator struct {
 	inputTokens              int
 	outputTokens             int
-	totalTokens              int
 	cacheReadInputTokens     int
 	cacheCreationInputTokens int
 
 	hasInputTokens              bool
 	hasOutputTokens             bool
-	hasTotalTokens              bool
 	hasCacheReadInputTokens     bool
 	hasCacheCreationInputTokens bool
 }
@@ -803,9 +802,6 @@ func (a *usageAccumulator) merge(raw map[string]interface{}) {
 	}
 	if v, ok := usageInt(raw, "output_tokens", "completion_tokens"); ok {
 		a.setOutputTokens(v)
-	}
-	if v, ok := usageInt(raw, "total_tokens"); ok {
-		a.setTotalTokens(v)
 	}
 	if v, ok := usageInt(raw, "cache_read_input_tokens"); ok {
 		a.setCacheReadInputTokens(v)
@@ -844,16 +840,6 @@ func (a *usageAccumulator) setOutputTokens(v int) {
 	}
 }
 
-func (a *usageAccumulator) setTotalTokens(v int) {
-	if v < 0 {
-		return
-	}
-	if !a.hasTotalTokens || v > a.totalTokens {
-		a.totalTokens = v
-		a.hasTotalTokens = true
-	}
-}
-
 func (a *usageAccumulator) setCacheReadInputTokens(v int) {
 	if v < 0 {
 		return
@@ -884,16 +870,6 @@ func (a *usageAccumulator) buildTokenUsage() map[string]interface{} {
 	hasInputTokens := a.hasInputTokens
 	hasOutputTokens := a.hasOutputTokens
 
-	// If only one side exists but total_tokens is present, derive the other side.
-	if a.hasTotalTokens && hasOutputTokens && !hasInputTokens && a.totalTokens >= outputTokens {
-		inputTokens = a.totalTokens - outputTokens
-		hasInputTokens = true
-	}
-	if a.hasTotalTokens && hasInputTokens && !hasOutputTokens && a.totalTokens >= inputTokens {
-		outputTokens = a.totalTokens - inputTokens
-		hasOutputTokens = true
-	}
-
 	tokenUsage := make(map[string]interface{})
 	if hasInputTokens {
 		tokenUsage["input_tokens"] = inputTokens
@@ -913,6 +889,16 @@ func (a *usageAccumulator) buildTokenUsage() map[string]interface{} {
 
 	if len(tokenUsage) == 0 {
 		return nil
+	}
+	return tokenUsage
+}
+
+func normalizePluginFacingTokenUsage(tokenUsage map[string]interface{}) map[string]interface{} {
+	if len(tokenUsage) == 0 {
+		return tokenUsage
+	}
+	if _, ok := tokenUsage["cache_read_input_tokens"]; ok {
+		tokenUsage["cache_read_input_tokens"] = 0
 	}
 	return tokenUsage
 }
