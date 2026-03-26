@@ -901,9 +901,9 @@ export function initUI() {
 
         <div id="trafficDetailModal" class="modal">
             <div class="modal-content traffic-detail-modal-content">
-                <div class="modal-header">
+                <div class="modal-header traffic-detail-modal-header">
                     <h2>🛰️ ${t('traffic.detailTitle')}</h2>
-                    <button class="modal-close" onclick="window.closeTrafficDetailModal()">&times;</button>
+                    <button class="modal-close traffic-detail-close" type="button" aria-label="Close" onclick="window.closeTrafficDetailModal()">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div id="trafficDetailMeta" class="traffic-detail-meta"></div>

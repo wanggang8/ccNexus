@@ -28,6 +28,7 @@ import (
 // Server is the standalone Augment HTTP server.
 type Server struct {
 	config          *config.Config
+	proxy           *proxy.Proxy
 	decryptor       *decrypt.Decryptor
 	trafficRecorder *proxy.TrafficRecorder
 	stats           *proxy.Stats
@@ -110,7 +111,7 @@ func (t *teeCapture) Flush() {
 }
 
 // New creates a new Augment server instance.
-func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
+func New(cfg *config.Config, p *proxy.Proxy, privateKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
 	dec, err := decrypt.New(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("augment server: failed to create decryptor: %w", err)
@@ -134,6 +135,7 @@ func New(cfg *config.Config, privateKeyPath string, trafficRecorder *proxy.Traff
 
 	return &Server{
 		config:          cfg,
+		proxy:           p,
 		decryptor:       dec,
 		trafficRecorder: trafficRecorder,
 		stats:           stats,
@@ -443,16 +445,22 @@ func augmentLooksStructured(ar *augment.AugmentRequest) bool {
 
 // selectTarget selects the target type and endpoint based on config.
 func (s *Server) selectTarget() (string, *config.Endpoint) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if len(s.config.Endpoints) == 0 {
+	endpoints := s.config.GetEndpoints()
+	if len(endpoints) == 0 {
 		return "", nil
 	}
 
+	if endpoint := s.getCurrentEndpoint(endpoints); endpoint != nil {
+		targetType, ok := mapEndpointTransformerToTargetType(endpoint.Transformer)
+		if !ok {
+			return "", nil
+		}
+		return targetType, endpoint
+	}
+
 	// Use first enabled endpoint, mapped strictly by endpoint.Transformer.
-	for i := range s.config.Endpoints {
-		ep := &s.config.Endpoints[i]
+	for i := range endpoints {
+		ep := endpoints[i]
 		if !ep.Enabled {
 			continue
 		}
@@ -461,10 +469,30 @@ func (s *Server) selectTarget() (string, *config.Endpoint) {
 			// Unsupported transformer for Augment integration.
 			return "", nil
 		}
-		return targetType, ep
+		return targetType, &ep
 	}
 
 	return "", nil
+}
+
+func (s *Server) getCurrentEndpoint(endpoints []config.Endpoint) *config.Endpoint {
+	if s.proxy == nil {
+		return nil
+	}
+
+	currentName := strings.TrimSpace(s.proxy.GetCurrentEndpointName())
+	if currentName == "" {
+		return nil
+	}
+
+	for i := range endpoints {
+		ep := endpoints[i]
+		if ep.Enabled && ep.Name == currentName {
+			return &ep
+		}
+	}
+
+	return nil
 }
 
 func mapEndpointTransformerToTargetType(transformerName string) (string, bool) {
@@ -1307,19 +1335,11 @@ func (s *Server) handleGetLoginToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get first enabled endpoint for tenantUrl and accessToken
-	s.mu.RLock()
 	var tenantUrl, accessToken string
-	if len(s.config.Endpoints) > 0 {
-		for i := range s.config.Endpoints {
-			ep := &s.config.Endpoints[i]
-			if ep.Enabled {
-				tenantUrl = strings.TrimSuffix(ep.APIUrl, "/")
-				accessToken = ep.APIKey
-				break
-			}
-		}
+	if _, endpoint := s.selectTarget(); endpoint != nil {
+		tenantUrl = strings.TrimSuffix(endpoint.APIUrl, "/")
+		accessToken = endpoint.APIKey
 	}
-	s.mu.RUnlock()
 
 	// Fallback to default values if no endpoint found
 	if tenantUrl == "" {

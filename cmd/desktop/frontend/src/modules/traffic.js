@@ -3,6 +3,7 @@ import { escapeHtml, formatTokens } from '../utils/format.js';
 import { showNotification } from './modal.js';
 
 let trafficLoadVersion = 0;
+let trafficClearInProgress = false;
 
 function formatDateTime(timestamp) {
     if (!timestamp) return '-';
@@ -50,6 +51,9 @@ function readTrafficFilter() {
 }
 
 export async function loadTraffic() {
+    if (trafficClearInProgress) {
+        return;
+    }
     const loadVersion = ++trafficLoadVersion;
     try {
         if (!window.go?.main?.App) return;
@@ -160,7 +164,9 @@ export async function clearTrafficLogs() {
         return;
     }
 
+    let cleared = false;
     try {
+        trafficClearInProgress = true;
         trafficLoadVersion++;
         await window.go.main.App.ClearTrafficLogs();
         renderTraffic([]);
@@ -170,11 +176,16 @@ export async function clearTrafficLogs() {
                 .replace('{count}', 0)
                 .replace('{total}', 0);
         }
+        cleared = true;
         showNotification(t('traffic.cleared'), 'success');
-        await loadTraffic();
     } catch (error) {
         console.error('Failed to clear traffic logs:', error);
         showNotification(t('traffic.clearFailed'), 'error');
+    } finally {
+        trafficClearInProgress = false;
+        if (!cleared) {
+            await loadTraffic();
+        }
     }
 }
 

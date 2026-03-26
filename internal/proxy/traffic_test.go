@@ -152,4 +152,42 @@ func TestTrafficRecorderKeepsNewestLogsAndReturnsDetails(t *testing.T) {
 	}
 }
 
+func TestTrafficRecorderClearRemovesAllLogs(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewTrafficRecorder()
+	recorder.SetRecording(true)
+
+	recorder.Record(&TrafficLog{
+		ID:               "log-1",
+		RequestID:        "req-1",
+		EventType:        TrafficEventTypeUnified,
+		Timestamp:        time.Unix(1710000000, 0).UTC(),
+		EndpointName:     "endpoint",
+		ClientFormat:     "augment",
+		TransformerName:  "openai",
+		Method:           httpMethodPost,
+		Path:             "/v1/chat/completions",
+		StatusCode:       200,
+		OriginalRequest:  []byte(`{"hello":"world"}`),
+		OriginalResponse: []byte(`{"ok":true}`),
+	})
+
+	if got := recorder.GetCount(); got != 1 {
+		t.Fatalf("GetCount() before clear = %d, want 1", got)
+	}
+
+	recorder.Clear()
+
+	if got := recorder.GetCount(); got != 0 {
+		t.Fatalf("GetCount() after clear = %d, want 0", got)
+	}
+	if logs := recorder.GetLogs(nil); len(logs) != 0 {
+		t.Fatalf("GetLogs() after clear returned %d items, want 0", len(logs))
+	}
+	if detail := recorder.GetLogByID("log-1"); detail != nil {
+		t.Fatal("GetLogByID() after clear returned non-nil detail")
+	}
+}
+
 const httpMethodPost = "POST"

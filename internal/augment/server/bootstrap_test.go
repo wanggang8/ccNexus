@@ -19,7 +19,7 @@ func TestResolveKeyPathPrefersConfigValue(t *testing.T) {
 func TestStartFromConfigReturnsNilWhenDisabled(t *testing.T) {
 	cfg := config.DefaultConfig()
 
-	srv, err := StartFromConfig(cfg, "/tmp/missing-key.pem", nil, nil)
+	srv, err := StartFromConfig(cfg, nil, "/tmp/missing-key.pem", nil, nil)
 	if err != nil {
 		t.Fatalf("StartFromConfig() unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestStartFromConfigErrorsWhenKeyMissing(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateAugmentConfig(true, 2346, "")
 
-	srv, err := StartFromConfig(cfg, "/tmp/missing-key.pem", nil, nil)
+	srv, err := StartFromConfig(cfg, nil, "/tmp/missing-key.pem", nil, nil)
 	if err == nil {
 		t.Fatal("StartFromConfig() expected missing key error")
 	}

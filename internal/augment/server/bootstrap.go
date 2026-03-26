@@ -21,7 +21,7 @@ func ResolveKeyPath(cfg *config.Config, defaultKeyPath string) string {
 }
 
 // StartFromConfig starts the Augment server when enabled in config.
-func StartFromConfig(cfg *config.Config, defaultKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
+func StartFromConfig(cfg *config.Config, p *proxy.Proxy, defaultKeyPath string, trafficRecorder *proxy.TrafficRecorder, stats *proxy.Stats) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("augment server: config is nil")
 	}
@@ -37,7 +37,7 @@ func StartFromConfig(cfg *config.Config, defaultKeyPath string, trafficRecorder 
 		return nil, fmt.Errorf("augment server: private key not found at %s: %w", keyPath, err)
 	}
 
-	srv, err := New(cfg, keyPath, trafficRecorder, stats)
+	srv, err := New(cfg, p, keyPath, trafficRecorder, stats)
 	if err != nil {
 		return nil, err
 	}

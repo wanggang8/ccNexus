@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/transformer/augment"
 )
 
@@ -84,6 +85,31 @@ func TestSelectTarget_MapsByEndpointTransformer(t *testing.T) {
 	}
 	if ep.Name != "cli" {
 		t.Fatalf("expected selected endpoint name cli, got %q", ep.Name)
+	}
+}
+
+func TestSelectTarget_PrefersProxyCurrentEndpoint(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Endpoints = []config.Endpoint{
+		{Name: "first", APIUrl: "https://first.example.com", APIKey: "k1", Enabled: true, Transformer: "claude"},
+		{Name: "second", APIUrl: "https://second.example.com", APIKey: "k2", Enabled: true, Transformer: "openai"},
+	}
+
+	p := proxy.New(cfg, nil, nil, "device-test")
+	if err := p.SetCurrentEndpoint("second"); err != nil {
+		t.Fatalf("SetCurrentEndpoint: %v", err)
+	}
+
+	s := &Server{config: cfg, proxy: p}
+	targetType, ep := s.selectTarget()
+	if ep == nil {
+		t.Fatalf("expected endpoint")
+	}
+	if ep.Name != "second" {
+		t.Fatalf("expected selected endpoint name second, got %q", ep.Name)
+	}
+	if targetType != "openai" {
+		t.Fatalf("expected targetType openai, got %q", targetType)
 	}
 }
 

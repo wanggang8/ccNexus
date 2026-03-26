@@ -208,7 +208,7 @@ func (a *App) shutdown(ctx context.Context) {
 
 func (a *App) initAugmentServer(configDir string, cfg *config.Config) {
 	defaultKeyPath := ensureDesktopAugmentKey(configDir)
-	srv, err := augmentserver.StartFromConfig(cfg, defaultKeyPath, a.proxy.GetTrafficRecorder(), a.proxy.GetStats())
+	srv, err := augmentserver.StartFromConfig(cfg, a.proxy, defaultKeyPath, a.proxy.GetTrafficRecorder(), a.proxy.GetStats())
 	if err != nil {
 		if cfg.GetAugmentEnabled() {
 			logger.Warn("Failed to start Augment server: %v", err)
