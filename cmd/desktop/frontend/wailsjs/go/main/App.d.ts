@@ -19,6 +19,8 @@ export function CheckForUpdates():Promise<string>;
 
 export function ClearLogs():Promise<void>;
 
+export function ClearTrafficLogs():Promise<void>;
+
 export function DeleteArchive(arg1:string):Promise<string>;
 
 export function DeleteBackups(arg1:string,arg2:Array<string>):Promise<void>;
@@ -113,6 +115,10 @@ export function GetTheme():Promise<string>;
 
 export function GetThemeAuto():Promise<boolean>;
 
+export function GetTrafficLogDetail(arg1:string):Promise<string>;
+
+export function GetTrafficLogs(arg1:string):Promise<string>;
+
 export function GetUpdateSettings():Promise<string>;
 
 export function GetVersion():Promise<string>;
@@ -124,6 +130,8 @@ export function ImportEndpointCredentials(arg1:number,arg2:string,arg3:boolean):
 export function ImportEndpointCredentialsFromFiles(arg1:number,arg2:boolean):Promise<string>;
 
 export function InstallUpdate(arg1:string):Promise<string>;
+
+export function IsTrafficRecording():Promise<boolean>;
 
 export function LaunchCodexSessionTerminal(arg1:string,arg2:string):Promise<void>;
 
@@ -188,6 +196,8 @@ export function SetProxyURL(arg1:string):Promise<void>;
 export function SetTheme(arg1:string):Promise<void>;
 
 export function SetThemeAuto(arg1:boolean):Promise<void>;
+
+export function SetTrafficRecording(arg1:boolean):Promise<void>;
 
 export function SetUpdateSettings(arg1:boolean,arg2:number):Promise<void>;
 

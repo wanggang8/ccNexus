@@ -10,8 +10,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 // Augment protocol constants (from augment-protocol.js)
@@ -35,11 +33,6 @@ const (
 	augmentNodeTypeThinking           = 8
 	augmentNodeTypeBillingMetadata    = 9
 	augmentNodeTypeTokenUsage         = 10
-)
-
-const (
-	usageFallbackMinEstimatedOutputTokens = 80
-	usageFallbackOutputMismatchRatio      = 3
 )
 
 // Content block delta types
@@ -680,7 +673,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			}
 			flushThinking()
 			if !usageEmitted {
-				usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+				usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 			}
 		}
 	}
@@ -688,12 +681,12 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	flushThinking()
 
 	if !usageEmitted {
-		usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+		usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, hasEmittedToolUse, sawMessageStop || stopReasonSeen || hasEmittedToolUse)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
-	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	tokenUsage := usageAcc.buildTokenUsage()
 	if tokenUsage != nil {
 		if v, ok := tokenUsage["input_tokens"].(int); ok {
 			inputTokens = v
@@ -842,7 +835,7 @@ func (a *usageAccumulator) setCacheCreationInputTokens(v int) {
 	}
 }
 
-func (a *usageAccumulator) buildTokenUsage(outputText string) map[string]interface{} {
+func (a *usageAccumulator) buildTokenUsage() map[string]interface{} {
 	if a == nil {
 		return nil
 	}
@@ -860,17 +853,6 @@ func (a *usageAccumulator) buildTokenUsage(outputText string) map[string]interfa
 	if a.hasTotalTokens && hasInputTokens && !hasOutputTokens && a.totalTokens >= inputTokens {
 		outputTokens = a.totalTokens - inputTokens
 		hasOutputTokens = true
-	}
-
-	estimatedOutputTokens := tokencount.EstimateOutputTokens(outputText)
-	if estimatedOutputTokens > 0 {
-		if !hasOutputTokens || outputTokens <= 0 {
-			outputTokens = estimatedOutputTokens
-			hasOutputTokens = true
-		} else if estimatedOutputTokens >= usageFallbackMinEstimatedOutputTokens &&
-			estimatedOutputTokens >= outputTokens*usageFallbackOutputMismatchRatio {
-			outputTokens = estimatedOutputTokens
-		}
 	}
 
 	tokenUsage := make(map[string]interface{})
@@ -956,8 +938,8 @@ func toTokenInt(v interface{}) (int, bool) {
 	return 0, false
 }
 
-func emitAggregatedTokenUsageNode(w io.Writer, usageAcc *usageAccumulator, outputText string, nextNodeID *int) bool {
-	tokenUsage := usageAcc.buildTokenUsage(outputText)
+func emitAggregatedTokenUsageNode(w io.Writer, usageAcc *usageAccumulator, nextNodeID *int) bool {
+	tokenUsage := usageAcc.buildTokenUsage()
 	if len(tokenUsage) == 0 {
 		return false
 	}
@@ -1171,11 +1153,11 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 	flushAllThinking()
 
-	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+	_ = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
-	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	tokenUsage := usageAcc.buildTokenUsage()
 	if tokenUsage != nil {
 		if v, ok := tokenUsage["input_tokens"].(int); ok {
 			inputTokens = v
@@ -1399,10 +1381,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		}
 	}
 
-	_ = emitAggregatedTokenUsageNode(w, &usageAcc, generatedText.String(), &nextNodeID)
+	_ = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || finalResponse != nil || stopReasonSeen)
 
-	tokenUsage := usageAcc.buildTokenUsage(generatedText.String())
+	tokenUsage := usageAcc.buildTokenUsage()
 	if tokenUsage != nil {
 		if v, ok := tokenUsage["input_tokens"].(int); ok {
 			inputTokens = v

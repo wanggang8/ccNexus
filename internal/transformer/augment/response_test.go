@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 func readNDJSONLines(t *testing.T, s string) []map[string]interface{} {
@@ -923,12 +921,8 @@ func TestStreamConvertOpenAI_EmitSingleFinalTokenUsageNode(t *testing.T) {
 	}
 }
 
-func TestStreamConvertOpenAI_OutputUsageFallbackToEstimateWhenTooSmall(t *testing.T) {
+func TestStreamConvertOpenAI_PreservesUpstreamOutputUsageWhenSmallerThanTextEstimate(t *testing.T) {
 	longText := strings.Repeat("This is a long answer segment. ", 90)
-	estimatedOutput := tokencount.EstimateOutputTokens(longText)
-	if estimatedOutput < usageFallbackMinEstimatedOutputTokens {
-		t.Fatalf("test setup invalid: estimated output too small: %d", estimatedOutput)
-	}
 
 	contentChunk, err := json.Marshal(map[string]interface{}{
 		"choices": []map[string]interface{}{
@@ -968,7 +962,7 @@ func TestStreamConvertOpenAI_OutputUsageFallbackToEstimateWhenTooSmall(t *testin
 	if usage["input_tokens"] != float64(50) {
 		t.Fatalf("expected input_tokens 50, got %#v", usage["input_tokens"])
 	}
-	if usage["output_tokens"] != float64(estimatedOutput) {
-		t.Fatalf("expected output_tokens fallback to %d, got %#v", estimatedOutput, usage["output_tokens"])
+	if usage["output_tokens"] != float64(10) {
+		t.Fatalf("expected output_tokens to preserve upstream value 10, got %#v", usage["output_tokens"])
 	}
 }
