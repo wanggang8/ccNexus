@@ -125,14 +125,18 @@ class Access {
     }
 
     async copyPassword() {
-        const password = document.getElementById('basic-auth-password').value;
-        if (!password || password === '***') {
-            notifications.warning('Generate a new password first if you need to copy the proxy token.');
-            return;
-        }
-
         try {
+            let password = document.getElementById('basic-auth-password').value;
+            if (!password || password === '***') {
+                const data = await api.revealBasicAuthPassword();
+                password = data.password || '';
+            }
+            if (!password) {
+                notifications.warning('No password is currently set.');
+                return;
+            }
             await navigator.clipboard.writeText(password);
+            document.getElementById('basic-auth-password').value = password;
             notifications.success('Password copied to clipboard');
         } catch (error) {
             notifications.error('Failed to copy password: ' + escapeHtml(error.message));

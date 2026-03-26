@@ -69,6 +69,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authMiddleware(http.HandlerFunc(h.handleConfigLogLevel)).ServeHTTP(w, r)
 	case "/api/config/basic-auth":
 		authMiddleware(http.HandlerFunc(h.handleBasicAuthConfig)).ServeHTTP(w, r)
+	case "/api/config/basic-auth/reveal-password":
+		authMiddleware(http.HandlerFunc(h.handleRevealBasicAuthPassword)).ServeHTTP(w, r)
 	case "/api/config/basic-auth/reset-password":
 		authMiddleware(http.HandlerFunc(h.handleResetBasicAuthPassword)).ServeHTTP(w, r)
 	case "/api/traffic":

@@ -102,6 +102,17 @@ func (h *Handler) handleResetBasicAuthPassword(w http.ResponseWriter, r *http.Re
 	})
 }
 
+func (h *Handler) handleRevealBasicAuthPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	WriteSuccess(w, map[string]interface{}{
+		"password": h.config.GetBasicAuthPassword(),
+	})
+}
+
 // getConfig returns the full configuration
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, map[string]interface{}{

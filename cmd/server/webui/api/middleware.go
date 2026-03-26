@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 )
 
@@ -90,52 +91,77 @@ type AuthConfig struct {
 func BasicAuthMiddleware(auth AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !auth.Enabled {
-				next.ServeHTTP(w, r)
+			if !authorizeBasicAuth(auth, w, r) {
 				return
 			}
-
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
-			const prefix = "Basic "
-			if !strings.HasPrefix(authHeader, prefix) {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
-			encoded := strings.TrimPrefix(authHeader, prefix)
-			decoded, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
-			credentials := string(decoded)
-			colonIndex := strings.Index(credentials, ":")
-			if colonIndex < 0 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
-			username := credentials[:colonIndex]
-			password := credentials[colonIndex+1:]
-
-			if subtle.ConstantTimeCompare([]byte(auth.Username), []byte(username)) != 1 ||
-				subtle.ConstantTimeCompare([]byte(auth.Password), []byte(password)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func DynamicBasicAuthMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := AuthConfig{}
+			if cfg != nil {
+				auth = AuthConfig{
+					Enabled:  cfg.GetBasicAuthEnabled(),
+					Username: cfg.GetBasicAuthUsername(),
+					Password: cfg.GetBasicAuthPassword(),
+				}
+			}
+			if !authorizeBasicAuth(auth, w, r) {
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func authorizeBasicAuth(auth AuthConfig, w http.ResponseWriter, r *http.Request) bool {
+	if !auth.Enabled {
+		return true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	const prefix = "Basic "
+	if !strings.HasPrefix(authHeader, prefix) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	encoded := strings.TrimPrefix(authHeader, prefix)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	credentials := string(decoded)
+	colonIndex := strings.Index(credentials, ":")
+	if colonIndex < 0 {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	username := credentials[:colonIndex]
+	password := credentials[colonIndex+1:]
+
+	if subtle.ConstantTimeCompare([]byte(auth.Username), []byte(username)) != 1 ||
+		subtle.ConstantTimeCompare([]byte(auth.Password), []byte(password)) != 1 {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ccNexus"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	return true
 }

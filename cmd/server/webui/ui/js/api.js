@@ -146,6 +146,10 @@ class APIClient {
         return this.request('POST', '/config/basic-auth/reset-password');
     }
 
+    async revealBasicAuthPassword() {
+        return this.request('POST', '/config/basic-auth/reveal-password');
+    }
+
     async getTraffic(params = {}) {
         const query = new URLSearchParams();
         Object.entries(params).forEach(([key, value]) => {
