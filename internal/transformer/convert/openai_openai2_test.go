@@ -70,6 +70,41 @@ func TestOpenAIReqToOpenAI2JoinsSystemMessagesAndExtractsArrayText(t *testing.T)
 	}
 }
 
+func TestOpenAIReqToOpenAI2PreservesImageParts(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"user","content":[
+				{"type":"text","text":"look"},
+				{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}},
+				{"type":"text","text":" please"}
+			]}
+		]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	input := req["input"].([]interface{})
+	content := input[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 3 {
+		t.Fatalf("expected 3 content parts, got %#v", content)
+	}
+	if content[1].(map[string]interface{})["type"] != "input_image" {
+		t.Fatalf("expected input_image part, got %#v", content[1])
+	}
+	if content[1].(map[string]interface{})["image_url"] != "https://example.com/cat.png" {
+		t.Fatalf("expected preserved image url, got %#v", content[1])
+	}
+}
+
 func TestOpenAI2RespToOpenAIPreservesTotalTokens(t *testing.T) {
 	openai2Resp := `{
 		"id":"resp_123",
@@ -362,6 +397,48 @@ func TestOpenAI2ReqToOpenAISupportsEasyInputMessage(t *testing.T) {
 
 	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || req.Messages[0].Content != "hello" {
 		t.Fatalf("expected easy input message preserved, got %#v", req.Messages)
+	}
+}
+
+func TestOpenAI2ReqToOpenAIPreservesInputImageParts(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"input":[
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"look"},
+				{"type":"input_image","image_url":"https://example.com/cat.png","detail":"high"}
+			]}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if len(req.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(req.Messages))
+	}
+
+	content, ok := req.Messages[0].Content.([]interface{})
+	if !ok {
+		t.Fatalf("expected multimodal content array, got %#v", req.Messages[0].Content)
+	}
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts, got %#v", content)
+	}
+	imagePart := content[1].(map[string]interface{})
+	imageURL := imagePart["image_url"].(map[string]interface{})
+	if imagePart["type"] != "image_url" || imageURL["url"] != "https://example.com/cat.png" {
+		t.Fatalf("expected preserved image_url part, got %#v", imagePart)
+	}
+	if imageURL["detail"] != "high" {
+		t.Fatalf("expected preserved image detail, got %#v", imageURL)
 	}
 }
 

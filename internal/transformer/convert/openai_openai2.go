@@ -40,15 +40,7 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		}
 
 		item := map[string]interface{}{"type": "message", "role": msg.Role}
-		var contentParts []map[string]interface{}
-
-		if content := extractOpenAIRequestText(msg.Content); content != "" {
-			textType := "input_text"
-			if msg.Role == "assistant" {
-				textType = "output_text"
-			}
-			contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
-		}
+		contentParts := buildOpenAIRequestContentParts(msg.Content, msg.Role)
 
 		if len(contentParts) > 0 {
 			item["content"] = contentParts
@@ -142,8 +134,7 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			role, _ := itemMap["role"].(string)
 			if role != "" && itemType == "" {
 				flushPendingToolCalls()
-				text := extractOpenAI2Text(itemMap["content"])
-				msg := transformer.OpenAIMessage{Role: role, Content: text}
+				msg := transformer.OpenAIMessage{Role: role, Content: buildOpenAIMessageContent(itemMap["content"], role)}
 				if role == "assistant" && pendingReasoning != "" {
 					msg.ReasoningContent = pendingReasoning
 					pendingReasoning = ""
@@ -159,8 +150,7 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			case "message":
 				flushPendingToolCalls()
 				role, _ := itemMap["role"].(string)
-				text := extractOpenAI2Text(itemMap["content"])
-				msg := transformer.OpenAIMessage{Role: role, Content: text}
+				msg := transformer.OpenAIMessage{Role: role, Content: buildOpenAIMessageContent(itemMap["content"], role)}
 				if role == "assistant" && pendingReasoning != "" {
 					msg.ReasoningContent = pendingReasoning
 					pendingReasoning = ""
@@ -680,5 +670,176 @@ func extractOpenAIRequestText(content interface{}) string {
 		return strings.Join(parts, "")
 	default:
 		return ""
+	}
+}
+
+func buildOpenAIRequestContentParts(content interface{}, role string) []map[string]interface{} {
+	textType := "input_text"
+	if role == "assistant" {
+		textType = "output_text"
+	}
+
+	appendText := func(parts []map[string]interface{}, text string) []map[string]interface{} {
+		if text == "" {
+			return parts
+		}
+		if len(parts) > 0 && parts[len(parts)-1]["type"] == textType {
+			if existing, ok := parts[len(parts)-1]["text"].(string); ok {
+				parts[len(parts)-1]["text"] = existing + text
+			} else {
+				parts[len(parts)-1]["text"] = text
+			}
+			return parts
+		}
+		return append(parts, map[string]interface{}{"type": textType, "text": text})
+	}
+
+	switch value := content.(type) {
+	case string:
+		if value == "" {
+			return nil
+		}
+		return []map[string]interface{}{{"type": textType, "text": value}}
+	case []interface{}:
+		parts := make([]map[string]interface{}, 0, len(value))
+		for _, item := range value {
+			partMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			partType, _ := partMap["type"].(string)
+			switch partType {
+			case "text", "input_text", "output_text":
+				if text, ok := partMap["text"].(string); ok {
+					parts = appendText(parts, text)
+				}
+			case "image_url":
+				imagePart := buildOpenAI2ImagePart(partMap)
+				if imagePart != nil {
+					parts = append(parts, imagePart)
+				}
+			}
+		}
+		return parts
+	default:
+		return nil
+	}
+}
+
+func buildOpenAI2ImagePart(partMap map[string]interface{}) map[string]interface{} {
+	rawImageURL, exists := partMap["image_url"]
+	if !exists {
+		return nil
+	}
+
+	part := map[string]interface{}{"type": "input_image"}
+	switch value := rawImageURL.(type) {
+	case string:
+		if value == "" {
+			return nil
+		}
+		part["image_url"] = value
+	case map[string]interface{}:
+		url, _ := value["url"].(string)
+		if url == "" {
+			return nil
+		}
+		part["image_url"] = url
+		if detail, ok := value["detail"].(string); ok && detail != "" {
+			part["detail"] = detail
+		}
+	default:
+		return nil
+	}
+
+	return part
+}
+
+func buildOpenAIMessageContent(content interface{}, role string) interface{} {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []interface{}:
+		parts := make([]interface{}, 0, len(value))
+		textParts := make([]string, 0)
+		flushText := func() {
+			if len(textParts) == 0 {
+				return
+			}
+			parts = append(parts, map[string]interface{}{
+				"type": "text",
+				"text": strings.Join(textParts, ""),
+			})
+			textParts = nil
+		}
+
+		for _, item := range value {
+			partMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			partType, _ := partMap["type"].(string)
+			switch partType {
+			case "input_text", "output_text", "text":
+				if text, ok := partMap["text"].(string); ok && text != "" {
+					textParts = append(textParts, text)
+				}
+			case "input_image":
+				flushText()
+				imagePart := buildOpenAIImageURLPart(partMap)
+				if imagePart != nil {
+					parts = append(parts, imagePart)
+				}
+			}
+		}
+		flushText()
+
+		if len(parts) == 0 {
+			return ""
+		}
+		if len(parts) == 1 {
+			if partMap, ok := parts[0].(map[string]interface{}); ok && partMap["type"] == "text" {
+				if text, ok := partMap["text"].(string); ok {
+					return text
+				}
+				return ""
+			}
+		}
+		return parts
+	default:
+		return ""
+	}
+}
+
+func buildOpenAIImageURLPart(partMap map[string]interface{}) map[string]interface{} {
+	rawImageURL, exists := partMap["image_url"]
+	if !exists {
+		return nil
+	}
+
+	imageURL := map[string]interface{}{}
+	switch value := rawImageURL.(type) {
+	case string:
+		if value == "" {
+			return nil
+		}
+		imageURL["url"] = value
+	case map[string]interface{}:
+		url, _ := value["url"].(string)
+		if url == "" {
+			return nil
+		}
+		imageURL["url"] = url
+	default:
+		return nil
+	}
+
+	if detail, ok := partMap["detail"].(string); ok && detail != "" {
+		imageURL["detail"] = detail
+	}
+
+	return map[string]interface{}{
+		"type":      "image_url",
+		"image_url": imageURL,
 	}
 }
