@@ -753,6 +753,23 @@ func (s *Server) handleStreamingResponse(
 		}
 		return inputTokens, outputTokens, ndjson, nil
 	}
+	if !responseLooksLikeSSE(resp.Header.Get("Content-Type")) {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return 0, 0, nil, readErr
+		}
+		message := buildUnexpectedStreamingContentTypeMessage(resp.Header.Get("Content-Type"), body)
+		ndjson := buildStreamingErrorNDJSON(message)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(ndjson)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		return 0, 0, ndjson, nil
+	}
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -823,6 +840,26 @@ func responseLooksLikeJSON(contentType string) bool {
 		return false
 	}
 	return strings.Contains(ct, "json")
+}
+
+func responseLooksLikeSSE(contentType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	return strings.Contains(ct, "text/event-stream")
+}
+
+func buildUnexpectedStreamingContentTypeMessage(contentType string, body []byte) string {
+	ct := strings.TrimSpace(contentType)
+	if ct == "" {
+		ct = "unknown"
+	}
+	detail := strings.TrimSpace(string(body))
+	if len(detail) > 500 {
+		detail = detail[:500]
+	}
+	if detail == "" {
+		return fmt.Sprintf("Upstream streaming response is not SSE (content-type=%s)", ct)
+	}
+	return fmt.Sprintf("Upstream streaming response is not SSE (content-type=%s): %s", ct, detail)
 }
 
 func extractJSONErrorMessage(body []byte) string {

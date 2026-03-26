@@ -43,6 +43,10 @@ const (
 	deltaTypeSignatureDelta = "signature_delta"
 )
 
+const (
+	ssePreviewMaxChars = 500
+)
+
 // ConvertSSEToNDJSON converts an SSE stream (from Claude/OpenAI) to NDJSON format
 // expected by the Augment plugin. Returns the converted bytes and any error.
 func ConvertSSEToNDJSON(sseData []byte, targetType string, toolCtx map[string]*ToolContext) ([]byte, error) {
@@ -129,6 +133,45 @@ func newBaseChunk(text string) map[string]interface{} {
 		"workspace_file_chunks": []interface{}{},
 		"nodes":                 []interface{}{},
 	}
+}
+
+func processSSEEvents(r io.Reader, handle func(eventType string, data string) error) error {
+	reader := bufio.NewReader(r)
+	var eventType string
+	var dataLines []string
+
+	flush := func() error {
+		if len(dataLines) == 0 {
+			eventType = ""
+			return nil
+		}
+		data := strings.Join(dataLines, "\n")
+		dataLines = nil
+		currentEventType := eventType
+		eventType = ""
+		return handle(currentEventType, data)
+	}
+
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if err := flush(); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimLeft(strings.TrimPrefix(line, "data:"), " \t"))
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+	return flush()
 }
 
 func emitThinkingChunk(w io.Writer, text, signature string, nextNodeID *int) {
@@ -537,8 +580,6 @@ func extractOpenAIJSONToolCalls(obj map[string]interface{}) []openAIJSONToolCall
 }
 
 func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
-	scanner := bufio.NewScanner(r)
-	var lastEventType string
 	var buf toolUseBuffer
 	var thinking thinkingBuffer
 	nextNodeID := 1
@@ -549,37 +590,31 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	stopReasonSeen := false
 	stopReason := augmentStopReasonEndTurn
 	sawMessageStop := false
+	dataEvents := 0
+	parsedChunks := 0
+	sawThinking := false
 
 	flushThinking := func() {
 		if !thinking.active {
 			return
 		}
+		sawThinking = true
 		emitThinkingChunk(w, thinking.summary.String(), thinking.signature, &nextNodeID)
 		thinking = thinkingBuffer{}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			lastEventType = ""
-			continue
-		}
-		if strings.HasPrefix(line, "event:") {
-			lastEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	err = processSSEEvents(r, func(lastEventType string, data string) error {
+		data = strings.TrimSpace(data)
 		if data == "" || data == "[DONE]" {
-			continue
+			return nil
 		}
+		dataEvents++
 
 		var ev map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
+			return nil
 		}
+		parsedChunks++
 		if _, ok := ev["type"].(string); !ok && lastEventType != "" {
 			ev["type"] = lastEventType
 		}
@@ -644,7 +679,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		case "content_block_stop":
 			if thinking.active {
 				flushThinking()
-				continue
+				return nil
 			}
 			if buf.active {
 				emitToolUseChunks(w, buf.id, buf.name, buf.input.String(), toolCtx, &nextNodeID)
@@ -676,12 +711,16 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 			}
 		}
-	}
+		return nil
+	})
 
 	flushThinking()
 
 	if !usageEmitted {
 		usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	}
+	if generatedText.Len() == 0 && !hasEmittedToolUse && !sawThinking && !usageEmitted {
+		return 0, 0, fmt.Errorf("augment response: claude sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, hasEmittedToolUse, sawMessageStop || stopReasonSeen || hasEmittedToolUse)
 
@@ -695,7 +734,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, scanner.Err()
+	return inputTokens, outputTokens, err
 }
 
 // mapClaudeStopReason maps Claude stop_reason to Augment stop_reason constants.
@@ -966,7 +1005,6 @@ type openAIToolCallAccum struct {
 }
 
 func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
-	scanner := bufio.NewScanner(r)
 	nextNodeID := 1
 
 	// index -> accumulated tool call
@@ -980,11 +1018,16 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	stopReasonSeen := false
 	stopReason := augmentStopReasonEndTurn
 	sawDone := false
+	dataEvents := 0
+	parsedChunks := 0
+	sawThinking := false
+	sawVisibleText := false
 
 	flushReasoning := func() {
 		if pendingReasoning.Len() == 0 {
 			return
 		}
+		sawThinking = true
 		emitThinkingChunk(w, pendingReasoning.String(), "", &nextNodeID)
 		pendingReasoning.Reset()
 	}
@@ -994,6 +1037,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			inThinkTag = false
 			return
 		}
+		sawThinking = true
 		emitThinkingChunk(w, pendingThinkTag.String(), "", &nextNodeID)
 		pendingThinkTag.Reset()
 		inThinkTag = false
@@ -1004,31 +1048,29 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		flushThinkTag()
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	err = processSSEEvents(r, func(_ string, data string) error {
+		data = strings.TrimSpace(data)
 		if data == "" {
-			continue
+			return nil
 		}
 		if data == "[DONE]" {
 			sawDone = true
-			continue
+			return nil
 		}
+		dataEvents++
 
 		var ev map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
+			return nil
 		}
+		parsedChunks++
 		if usage, ok := ev["usage"].(map[string]interface{}); ok {
 			usageAcc.merge(usage)
 		}
 
 		choices, _ := ev["choices"].([]interface{})
 		if len(choices) == 0 {
-			continue
+			return nil
 		}
 		choice, _ := choices[0].(map[string]interface{})
 		delta, _ := choice["delta"].(map[string]interface{})
@@ -1073,10 +1115,12 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 					openIdx := strings.Index(remaining, "<think>")
 					if openIdx == -1 {
 						// All remaining is normal text
+						sawVisibleText = true
 						writeChunkLine(w, newBaseChunk(remaining))
 						remaining = ""
 					} else {
 						if openIdx > 0 {
+							sawVisibleText = true
 							writeChunkLine(w, newBaseChunk(remaining[:openIdx]))
 						}
 						inThinkTag = true
@@ -1084,7 +1128,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 					}
 				}
 			}
-			continue
+			return nil
 		}
 
 		if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
@@ -1147,13 +1191,17 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				}
 			}
 			acc = map[int]*openAIToolCallAccum{}
-			continue
+			return nil
 		}
-	}
+		return nil
+	})
 
 	flushAllThinking()
 
-	_ = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
+		return 0, 0, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
@@ -1166,7 +1214,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, scanner.Err()
+	return inputTokens, outputTokens, err
 }
 
 type openAIResponsesToolCallAccum struct {
@@ -1176,7 +1224,6 @@ type openAIResponsesToolCallAccum struct {
 }
 
 func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
-	scanner := bufio.NewScanner(r)
 	nextNodeID := 1
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
@@ -1188,6 +1235,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 	stopReasonSeen := false
 	stopReason := augmentStopReasonEndTurn
 	sawDone := false
+	dataEvents := 0
+	parsedChunks := 0
+	sawThinking := false
+	sawVisibleText := false
 
 	ensureToolCall := func(idx int) *openAIResponsesToolCallAccum {
 		if idx < 0 {
@@ -1215,28 +1266,30 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		}
 		textByIndex[idx] = current + rest
 		generatedText.WriteString(rest)
+		sawVisibleText = true
 		writeChunkLine(w, newBaseChunk(rest))
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	err = processSSEEvents(r, func(lineEventType string, data string) error {
+		data = strings.TrimSpace(data)
 		if data == "" {
-			continue
+			return nil
 		}
 		if data == "[DONE]" {
 			sawDone = true
-			continue
+			return nil
 		}
+		dataEvents++
 
 		var ev map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
+			return nil
 		}
+		parsedChunks++
 		eventType, _ := ev["type"].(string)
+		if eventType == "" {
+			eventType = lineEventType
+		}
 
 		switch eventType {
 		case "response.output_item.added", "response.output_item.done":
@@ -1257,6 +1310,7 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			}
 			if itemType, _ := item["type"].(string); itemType == "reasoning" && thinking.Len() == 0 {
 				if summary := extractResponsesReasoningSummary(item); summary != "" {
+					sawThinking = true
 					thinking.WriteString(summary)
 				}
 			}
@@ -1302,11 +1356,13 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 			if delta, _ := ev["delta"].(string); delta != "" {
+				sawThinking = true
 				thinking.WriteString(delta)
 			}
 
 		case "response.reasoning_summary_text.done":
 			if full := firstString(ev, "text"); full != "" {
+				sawThinking = true
 				if thinking.Len() == 0 {
 					thinking.WriteString(full)
 				} else if !strings.Contains(thinking.String(), full) {
@@ -1334,9 +1390,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			}
 
 		case "response.failed", "response.error", "error":
-			return 0, 0, fmt.Errorf("augment response: openai responses upstream error")
+			return fmt.Errorf("augment response: openai responses upstream error")
 		}
-	}
+		return nil
+	})
 
 	if finalResponse != nil {
 		finalText := firstString(finalResponse, "output_text", "outputText", "text")
@@ -1381,7 +1438,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		}
 	}
 
-	_ = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
+		return 0, 0, fmt.Errorf("augment response: openai responses sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || finalResponse != nil || stopReasonSeen)
 
 	tokenUsage := usageAcc.buildTokenUsage()
@@ -1393,7 +1453,7 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, scanner.Err()
+	return inputTokens, outputTokens, err
 }
 
 func extractResponsesUsage(resp map[string]interface{}) map[string]interface{} {

@@ -11,6 +11,7 @@ func readNDJSONLines(t *testing.T, s string) []map[string]interface{} {
 	t.Helper()
 	var out []map[string]interface{}
 	sc := bufio.NewScanner(strings.NewReader(s))
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -173,7 +174,7 @@ func TestStreamConvertClaude_StopReasonMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sse := "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"" + tt.stopReason + "\"}}\n\n"
+			sse := "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"" + tt.stopReason + "\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n"
 			var b strings.Builder
 			if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
 				t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
@@ -202,7 +203,7 @@ func TestStreamConvertOpenAI_FinishReasonMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sse := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + tt.finishReason + "\"}]}\n\n"
+			sse := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + tt.finishReason + "\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n"
 			var b strings.Builder
 			if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
 				t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
@@ -964,5 +965,52 @@ func TestStreamConvertOpenAI_PreservesUpstreamOutputUsageWhenSmallerThanTextEsti
 	}
 	if usage["output_tokens"] != float64(10) {
 		t.Fatalf("expected output_tokens to preserve upstream value 10, got %#v", usage["output_tokens"])
+	}
+}
+
+func TestStreamConvertOpenAI_AllowsLargeSSEDataLines(t *testing.T) {
+	longText := strings.Repeat("0123456789abcdef", 5000)
+	contentChunk, err := json.Marshal(map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"delta": map[string]interface{}{"content": longText}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal content chunk: %v", err)
+	}
+
+	finishChunk, err := json.Marshal(map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"delta": map[string]interface{}{}, "finish_reason": "stop"},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     20,
+			"completion_tokens": 30,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal finish chunk: %v", err)
+	}
+
+	sse := "data: " + string(contentChunk) + "\n\n" +
+		"data: " + string(finishChunk) + "\n\n" +
+		"data: [DONE]\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+
+	lines := readNDJSONLines(t, b.String())
+	if len(lines) == 0 {
+		t.Fatalf("expected ndjson output")
+	}
+	usageNodes := collectTokenUsageNodes(lines)
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected one token usage node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if usage["input_tokens"] != float64(20) || usage["output_tokens"] != float64(30) {
+		t.Fatalf("unexpected usage node %#v", usage)
 	}
 }
