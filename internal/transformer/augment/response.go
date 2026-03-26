@@ -1185,7 +1185,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	flushAllThinking()
 
 	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
-	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
+	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted && !stopReasonSeen {
 		return 0, 0, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen)

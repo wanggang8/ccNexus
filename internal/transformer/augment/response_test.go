@@ -946,6 +946,22 @@ func TestStreamConvertOpenAI_DoesNotDeriveMissingInputUsageFromTotalTokens(t *te
 	}
 }
 
+func TestStreamConvertOpenAI_StopOnlyChunkDoesNotWarnAsEmptyStream(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	if len(lines) == 0 {
+		t.Fatalf("expected ndjson output")
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonEndTurn) {
+		t.Fatalf("expected final stop_reason end_turn, got %#v", lines[len(lines)-1]["stop_reason"])
+	}
+}
+
 func TestStreamConvertOpenAI_PreservesUpstreamOutputUsageWhenSmallerThanTextEstimate(t *testing.T) {
 	longText := strings.Repeat("This is a long answer segment. ", 90)
 
