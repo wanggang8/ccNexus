@@ -135,11 +135,36 @@ class Access {
                 notifications.warning('No password is currently set.');
                 return;
             }
-            await navigator.clipboard.writeText(password);
+            await this.writeToClipboard(password);
             document.getElementById('basic-auth-password').value = password;
             notifications.success('Password copied to clipboard');
         } catch (error) {
             notifications.error('Failed to copy password: ' + escapeHtml(error.message));
+        }
+    }
+
+    async writeToClipboard(text) {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+
+        try {
+            const copied = document.execCommand('copy');
+            if (!copied) {
+                throw new Error('Clipboard API unavailable');
+            }
+        } finally {
+            document.body.removeChild(textarea);
         }
     }
 }

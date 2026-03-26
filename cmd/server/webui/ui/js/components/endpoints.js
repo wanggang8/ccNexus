@@ -41,15 +41,7 @@ class Endpoints {
             const data = await api.getEndpoints();
             this.endpoints = data.endpoints || [];
             this.tokenPools = data.tokenPools || {};
-
-            // Get current endpoint
-            try {
-                const currentData = await api.getCurrentEndpoint();
-                this.currentEndpoint = currentData.name || null;
-            } catch (error) {
-                console.error('Failed to get current endpoint:', error);
-                this.currentEndpoint = null;
-            }
+            this.currentEndpoint = data.currentEndpoint || null;
 
             this.renderTable();
         } catch (error) {
@@ -282,7 +274,7 @@ class Endpoints {
     }
 
     copyToClipboard(text, button) {
-        navigator.clipboard.writeText(text).then(() => {
+        this.writeToClipboard(text).then(() => {
             const originalText = button.textContent;
             button.textContent = '✓';
             setTimeout(() => {
@@ -291,6 +283,31 @@ class Endpoints {
         }).catch(err => {
             notifications.error('Failed to copy to clipboard');
         });
+    }
+
+    async writeToClipboard(text) {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+
+        try {
+            const copied = document.execCommand('copy');
+            if (!copied) {
+                throw new Error('Clipboard API unavailable');
+            }
+        } finally {
+            document.body.removeChild(textarea);
+        }
     }
 
     getTestStatus(endpointName) {

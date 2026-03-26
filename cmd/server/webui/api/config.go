@@ -50,9 +50,6 @@ func (h *Handler) handleBasicAuthConfig(w http.ResponseWriter, r *http.Request) 
 		if req.Password != "" && req.Password != "***" {
 			h.config.BasicAuthPassword = req.Password
 		}
-		h.auth.Enabled = h.config.BasicAuthEnabled
-		h.auth.Username = h.config.BasicAuthUsername
-		h.auth.Password = h.config.BasicAuthPassword
 
 		adapter := storage.NewConfigStorageAdapter(h.storage)
 		if err := h.config.SaveToStorage(adapter); err != nil {
@@ -85,7 +82,6 @@ func (h *Handler) handleResetBasicAuthPassword(w http.ResponseWriter, r *http.Re
 	newPassword := hex.EncodeToString(bytes)[:16]
 
 	h.config.BasicAuthPassword = newPassword
-	h.auth.Password = newPassword
 
 	adapter := storage.NewConfigStorageAdapter(h.storage)
 	if err := h.config.SaveToStorage(adapter); err != nil {

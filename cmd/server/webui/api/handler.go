@@ -14,7 +14,6 @@ type Handler struct {
 	config  *config.Config
 	proxy   *proxy.Proxy
 	storage *storage.SQLiteStorage
-	auth    AuthConfig
 }
 
 // NewHandler creates a new API handler
@@ -23,11 +22,6 @@ func NewHandler(cfg *config.Config, p *proxy.Proxy, s *storage.SQLiteStorage) *H
 		config:  cfg,
 		proxy:   p,
 		storage: s,
-		auth: AuthConfig{
-			Enabled:  cfg.BasicAuthEnabled,
-			Username: cfg.BasicAuthUsername,
-			Password: cfg.BasicAuthPassword,
-		},
 	}
 }
 
@@ -38,7 +32,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/" + path
 	}
 
-	authMiddleware := BasicAuthMiddleware(h.auth)
+	authMiddleware := DynamicBasicAuthMiddleware(h.config)
 
 	switch path {
 	case "/api/endpoints":

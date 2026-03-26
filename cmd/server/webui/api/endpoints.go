@@ -83,8 +83,9 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteSuccess(w, map[string]interface{}{
-		"endpoints":  endpoints,
-		"tokenPools": tokenPools,
+		"endpoints":       endpoints,
+		"tokenPools":      tokenPools,
+		"currentEndpoint": h.proxy.GetCurrentEndpointName(),
 	})
 }
 
@@ -400,28 +401,14 @@ func (h *Handler) handleCurrentEndpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	endpoints := h.config.GetEndpoints()
-	if len(endpoints) == 0 {
-		WriteError(w, http.StatusNotFound, "No endpoints configured")
-		return
-	}
-
-	// Get enabled endpoints
-	var enabledEndpoints []config.Endpoint
-	for _, ep := range endpoints {
-		if ep.Enabled {
-			enabledEndpoints = append(enabledEndpoints, ep)
-		}
-	}
-
-	if len(enabledEndpoints) == 0 {
+	current := h.proxy.GetCurrentEndpointName()
+	if current == "" {
 		WriteError(w, http.StatusNotFound, "No enabled endpoints")
 		return
 	}
 
-	// Return first enabled endpoint as current
 	WriteSuccess(w, map[string]interface{}{
-		"name": enabledEndpoints[0].Name,
+		"name": current,
 	})
 }
 
@@ -453,6 +440,12 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		WriteError(w, http.StatusNotFound, "Endpoint not found or not enabled")
+		return
+	}
+
+	if err := h.proxy.SetCurrentEndpoint(req.Name); err != nil {
+		logger.Error("Failed to switch endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
