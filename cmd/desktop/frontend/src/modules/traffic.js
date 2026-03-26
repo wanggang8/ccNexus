@@ -1,6 +1,6 @@
 import { t } from '../i18n/index.js';
 import { escapeHtml, formatTokens } from '../utils/format.js';
-import { showNotification } from './modal.js';
+import { showConfirm, showNotification } from './modal.js';
 
 let trafficLoadVersion = 0;
 let trafficClearInProgress = false;
@@ -52,15 +52,15 @@ function readTrafficFilter() {
 
 export async function loadTraffic() {
     if (trafficClearInProgress) {
-        return;
+        return false;
     }
     const loadVersion = ++trafficLoadVersion;
     try {
-        if (!window.go?.main?.App) return;
+        if (!window.go?.main?.App) return false;
 
         const resultStr = await window.go.main.App.GetTrafficLogs(JSON.stringify(readTrafficFilter()));
         const result = JSON.parse(resultStr);
-        if (loadVersion !== trafficLoadVersion) return;
+        if (loadVersion !== trafficLoadVersion) return false;
         renderTraffic(result.logs || []);
 
         const summary = document.getElementById('trafficSummary');
@@ -74,9 +74,11 @@ export async function loadTraffic() {
         if (recordingToggle) {
             recordingToggle.checked = Boolean(result.recording);
         }
+        return true;
     } catch (error) {
-        if (loadVersion !== trafficLoadVersion) return;
+        if (loadVersion !== trafficLoadVersion) return false;
         console.error('Failed to load traffic logs:', error);
+        return false;
     }
 }
 
@@ -160,7 +162,8 @@ export async function toggleTrafficRecording() {
 }
 
 export async function clearTrafficLogs() {
-    if (!window.confirm(t('traffic.clearConfirm'))) {
+    const confirmed = await showConfirm(t('traffic.clearConfirm'));
+    if (!confirmed) {
         return;
     }
 
@@ -191,4 +194,18 @@ export async function clearTrafficLogs() {
 
 export async function applyTrafficFilters() {
     await loadTraffic();
+}
+
+export async function refreshTrafficLogs() {
+    try {
+        const ok = await loadTraffic();
+        if (!ok) {
+            showNotification(t('traffic.refreshFailed'), 'error');
+            return;
+        }
+        showNotification(t('traffic.refreshed'), 'success');
+    } catch (error) {
+        console.error('Failed to refresh traffic logs:', error);
+        showNotification(t('traffic.refreshFailed'), 'error');
+    }
 }

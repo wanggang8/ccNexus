@@ -1138,9 +1138,9 @@ func formatCursorResponsesStreamEventWithState(eventName string, payload map[str
 			payload["text"] = state.ResponsesMessageText
 		}
 	case "response.function_call_arguments.delta":
-		trackCursorResponsesToolArguments(state, stringValue(payload["delta"]))
+		trackCursorResponsesToolArguments(state, payload)
 	case "response.function_call_arguments.done":
-		trackCursorResponsesToolArgumentsDone(state, stringValue(payload["arguments"]))
+		trackCursorResponsesToolArgumentsDone(state, payload)
 		payload = enrichCursorResponsesFunctionArgumentsDone(state, payload)
 	case "response.output_item.done":
 		trackCursorResponsesDone(state, payload)
@@ -1215,11 +1215,12 @@ func trackCursorResponsesAdded(state *cursorCompatState, payload map[string]inte
 	}
 }
 
-func trackCursorResponsesToolArguments(state *cursorCompatState, delta string) {
+func trackCursorResponsesToolArguments(state *cursorCompatState, payload map[string]interface{}) {
+	delta := stringValue(payload["delta"])
 	if state == nil || delta == "" {
 		return
 	}
-	tool := latestActiveCursorResponsesTool(state)
+	tool := cursorResponsesToolFromPayload(state, payload)
 	if tool == nil {
 		index := len(state.ResponsesTools)
 		tool = &cursorResponsesToolState{
@@ -1232,11 +1233,12 @@ func trackCursorResponsesToolArguments(state *cursorCompatState, delta string) {
 	tool.Arguments += delta
 }
 
-func trackCursorResponsesToolArgumentsDone(state *cursorCompatState, arguments string) {
+func trackCursorResponsesToolArgumentsDone(state *cursorCompatState, payload map[string]interface{}) {
+	arguments := stringValue(payload["arguments"])
 	if state == nil || arguments == "" {
 		return
 	}
-	tool := latestActiveCursorResponsesTool(state)
+	tool := cursorResponsesToolFromPayload(state, payload)
 	if tool == nil {
 		return
 	}
@@ -1425,7 +1427,7 @@ func enrichCursorResponsesFunctionArgumentsDone(state *cursorCompatState, payloa
 		}
 		return rewritten
 	}
-	tool := latestActiveCursorResponsesTool(state)
+	tool := cursorResponsesToolFromPayload(state, rewritten)
 	if tool == nil || strings.TrimSpace(tool.Arguments) == "" {
 		return rewritten
 	}
@@ -1687,6 +1689,18 @@ func latestActiveCursorResponsesTool(state *cursorCompatState) *cursorResponsesT
 		}
 	}
 	return nil
+}
+
+func cursorResponsesToolFromPayload(state *cursorCompatState, payload map[string]interface{}) *cursorResponsesToolState {
+	if state == nil {
+		return nil
+	}
+	if index := cursorResponsesOutputIndex(payload); index >= 0 {
+		if tool := state.ResponsesTools[index]; tool != nil {
+			return tool
+		}
+	}
+	return latestActiveCursorResponsesTool(state)
 }
 
 func findCursorResponsesToolByID(state *cursorCompatState, id string) *cursorResponsesToolState {

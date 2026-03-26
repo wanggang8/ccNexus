@@ -12,6 +12,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // testEndpoint tests an endpoint's connectivity
@@ -87,6 +88,19 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			},
 			"max_tokens": 16,
 		})
+	case "cli":
+		model := endpoint.Model
+		if model == "" {
+			model = "claude-sonnet-4-5-20250929"
+		}
+		probeOpenAIReq, _ := json.Marshal(map[string]interface{}{
+			"model":      model,
+			"stream":     false,
+			"messages":   []map[string]interface{}{{"role": "user", "content": "你是什么模型?"}},
+			"max_tokens": 16,
+		})
+		reqBody, _, err = convert.OpenAIReqToClaudeCLI(probeOpenAIReq, model, apiKey)
+		url = convert.BuildClaudeCliURL(endpoint.APIUrl)
 	case "openai", "openai2":
 		url = fmt.Sprintf("%s/v1/chat/completions", endpoint.APIUrl)
 		model := endpoint.Model
@@ -140,6 +154,10 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	case "claude":
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
+	case "cli":
+		for key, value := range convert.BuildClaudeCliHeaders(apiKey, convert.BuildClaudeCliBetas(nil), false) {
+			req.Header.Set(key, value)
+		}
 	case "openai", "openai2":
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	case "gemini":
@@ -177,6 +195,8 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	// Extract message based on transformer
 	switch endpoint.Transformer {
 	case "claude":
+		fallthrough
+	case "cli":
 		if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
 			if block, ok := content[0].(map[string]interface{}); ok {
 				if text, ok := block["text"].(string); ok {
@@ -272,6 +292,8 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 	case "openai", "openai2":
 		url = fmt.Sprintf("%s/v1/models", apiUrl)
 		authHeader = "Bearer " + apiKey
+	case "cli":
+		url = fmt.Sprintf("%s/v1/models", apiUrl)
 	case "claude":
 		// Claude doesn't have a models endpoint, return known models
 		return []string{
@@ -297,7 +319,13 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", authHeader)
+	if transformer == "cli" {
+		for key, value := range convert.BuildClaudeCliHeaders(apiKey, convert.BuildClaudeCliBetas(nil), false) {
+			req.Header.Set(key, value)
+		}
+	} else {
+		req.Header.Set("Authorization", authHeader)
+	}
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,

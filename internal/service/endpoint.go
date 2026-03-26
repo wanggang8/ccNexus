@@ -868,9 +868,7 @@ func (e *EndpointService) testModelsAPI(apiUrl, apiKey, transformer string) (int
 		return 0, err
 	}
 
-	if transformer != "gemini" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	applyModelRequestHeaders(req, apiKey, transformer)
 
 	client := e.createHTTPClient(8*time.Second, req.URL.String())
 	resp, err := client.Do(req)
@@ -1058,6 +1056,13 @@ func (e *EndpointService) testMinimalRequest(apiUrl, apiKey, transformer, model 
 			"contents":         []map[string]interface{}{{"parts": []map[string]string{{"text": "Hi"}}}},
 			"generationConfig": map[string]int{"maxOutputTokens": 1},
 		})
+	case "cli":
+		cliReqURL, converted, _, convErr := buildCLIProbeRequest(apiUrl, apiKey, model, "ping", 1)
+		if convErr != nil {
+			return 0, fmt.Errorf("failed to build cli probe payload: %w", convErr)
+		}
+		reqURL = cliReqURL
+		body = converted
 	default:
 		return 0, fmt.Errorf("unsupported transformer: %s", transformer)
 	}
@@ -1355,6 +1360,8 @@ func (e *EndpointService) FetchModels(apiUrl, apiKey, transformer string) string
 	switch transformer {
 	case "claude":
 		models, err = e.fetchOpenAIModels(normalizedAPIUrl, resolvedAPIKey, transformer, resolvedCredential)
+	case "cli":
+		models, err = e.fetchOpenAIModels(normalizedAPIUrl, resolvedAPIKey, transformer, resolvedCredential)
 	case "openai", "openai2":
 		if transformer == "openai2" && isCodexBackendAPIURL(normalizedAPIUrl) {
 			models, err = e.fetchCodexModels(normalizedAPIUrl, resolvedAPIKey, resolvedCredential)
@@ -1406,7 +1413,7 @@ func (e *EndpointService) fetchOpenAIModels(apiUrl, apiKey, transformer string, 
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	applyModelRequestHeaders(req, apiKey, transformer)
 	req.Header.Set("Accept", "application/json")
 	applyCodexCredentialHeadersForTest(req, credential, nil)
 	logger.Debug("Fetching models from: %s (transformer=%s)", url, transformer)
@@ -1457,6 +1464,44 @@ func (e *EndpointService) fetchOpenAIModels(apiUrl, apiKey, transformer string, 
 
 	logger.Debug("Successfully fetched %d models from %s", len(models), url)
 	return models, nil
+}
+
+func buildCLIProbeRequest(apiURL, apiKey, model, prompt string, maxTokens int) (string, []byte, map[string]string, error) {
+	if strings.TrimSpace(model) == "" {
+		model = "claude-sonnet-4-5-20250929"
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "ping"
+	}
+	if maxTokens <= 0 {
+		maxTokens = 1
+	}
+	probeOpenAIReq, _ := json.Marshal(map[string]interface{}{
+		"model":      model,
+		"stream":     false,
+		"messages":   []map[string]interface{}{{"role": "user", "content": prompt}},
+		"max_tokens": maxTokens,
+	})
+	body, headers, err := convert.OpenAIReqToClaudeCLI(probeOpenAIReq, model, apiKey)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return convert.BuildClaudeCliURL(apiURL), body, headers, nil
+}
+
+func applyModelRequestHeaders(req *http.Request, apiKey, transformer string) {
+	if req == nil {
+		return
+	}
+	if transformer == "cli" {
+		for key, value := range convert.BuildClaudeCliHeaders(apiKey, convert.BuildClaudeCliBetas(nil), false) {
+			req.Header.Set(key, value)
+		}
+		return
+	}
+	if transformer != "gemini" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 }
 
 func (e *EndpointService) fetchCodexModels(apiURL, apiKey string, credential *storage.EndpointCredential) ([]string, error) {

@@ -3,10 +3,110 @@ package convert
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
+
+type openAI2ToolStreamState struct {
+	ByToolIndex   map[int]*openAI2ToolCallState
+	ByOutputIndex map[int]*openAI2ToolCallState
+	NextToolIndex int
+}
+
+type openAI2ToolCallState struct {
+	ToolIndex   int
+	OutputIndex int
+	ID          string
+	Name        string
+	Arguments   string
+	Added       bool
+	Done        bool
+}
+
+func getOpenAI2ToolStreamState(ctx *transformer.StreamContext) *openAI2ToolStreamState {
+	if ctx == nil {
+		return nil
+	}
+	if state, ok := ctx.State.(*openAI2ToolStreamState); ok && state != nil {
+		if state.ByToolIndex == nil {
+			state.ByToolIndex = make(map[int]*openAI2ToolCallState)
+		}
+		if state.ByOutputIndex == nil {
+			state.ByOutputIndex = make(map[int]*openAI2ToolCallState)
+		}
+		return state
+	}
+	state := &openAI2ToolStreamState{
+		ByToolIndex:   make(map[int]*openAI2ToolCallState),
+		ByOutputIndex: make(map[int]*openAI2ToolCallState),
+	}
+	ctx.State = state
+	return state
+}
+
+func ensureOpenAI2ToolStateByToolIndex(ctx *transformer.StreamContext, toolIndex int) *openAI2ToolCallState {
+	state := getOpenAI2ToolStreamState(ctx)
+	if state == nil {
+		return nil
+	}
+	if toolIndex < 0 {
+		toolIndex = state.NextToolIndex
+		state.NextToolIndex++
+	}
+	if tool, ok := state.ByToolIndex[toolIndex]; ok && tool != nil {
+		return tool
+	}
+	tool := &openAI2ToolCallState{
+		ToolIndex:   toolIndex,
+		OutputIndex: toolIndex + 1,
+	}
+	state.ByToolIndex[toolIndex] = tool
+	state.ByOutputIndex[tool.OutputIndex] = tool
+	if toolIndex >= state.NextToolIndex {
+		state.NextToolIndex = toolIndex + 1
+	}
+	return tool
+}
+
+func ensureOpenAI2ToolStateByOutputIndex(ctx *transformer.StreamContext, outputIndex int) *openAI2ToolCallState {
+	state := getOpenAI2ToolStreamState(ctx)
+	if state == nil {
+		return nil
+	}
+	if tool, ok := state.ByOutputIndex[outputIndex]; ok && tool != nil {
+		return tool
+	}
+	tool := ensureOpenAI2ToolStateByToolIndex(ctx, -1)
+	if tool != nil {
+		if oldOutputIndex := tool.OutputIndex; oldOutputIndex != outputIndex {
+			delete(state.ByOutputIndex, oldOutputIndex)
+		}
+		tool.OutputIndex = outputIndex
+		state.ByOutputIndex[outputIndex] = tool
+	}
+	return tool
+}
+
+func sortedOpenAI2Tools(ctx *transformer.StreamContext) []*openAI2ToolCallState {
+	state := getOpenAI2ToolStreamState(ctx)
+	if state == nil || len(state.ByToolIndex) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(state.ByToolIndex))
+	for index := range state.ByToolIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	tools := make([]*openAI2ToolCallState, 0, len(indexes))
+	for _, index := range indexes {
+		if tool := state.ByToolIndex[index]; tool != nil {
+			tools = append(tools, tool)
+		}
+	}
+	return tools
+}
 
 // OpenAIReqToOpenAI2 converts OpenAI Chat request to OpenAI Responses request
 func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
@@ -492,22 +592,27 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
+			tool := ensureOpenAI2ToolStateByToolIndex(ctx, idx)
+			if tool == nil {
+				continue
+			}
 			// New tool call (has ID)
 			if tc.ID != "" {
-				ctx.ToolCallCounter++
-				ctx.CurrentToolID = tc.ID
-				ctx.CurrentToolName = tc.Function.Name
-				ctx.ToolArguments = ""
-				writeEvent(map[string]interface{}{
-					"type": "response.output_item.added", "output_index": idx + 1,
-					"item": map[string]interface{}{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": "", "status": "in_progress"},
-				})
+				tool.ID = tc.ID
+				tool.Name = tc.Function.Name
+				if !tool.Added {
+					writeEvent(map[string]interface{}{
+						"type": "response.output_item.added", "output_index": tool.OutputIndex,
+						"item": map[string]interface{}{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": "", "status": "in_progress"},
+					})
+					tool.Added = true
+				}
 			}
 			// Accumulate arguments
 			if tc.Function.Arguments != "" {
-				ctx.ToolArguments += tc.Function.Arguments
+				tool.Arguments += tc.Function.Arguments
 				writeEvent(map[string]interface{}{
-					"type": "response.function_call_arguments.delta", "output_index": idx + 1, "delta": tc.Function.Arguments,
+					"type": "response.function_call_arguments.delta", "output_index": tool.OutputIndex, "delta": tc.Function.Arguments,
 				})
 			}
 		}
@@ -521,12 +626,18 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": ctx.ContentIndex, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 				ctx.ContentBlockStarted = false
 			}
-			if *finishReason == "tool_calls" && ctx.CurrentToolID != "" {
-				writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": 1, "arguments": ctx.ToolArguments})
-				writeEvent(map[string]interface{}{
-					"type": "response.output_item.done", "output_index": 1,
-					"item": map[string]interface{}{"type": "function_call", "call_id": ctx.CurrentToolID, "name": ctx.CurrentToolName, "arguments": ctx.ToolArguments, "status": "completed"},
-				})
+			if *finishReason == "tool_calls" {
+				for _, tool := range sortedOpenAI2Tools(ctx) {
+					if tool == nil || tool.Done || tool.ID == "" {
+						continue
+					}
+					writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": tool.OutputIndex, "arguments": tool.Arguments})
+					writeEvent(map[string]interface{}{
+						"type": "response.output_item.done", "output_index": tool.OutputIndex,
+						"item": map[string]interface{}{"type": "function_call", "call_id": tool.ID, "name": tool.Name, "arguments": tool.Arguments, "status": "completed"},
+					})
+					tool.Done = true
+				}
 			}
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
@@ -576,25 +687,41 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 
 	case "response.output_item.added":
 		if evt.Item != nil && evt.Item.Type == "function_call" {
-			ctx.ToolBlockStarted = true
-			ctx.CurrentToolID = evt.Item.CallID
-			ctx.CurrentToolName = evt.Item.Name
-			ctx.ToolArguments = ""
+			tool := ensureOpenAI2ToolStateByOutputIndex(ctx, evt.OutputIndex)
+			if tool != nil {
+				tool.ID = firstNonEmptyStringLocal(evt.Item.CallID, evt.Item.ID)
+				tool.Name = evt.Item.Name
+				tool.Arguments = ""
+				tool.Added = true
+			}
 		}
 		return nil, nil
 
 	case "response.function_call_arguments.delta":
-		if ctx.ToolBlockStarted {
-			ctx.ToolArguments += evt.Delta
+		if tool := ensureOpenAI2ToolStateByOutputIndex(ctx, evt.OutputIndex); tool != nil {
+			tool.Arguments += evt.Delta
 		}
 		return nil, nil
 
 	case "response.output_item.done":
-		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
-			ctx.ToolBlockStarted = false
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			tool := ensureOpenAI2ToolStateByOutputIndex(ctx, evt.OutputIndex)
+			if tool == nil {
+				return nil, nil
+			}
+			if tool.ID == "" {
+				tool.ID = firstNonEmptyStringLocal(evt.Item.CallID, evt.Item.ID)
+			}
+			if tool.Name == "" {
+				tool.Name = evt.Item.Name
+			}
+			if tool.Arguments == "" {
+				tool.Arguments = evt.Item.Arguments
+			}
+			tool.Done = true
 			return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-				{"index": ctx.ToolIndex, "id": ctx.CurrentToolID, "type": "function",
-					"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ctx.ToolArguments}},
+				{"index": tool.ToolIndex, "id": tool.ID, "type": "function",
+					"function": map[string]interface{}{"name": tool.Name, "arguments": tool.Arguments}},
 			}, "")
 		}
 		return nil, nil
@@ -609,7 +736,7 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 			}
 		}
 		finishReason := "stop"
-		if ctx.CurrentToolID != "" {
+		if len(sortedOpenAI2Tools(ctx)) > 0 {
 			finishReason = "tool_calls"
 		}
 		usage := map[string]interface{}{
@@ -842,4 +969,13 @@ func buildOpenAIImageURLPart(partMap map[string]interface{}) map[string]interfac
 		"type":      "image_url",
 		"image_url": imageURL,
 	}
+}
+
+func firstNonEmptyStringLocal(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

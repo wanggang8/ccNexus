@@ -624,6 +624,153 @@ func TestFixCursorStreamBundleEnrichesTransformedResponsesEventShape(t *testing.
 	}
 }
 
+func TestFixCursorStreamBundleHandlesInterleavedResponseToolCalls(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"REA"}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_2","name":"write_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"OUT"}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"DME.md\"}"}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"PUT.md\"}"}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call_2","name":"write_file"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `"call_id":"call_1"`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"README.md\"}"`) {
+		t.Fatalf("expected first tool call arguments to stay isolated, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"call_id":"call_2"`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"OUTPUT.md\"}"`) {
+		t.Fatalf("expected second tool call arguments to stay isolated, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundleKeepsCompletedBeforeDone(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	completedIndex := strings.Index(fixedStr, "event: response.completed")
+	doneIndex := strings.Index(fixedStr, "data: [DONE]")
+	if completedIndex == -1 || doneIndex == -1 || completedIndex > doneIndex {
+		t.Fatalf("expected response.completed before [DONE], got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundleRoutesArgumentsDoneByOutputIndex(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"README.md\"}"}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_2","name":"write_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"OUTPUT.md\"}"}`,
+		"",
+		`data: {"type":"response.function_call_arguments.done","output_index":1}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `event: response.function_call_arguments.done`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"README.md\"}"`) {
+		t.Fatalf("expected arguments.done to inherit the first tool arguments, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, `event: response.function_call_arguments.done`) && strings.Contains(fixedStr, `"arguments":"{\"path\":\"OUTPUT.md\"}"`) {
+		t.Fatalf("did not expect arguments.done for output_index 1 to pick the latest active tool, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundlePreservesErrorAfterPartialOutput(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"error":{"message":"boom","type":"server_error"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIChat,
+		ClientModel:  "cursor-model",
+		CursorState:  &cursorCompatState{},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `"content":"hello"`) {
+		t.Fatalf("expected partial content to survive before error, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"message":"boom"`) {
+		t.Fatalf("expected structured error payload to pass through, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, "[DONE]") {
+		t.Fatalf("did not expect synthetic [DONE] after error, got %s", fixedStr)
+	}
+}
+
 func TestFixCursorResponseBodyInjectsMessagesThinkingBlock(t *testing.T) {
 	body := []byte(`{
 		"id":"msg_1",

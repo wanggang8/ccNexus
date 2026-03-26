@@ -7,7 +7,7 @@ import { loadConfig } from './modules/config.js'
 import { loadStats, switchStatsPeriod, loadStatsByPeriod, getCurrentPeriod, updateStatsIncremental, updateEndpointStatsCache, updateTotalStatsCache } from './modules/stats.js'
 import { renderEndpoints, toggleEndpointPanel, initEndpointSuccessListener, checkAllEndpointsOnStartup, switchEndpointViewMode, initEndpointViewMode, isDropdownOpen, updateEndpointStatsIncremental } from './modules/endpoints.js'
 import { loadLogs, toggleLogPanel, changeLogLevel, copyLogs, clearLogs } from './modules/logs.js'
-import { loadTraffic, showTrafficDetail, closeTrafficDetailModal, toggleTrafficRecording, clearTrafficLogs, applyTrafficFilters } from './modules/traffic.js'
+import { loadTraffic, showTrafficDetail, closeTrafficDetailModal, toggleTrafficRecording, clearTrafficLogs, applyTrafficFilters, refreshTrafficLogs } from './modules/traffic.js'
 import { showDataSyncDialog } from './modules/webdav.js'
 import { initTips } from './modules/tips.js'
 import { initTerminal } from './modules/terminal.js'
@@ -257,6 +257,7 @@ window.closeTrafficDetailModal = closeTrafficDetailModal;
 window.toggleTrafficRecording = toggleTrafficRecording;
 window.clearTrafficLogs = clearTrafficLogs;
 window.applyTrafficFilters = applyTrafficFilters;
+window.refreshTrafficLogs = refreshTrafficLogs;
 window.changeLanguage = changeLanguage;
 window.togglePasswordVisibility = togglePasswordVisibility;
 window.acceptConfirm = acceptConfirm;

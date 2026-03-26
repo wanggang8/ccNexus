@@ -368,7 +368,7 @@ export function initUI() {
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
-                        <button class="btn btn-secondary btn-sm" onclick="window.applyTrafficFilters()">${t('traffic.refresh')}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="window.refreshTrafficLogs()">${t('traffic.refresh')}</button>
                         <button class="btn btn-secondary btn-sm" onclick="window.clearTrafficLogs()">${t('traffic.clear')}</button>
                     </div>
                 </div>
@@ -476,6 +476,7 @@ export function initUI() {
                         <label><span class="required">*</span>${t('modal.transformer')}</label>
                         <select id="endpointTransformer" onchange="window.handleTransformerChange()">
                             <option value="claude">Claude (Default)</option>
+                            <option value="cli">Claude CLI</option>
                             <option value="openai">OpenAI</option>
                             <option value="openai2">OpenAI2 (Responses API)</option>
                             <option value="gemini">Gemini</option>

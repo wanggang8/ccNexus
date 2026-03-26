@@ -342,6 +342,9 @@ export function handleTransformerChange() {
     if (transformer === 'claude') {
         modelInput.placeholder = 'e.g., claude-3-5-sonnet-20241022';
         modelHelpText.textContent = t('modal.modelHelpClaude');
+    } else if (transformer === 'cli') {
+        modelInput.placeholder = 'e.g., claude-sonnet-4-5-20250929';
+        modelHelpText.textContent = t('modal.modelHelpCli');
     } else if (transformer === 'openai') {
         modelInput.placeholder = 'e.g., gpt-4-turbo';
         modelHelpText.textContent = t('modal.modelHelpOpenAI');

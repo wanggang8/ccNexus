@@ -8,6 +8,45 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
+type openAI2GeminiToolStreamState struct {
+	ByOutputIndex map[int]*openAI2GeminiToolCallState
+}
+
+type openAI2GeminiToolCallState struct {
+	OutputIndex int
+	ID          string
+	Name        string
+	Arguments   string
+}
+
+func getOpenAI2GeminiToolStreamState(ctx *transformer.StreamContext) *openAI2GeminiToolStreamState {
+	if ctx == nil {
+		return nil
+	}
+	if state, ok := ctx.State.(*openAI2GeminiToolStreamState); ok && state != nil {
+		if state.ByOutputIndex == nil {
+			state.ByOutputIndex = make(map[int]*openAI2GeminiToolCallState)
+		}
+		return state
+	}
+	state := &openAI2GeminiToolStreamState{ByOutputIndex: make(map[int]*openAI2GeminiToolCallState)}
+	ctx.State = state
+	return state
+}
+
+func ensureOpenAI2GeminiToolState(ctx *transformer.StreamContext, outputIndex int) *openAI2GeminiToolCallState {
+	state := getOpenAI2GeminiToolStreamState(ctx)
+	if state == nil {
+		return nil
+	}
+	if tool, ok := state.ByOutputIndex[outputIndex]; ok && tool != nil {
+		return tool
+	}
+	tool := &openAI2GeminiToolCallState{OutputIndex: outputIndex}
+	state.ByOutputIndex[outputIndex] = tool
+	return tool
+}
+
 // OpenAI2ReqToGemini converts OpenAI Responses API request to Gemini request
 func OpenAI2ReqToGemini(openai2Req []byte, model string) ([]byte, error) {
 	var req transformer.OpenAI2Request
@@ -326,28 +365,42 @@ func OpenAI2StreamToGemini(event []byte, ctx *transformer.StreamContext) ([]byte
 
 	case "response.output_item.added":
 		if evt.Item != nil && evt.Item.Type == "function_call" {
-			ctx.ToolBlockStarted = true
-			ctx.CurrentToolID = evt.Item.CallID
-			ctx.CurrentToolName = evt.Item.Name
-			ctx.ToolArguments = ""
+			tool := ensureOpenAI2GeminiToolState(ctx, evt.OutputIndex)
+			if tool != nil {
+				tool.ID = firstNonEmptyStringLocal(evt.Item.CallID, evt.Item.ID)
+				tool.Name = evt.Item.Name
+				tool.Arguments = ""
+			}
 		}
 		return nil, nil
 
 	case "response.function_call_arguments.delta":
-		if ctx.ToolBlockStarted {
-			ctx.ToolArguments += evt.Delta
+		if tool := ensureOpenAI2GeminiToolState(ctx, evt.OutputIndex); tool != nil {
+			tool.Arguments += evt.Delta
 		}
 		return nil, nil
 
 	case "response.output_item.done":
-		if evt.Item != nil && evt.Item.Type == "function_call" && ctx.ToolBlockStarted {
-			ctx.ToolBlockStarted = false
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			tool := ensureOpenAI2GeminiToolState(ctx, evt.OutputIndex)
+			if tool == nil {
+				return nil, nil
+			}
+			if tool.Name == "" {
+				tool.Name = evt.Item.Name
+			}
+			if tool.ID == "" {
+				tool.ID = firstNonEmptyStringLocal(evt.Item.CallID, evt.Item.ID)
+			}
+			if tool.Arguments == "" {
+				tool.Arguments = evt.Item.Arguments
+			}
 			var args map[string]interface{}
-			json.Unmarshal([]byte(ctx.ToolArguments), &args)
+			json.Unmarshal([]byte(tool.Arguments), &args)
 			chunk := map[string]interface{}{
 				"candidates": []map[string]interface{}{
 					{"content": map[string]interface{}{"role": "model", "parts": []map[string]interface{}{
-						{"functionCall": map[string]interface{}{"name": ctx.CurrentToolName, "args": args}},
+						{"functionCall": map[string]interface{}{"name": tool.Name, "args": args}},
 					}}},
 				},
 			}

@@ -182,3 +182,80 @@ func TestOpenAI2StreamToGeminiEmitsThoughtPartFromReasoningSummary(t *testing.T)
 		t.Fatalf("expected reasoning summary to become Gemini thought part, got %s", output)
 	}
 }
+
+func TestOpenAI2StreamToGeminiHandlesInterleavedToolCalls(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"REA"}`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"OUT"}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"DME.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"completed"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"PUT.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","status":"completed"}}`,
+	}
+
+	var output strings.Builder
+	for _, event := range events {
+		out, err := OpenAI2StreamToGemini([]byte(event), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToGemini failed: %v", err)
+		}
+		output.Write(out)
+	}
+
+	out := output.String()
+	if strings.Count(out, `"functionCall"`) != 2 {
+		t.Fatalf("expected 2 functionCall parts, got %s", out)
+	}
+	if !strings.Contains(out, `"name":"read_file"`) || !strings.Contains(out, `"path":"README.md"`) {
+		t.Fatalf("expected first functionCall args preserved, got %s", out)
+	}
+	if !strings.Contains(out, `"name":"write_file"`) || !strings.Contains(out, `"path":"OUTPUT.md"`) {
+		t.Fatalf("expected second functionCall args preserved, got %s", out)
+	}
+}
+
+func TestGeminiStreamToOpenAI2ReturnsErrorAfterPartialOutput(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	first, err := GeminiStreamToOpenAI2([]byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}`), ctx)
+	if err != nil {
+		t.Fatalf("GeminiStreamToOpenAI2 first chunk failed: %v", err)
+	}
+	if first == nil || !strings.Contains(string(first), `"delta":"hello"`) {
+		t.Fatalf("expected partial output before error, got %s", string(first))
+	}
+
+	second, err := GeminiStreamToOpenAI2([]byte(`data: {"error":{"message":"boom","code":500}}`), ctx)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected upstream error, got out=%s err=%v", string(second), err)
+	}
+	if second != nil {
+		t.Fatalf("did not expect output chunk on error, got %s", string(second))
+	}
+}
+
+func TestGeminiStreamToOpenAI2PreservesUsageFromEarlierChunkOnBareDone(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	if _, err := GeminiStreamToOpenAI2([]byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}}`), ctx); err != nil {
+		t.Fatalf("GeminiStreamToOpenAI2 first chunk failed: %v", err)
+	}
+
+	out, err := GeminiStreamToOpenAI2([]byte("data: [DONE]"), ctx)
+	if err != nil {
+		t.Fatalf("GeminiStreamToOpenAI2 bare done failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected synthesized completed output")
+	}
+
+	output := string(out)
+	if !strings.Contains(output, `"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}`) {
+		t.Fatalf("expected prior usage to be preserved, got %s", output)
+	}
+}

@@ -149,6 +149,129 @@ func TestOpenAI2StreamToClaudePropagatesUsageFromCompleted(t *testing.T) {
 	}
 }
 
+func TestOpenAI2StreamToClaudeHandlesInterleavedToolCalls(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.ModelName = "claude-3-sonnet-20240229"
+
+	chunks := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"REA"}`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"OUT"}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"DME.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"completed"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"PUT.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","status":"completed"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+	}
+
+	var allEvents []string
+	for _, chunk := range chunks {
+		events, err := OpenAI2StreamToClaude([]byte(chunk), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+		}
+		if events != nil {
+			allEvents = append(allEvents, string(events))
+		}
+	}
+
+	fullEvents := strings.Join(allEvents, "")
+	if strings.Count(fullEvents, `"type":"tool_use"`) != 2 {
+		t.Fatalf("expected 2 tool_use blocks, got %s", fullEvents)
+	}
+	if !strings.Contains(fullEvents, `"id":"call_1"`) || !strings.Contains(fullEvents, `"name":"read_file"`) {
+		t.Fatalf("expected first tool metadata preserved, got %s", fullEvents)
+	}
+	if !strings.Contains(fullEvents, `"id":"call_2"`) || !strings.Contains(fullEvents, `"name":"write_file"`) {
+		t.Fatalf("expected second tool metadata preserved, got %s", fullEvents)
+	}
+	if !strings.Contains(fullEvents, `"partial_json":"{\"path\":\"REA"`) || !strings.Contains(fullEvents, `"partial_json":"DME.md\"}"`) {
+		t.Fatalf("expected first tool deltas preserved, got %s", fullEvents)
+	}
+	if !strings.Contains(fullEvents, `"partial_json":"{\"path\":\"OUT"`) || !strings.Contains(fullEvents, `"partial_json":"PUT.md\"}"`) {
+		t.Fatalf("expected second tool deltas preserved, got %s", fullEvents)
+	}
+}
+
+func TestOpenAI2StreamToClaudeAssignsSequentialToolBlockIndexes(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.ModelName = "claude-3-sonnet-20240229"
+
+	chunks := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":3,"delta":"{\"path\":\"README.md\"}"}`,
+	}
+
+	var allEvents []string
+	for _, chunk := range chunks {
+		events, err := OpenAI2StreamToClaude([]byte(chunk), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+		}
+		if events != nil {
+			allEvents = append(allEvents, string(events))
+		}
+	}
+
+	fullEvents := strings.Join(allEvents, "")
+	if !strings.Contains(fullEvents, `event: content_block_start`) || !strings.Contains(fullEvents, `"index":0`) {
+		t.Fatalf("expected first tool_use block to use sequential index 0, got %s", fullEvents)
+	}
+	if strings.Contains(fullEvents, `"index":3`) {
+		t.Fatalf("did not expect Claude content block index to mirror responses output_index, got %s", fullEvents)
+	}
+}
+
+func TestClaudeStreamToOpenAI2ReturnsErrorAfterPartialOutput(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	if _, err := ClaudeStreamToOpenAI2([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":1}}}\n\n"), ctx); err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 message_start failed: %v", err)
+	}
+	if _, err := ClaudeStreamToOpenAI2([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"), ctx); err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 content_block_start failed: %v", err)
+	}
+
+	first, err := ClaudeStreamToOpenAI2([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"), ctx)
+	if err != nil {
+		t.Fatalf("ClaudeStreamToOpenAI2 first chunk failed: %v", err)
+	}
+	if first == nil || !strings.Contains(string(first), `"delta":"hello"`) {
+		t.Fatalf("expected partial output before error, got %s", string(first))
+	}
+
+	second, err := ClaudeStreamToOpenAI2([]byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"boom\"}}\n\n"), ctx)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected upstream error, got out=%s err=%v", string(second), err)
+	}
+	if second != nil {
+		t.Fatalf("did not expect output chunk on error, got %s", string(second))
+	}
+}
+
+func TestOpenAI2StreamToClaudePreservesUsageWhenCompletedOmitsOutputTokens(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.ModelName = "claude-3-sonnet-20240229"
+	ctx.InputTokens = 7
+	ctx.OutputTokens = 3
+
+	out, err := OpenAI2StreamToClaude([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`), ctx)
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected output on completed event")
+	}
+
+	output := string(out)
+	if !strings.Contains(output, `"usage":{"output_tokens":3}`) {
+		t.Fatalf("expected earlier output_tokens to be preserved, got %s", output)
+	}
+}
+
 func TestClaudeReqToOpenAI2PreservesToolChain(t *testing.T) {
 	claudeReq := `{
 		"model": "claude-sonnet-4-20250514",

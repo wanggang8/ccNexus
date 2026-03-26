@@ -459,3 +459,172 @@ func TestOpenAI2StreamToOpenAIEmitsReasoningContentDelta(t *testing.T) {
 		t.Fatalf("expected reasoning_content delta, got %s", string(out))
 	}
 }
+
+func TestOpenAI2StreamToOpenAIHandlesInterleavedToolCalls(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"REA"}`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","arguments":"","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"OUT"}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"DME.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"completed"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"PUT.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"write_file","status":"completed"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+	}
+
+	var output strings.Builder
+	for _, event := range events {
+		out, err := OpenAI2StreamToOpenAI([]byte(event), ctx, "gpt-4.1")
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToOpenAI failed: %v", err)
+		}
+		output.Write(out)
+	}
+
+	out := output.String()
+	if strings.Count(out, `"tool_calls":[`) != 2 {
+		t.Fatalf("expected 2 tool call chunks, got %s", out)
+	}
+	if !strings.Contains(out, `"id":"call_1"`) || !strings.Contains(out, `"index":0`) || !strings.Contains(out, `"name":"read_file"`) || !strings.Contains(out, `"arguments":"{\"path\":\"README.md\"}"`) {
+		t.Fatalf("expected first tool call to keep its own arguments, got %s", out)
+	}
+	if !strings.Contains(out, `"id":"call_2"`) || !strings.Contains(out, `"index":1`) || !strings.Contains(out, `"name":"write_file"`) || !strings.Contains(out, `"arguments":"{\"path\":\"OUTPUT.md\"}"`) {
+		t.Fatalf("expected second tool call to keep its own arguments, got %s", out)
+	}
+}
+
+func TestOpenAI2StreamToOpenAIAssignsToolIndexesIndependentlyFromOutputIndexes(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"","status":"in_progress"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"README.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","status":"completed"}}`,
+	}
+
+	var output strings.Builder
+	for _, event := range events {
+		out, err := OpenAI2StreamToOpenAI([]byte(event), ctx, "gpt-4.1")
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToOpenAI failed: %v", err)
+		}
+		output.Write(out)
+	}
+
+	out := output.String()
+	if !strings.Contains(out, `"index":0`) {
+		t.Fatalf("expected first tool call to stay index 0 even when output_index starts at 2, got %s", out)
+	}
+	if strings.Contains(out, `"index":1`) {
+		t.Fatalf("did not expect first tool call index to mirror output_index offset, got %s", out)
+	}
+}
+
+func TestOpenAIStreamToOpenAI2HandlesInterleavedToolCalls(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file"}}]}}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"REA"}}]}}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"write_file"}}]}}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"path\":\"OUT"}}]}}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"DME.md\"}"}}]}}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"PUT.md\"}"}}]},"finish_reason":"tool_calls"}]}`,
+	}
+
+	var output strings.Builder
+	for _, event := range events {
+		out, err := OpenAIStreamToOpenAI2([]byte(event), ctx)
+		if err != nil {
+			t.Fatalf("OpenAIStreamToOpenAI2 failed: %v", err)
+		}
+		output.Write(out)
+	}
+
+	out := output.String()
+	if strings.Count(out, `"type":"response.output_item.done"`) != 2 {
+		t.Fatalf("expected 2 completed function_call items, got %s", out)
+	}
+	if !strings.Contains(out, `"call_id":"call_1"`) || !strings.Contains(out, `"name":"read_file"`) || !strings.Contains(out, `"arguments":"{\"path\":\"README.md\"}"`) {
+		t.Fatalf("expected first function_call to keep its own arguments, got %s", out)
+	}
+	if !strings.Contains(out, `"call_id":"call_2"`) || !strings.Contains(out, `"name":"write_file"`) || !strings.Contains(out, `"arguments":"{\"path\":\"OUTPUT.md\"}"`) {
+		t.Fatalf("expected second function_call to keep its own arguments, got %s", out)
+	}
+	if strings.Index(out, `"call_id":"call_1"`) > strings.Index(out, `"call_id":"call_2"`) {
+		t.Fatalf("expected tool calls to finish in tool index order, got %s", out)
+	}
+}
+
+func TestOpenAI2StreamToOpenAIUsesExistingUsageWhenCompletedOmitsValues(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.MessageID = "resp_1"
+	ctx.InputTokens = 7
+	ctx.OutputTokens = 3
+
+	out, err := OpenAI2StreamToOpenAI([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`), ctx, "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2StreamToOpenAI failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected final chunk, got nil")
+	}
+
+	_, jsonData := parseSSE(out)
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+		t.Fatalf("unmarshal chunk failed: %v", err)
+	}
+	usage := chunk["usage"].(map[string]interface{})
+	if usage["prompt_tokens"] != float64(7) || usage["completion_tokens"] != float64(3) || usage["total_tokens"] != float64(10) {
+		t.Fatalf("expected preserved context usage, got %#v", usage)
+	}
+}
+
+func TestOpenAIStreamToOpenAI2EmitsCompletedBeforeDoneOnBareDone(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	if _, err := OpenAIStreamToOpenAI2([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":"hello"}}]}`), ctx); err != nil {
+		t.Fatalf("OpenAIStreamToOpenAI2 content chunk failed: %v", err)
+	}
+
+	out, err := OpenAIStreamToOpenAI2([]byte("data: [DONE]"), ctx)
+	if err != nil {
+		t.Fatalf("OpenAIStreamToOpenAI2 bare done failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected synthesized completed output, got nil")
+	}
+
+	outStr := string(out)
+	completedIndex := strings.Index(outStr, `"type":"response.completed"`)
+	doneIndex := strings.Index(outStr, "data: [DONE]")
+	if completedIndex == -1 || doneIndex == -1 || completedIndex > doneIndex {
+		t.Fatalf("expected response.completed before [DONE], got %s", outStr)
+	}
+}
+
+func TestOpenAIStreamToOpenAI2ReturnsErrorAfterPartialOutput(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	first, err := OpenAIStreamToOpenAI2([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":"hello"}}]}`), ctx)
+	if err != nil {
+		t.Fatalf("OpenAIStreamToOpenAI2 first chunk failed: %v", err)
+	}
+	if first == nil || !strings.Contains(string(first), `"delta":"hello"`) {
+		t.Fatalf("expected partial output before error, got %s", string(first))
+	}
+
+	second, err := OpenAIStreamToOpenAI2([]byte(`data: {"error":{"message":"boom","type":"server_error"}}`), ctx)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected upstream error, got out=%s err=%v", string(second), err)
+	}
+	if second != nil {
+		t.Fatalf("did not expect output chunk on error, got %s", string(second))
+	}
+}

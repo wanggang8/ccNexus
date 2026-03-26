@@ -380,6 +380,7 @@ class Endpoints {
                                 <label class="form-label">Transformer *</label>
                                 <select class="form-select" name="transformer" required>
                                     <option value="claude" ${endpoint?.transformer === 'claude' ? 'selected' : ''}>Claude</option>
+                                    <option value="cli" ${endpoint?.transformer === 'cli' ? 'selected' : ''}>Claude CLI</option>
                                     <option value="openai" ${endpoint?.transformer === 'openai' ? 'selected' : ''}>OpenAI</option>
                                     <option value="openai2" ${endpoint?.transformer === 'openai2' ? 'selected' : ''}>OpenAI Responses</option>
                                     <option value="gemini" ${endpoint?.transformer === 'gemini' ? 'selected' : ''}>Gemini</option>
