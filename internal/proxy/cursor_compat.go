@@ -1044,35 +1044,35 @@ func formatCursorResponsesStreamEvent(eventName string, payload map[string]inter
 			return eventName, cloneJSONObject(part)
 		}
 	case "response.output_text.delta":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type":  "output_text",
 			"delta": stringValue(payload["delta"]),
-		}
+		})
 	case "response.output_text.done":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type": "output_text",
 			"text": stringValue(payload["text"]),
-		}
+		})
 	case "response.reasoning_summary_text.delta":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type":  "summary_text",
 			"delta": stringValue(payload["delta"]),
-		}
+		})
 	case "response.reasoning_summary_text.done":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type": "summary_text",
 			"text": stringValue(payload["text"]),
-		}
+		})
 	case "response.function_call_arguments.delta":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type":  "function_call",
 			"delta": stringValue(payload["delta"]),
-		}
+		})
 	case "response.function_call_arguments.done":
-		return eventName, map[string]interface{}{
+		return eventName, mergeCursorResponsesEventContext(payload, map[string]interface{}{
 			"type":      "function_call",
 			"arguments": stringValue(payload["arguments"]),
-		}
+		})
 	}
 
 	rewritten := cloneJSONObject(payload)
@@ -2442,6 +2442,27 @@ func containsRune(values []rune, target rune) bool {
 func stringValue(value interface{}) string {
 	stringValue, _ := value.(string)
 	return stringValue
+}
+
+func mergeCursorResponsesEventContext(source map[string]interface{}, target map[string]interface{}) map[string]interface{} {
+	if len(source) == 0 {
+		return target
+	}
+	if target == nil {
+		target = map[string]interface{}{}
+	}
+	for _, key := range []string{
+		"output_index",
+		"content_index",
+		"summary_index",
+		"item_id",
+		"call_id",
+	} {
+		if value, ok := source[key]; ok {
+			target[key] = value
+		}
+	}
+	return target
 }
 
 func newCursorToolCallID() string {

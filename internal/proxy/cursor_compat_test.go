@@ -12,6 +12,15 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
+func assertContainsAll(t *testing.T, text string, expected []string, message string) {
+	t.Helper()
+	for _, token := range expected {
+		if !strings.Contains(text, token) {
+			t.Fatalf("%s: missing %s, got %s", message, token, text)
+		}
+	}
+}
+
 func TestPrepareProxyRequestStripsCursorPrefixAndNormalizesChatPayload(t *testing.T) {
 	req := httptest.NewRequest("POST", "http://localhost/cursor/v1/chat/completions", strings.NewReader(""))
 	body := []byte(`{
@@ -622,6 +631,138 @@ func TestFixCursorStreamBundleEnrichesTransformedResponsesEventShape(t *testing.
 	if !strings.Contains(fixedStr, `event: response.function_call_arguments.done`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"README.md\"}"`) {
 		t.Fatalf("expected function_call_arguments.done to carry buffered arguments, got %s", fixedStr)
 	}
+}
+
+func TestFixCursorStreamBundlePreservesTransformedResponsesContextFields(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","output_index":1,"content_index":2,"item_id":"msg_1","delta":"hello"}`,
+		"",
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"item_id":"rs_1","delta":"think"}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_1","call_id":"call_1","delta":"{\"path\":\"README.md\"}"}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	assertContainsAll(t, fixedStr, []string{
+		`"type":"output_text"`, `"output_index":1`, `"content_index":2`, `"item_id":"msg_1"`,
+	}, "expected output_text context fields to be preserved")
+	assertContainsAll(t, fixedStr, []string{
+		`"type":"summary_text"`, `"output_index":0`, `"summary_index":1`, `"item_id":"rs_1"`,
+	}, "expected reasoning summary context fields to be preserved")
+	assertContainsAll(t, fixedStr, []string{
+		`"type":"function_call"`, `"output_index":2`, `"item_id":"fc_1"`, `"call_id":"call_1"`,
+	}, "expected function call context fields to be preserved")
+}
+
+func TestFixCursorStreamBundlePreservesOutputTextDoneContextFields(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.output_text.done","output_index":3,"content_index":4,"item_id":"msg_done_1","text":"done text"}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `event: response.output_text.done`) {
+		t.Fatalf("expected response.output_text.done event, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"type":"output_text"`) || !strings.Contains(fixedStr, `"text":"done text"`) {
+		t.Fatalf("expected output_text.done payload shape, got %s", fixedStr)
+	}
+	assertContainsAll(t, fixedStr, []string{
+		`"output_index":3`, `"content_index":4`, `"item_id":"msg_done_1"`,
+	}, "expected output_text.done context fields to be preserved")
+}
+
+func TestFixCursorStreamBundlePreservesReasoningSummaryDoneContextFields(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":2,"item_id":"rs_done_1","text":"summary done"}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `event: response.reasoning_summary_text.done`) {
+		t.Fatalf("expected response.reasoning_summary_text.done event, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"type":"summary_text"`) || !strings.Contains(fixedStr, `"text":"summary done"`) {
+		t.Fatalf("expected summary_text.done payload shape, got %s", fixedStr)
+	}
+	assertContainsAll(t, fixedStr, []string{
+		`"output_index":0`, `"summary_index":2`, `"item_id":"rs_done_1"`,
+	}, "expected reasoning_summary_text.done context fields to be preserved")
+}
+
+func TestFixCursorStreamBundlePreservesFunctionCallArgumentsDoneContextFields(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_5","call_id":"call_5","name":"read_file"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","output_index":5,"item_id":"fc_5","call_id":"call_5","delta":"{\"path\":\"README.md\"}"}`,
+		"",
+		`data: {"type":"response.function_call_arguments.done","output_index":5,"item_id":"fc_5","call_id":"call_5"}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		CursorMode:   true,
+		ClientFormat: ClientFormatOpenAIResponses,
+		ClientModel:  "cursor-model",
+		CursorState: &cursorCompatState{
+			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `event: response.function_call_arguments.done`) {
+		t.Fatalf("expected response.function_call_arguments.done event, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"type":"function_call"`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"README.md\"}"`) {
+		t.Fatalf("expected function_call_arguments.done payload shape, got %s", fixedStr)
+	}
+	assertContainsAll(t, fixedStr, []string{
+		`"output_index":5`, `"item_id":"fc_5"`, `"call_id":"call_5"`,
+	}, "expected function_call_arguments.done context fields to be preserved")
 }
 
 func TestFixCursorStreamBundleHandlesInterleavedResponseToolCalls(t *testing.T) {
