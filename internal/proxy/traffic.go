@@ -48,6 +48,8 @@ type TrafficLog struct {
 	Error           string        `json:"error,omitempty"`
 	IsStreaming     bool          `json:"isStreaming"`
 	Truncated       bool          `json:"truncated,omitempty"`
+	Degraded        bool          `json:"degraded,omitempty"`
+	DegradedReason  []string      `json:"degradedReason,omitempty"`
 
 	// Raw data (not included in summary responses).
 	OriginalRequest     []byte `json:"-"`
@@ -74,6 +76,8 @@ type TrafficLogSummary struct {
 	Error           string `json:"error,omitempty"`
 	IsStreaming     bool   `json:"isStreaming"`
 	Truncated       bool   `json:"truncated,omitempty"`
+	Degraded        bool   `json:"degraded,omitempty"`
+	DegradedReason  []string `json:"degradedReason,omitempty"`
 }
 
 // TrafficLogDetail includes full request/response data.
@@ -205,6 +209,8 @@ func (tr *TrafficRecorder) writeFileLog(log *TrafficLog) {
 		"error":               log.Error,
 		"isStreaming":         log.IsStreaming,
 		"truncated":           log.Truncated,
+		"degraded":            log.Degraded,
+		"degradedReason":      log.DegradedReason,
 		"originalRequest":     string(log.OriginalRequest),
 		"transformedRequest":  string(log.TransformedRequest),
 		"originalResponse":    string(log.OriginalResponse),
@@ -340,6 +346,8 @@ func toSummary(log *TrafficLog) TrafficLogSummary {
 		Error:           log.Error,
 		IsStreaming:     log.IsStreaming,
 		Truncated:       log.Truncated,
+		Degraded:        log.Degraded,
+		DegradedReason:  log.DegradedReason,
 	}
 }
 

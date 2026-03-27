@@ -72,6 +72,10 @@ class APIClient {
         return this.request('POST', '/endpoints/fetch-models', { apiUrl, apiKey, transformer });
     }
 
+    async revealEndpointKey(name) {
+        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/reveal-key`);
+    }
+
     async getEndpointCredentials(name) {
         return this.request('GET', `/endpoints/${encodeURIComponent(name)}/credentials`);
     }

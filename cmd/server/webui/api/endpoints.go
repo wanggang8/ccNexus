@@ -44,6 +44,9 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 		case "toggle":
 			h.toggleEndpoint(w, r, name)
 			return
+		case "reveal-key":
+			h.revealEndpointKey(w, r, name)
+			return
 		case "credentials":
 			h.handleEndpointCredentials(w, r, name, parts[2:])
 			return
@@ -391,6 +394,28 @@ func (h *Handler) toggleEndpoint(w http.ResponseWriter, r *http.Request, name st
 
 	WriteSuccess(w, map[string]interface{}{
 		"enabled": existing.Enabled,
+	})
+}
+
+func (h *Handler) revealEndpointKey(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	endpoint, err := h.getEndpointByName(name)
+	if err != nil {
+		logger.Error("Failed to get endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+		return
+	}
+	if endpoint == nil {
+		WriteError(w, http.StatusNotFound, "Endpoint not found")
+		return
+	}
+
+	WriteSuccess(w, map[string]interface{}{
+		"apiKey": endpoint.APIKey,
 	})
 }
 

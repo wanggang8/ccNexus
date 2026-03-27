@@ -713,6 +713,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				TransformedRequest:  transformedBody,
 				OriginalResponse:    originalResp,
 				TransformedResponse: transformedResp,
+				Degraded:            requestMeta.Degraded,
+				DegradedReason:      requestMeta.DegradedReason,
 			})
 			if p.onEndpointSuccess != nil {
 				p.onEndpointSuccess(endpoint.Name)
@@ -747,6 +749,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					TransformedRequest:  transformedBody,
 					OriginalResponse:    originalResp,
 					TransformedResponse: transformedResp,
+					Degraded:            requestMeta.Degraded,
+					DegradedReason:      requestMeta.DegradedReason,
 				})
 				if p.onEndpointSuccess != nil {
 					p.onEndpointSuccess(endpoint.Name)

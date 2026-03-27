@@ -373,7 +373,12 @@ class Endpoints {
                             </div>
                             <div class="form-group">
                                 <label class="form-label">API Key *</label>
-                                <input type="password" class="form-input" name="apiKey" value="${apiKeyValue}" placeholder="${apiKeyPlaceholder}" required>
+                                <div class="password-input-wrapper">
+                                    <input type="password" class="form-input" name="apiKey" value="${apiKeyValue}" placeholder="${apiKeyPlaceholder}" required>
+                                    <button type="button" class="btn-icon password-toggle" id="toggle-api-key" title="Show API Key">
+                                        👁️
+                                    </button>
+                                </div>
                                 ${apiKeyHint}
                             </div>
                             <div class="form-group">
@@ -424,6 +429,42 @@ class Endpoints {
             this.saveEndpoint(isEdit, endpoint?.name, isClone);
         });
         document.getElementById('fetch-models-btn').addEventListener('click', () => this.fetchModels());
+        const toggleApiKeyBtn = document.getElementById('toggle-api-key');
+        if (toggleApiKeyBtn) {
+            toggleApiKeyBtn.addEventListener('click', () => this.toggleApiKeyVisibility(isEdit ? endpoint?.name : null));
+        }
+    }
+
+    async toggleApiKeyVisibility(endpointName) {
+        const apiKeyInput = document.querySelector('input[name="apiKey"]');
+        const toggleBtn = document.getElementById('toggle-api-key');
+        if (!apiKeyInput || !toggleBtn) {
+            return;
+        }
+
+        const isHidden = apiKeyInput.type === 'password';
+        if (!isHidden) {
+            apiKeyInput.type = 'password';
+            toggleBtn.title = 'Show API Key';
+            return;
+        }
+
+        const apiKeyValue = apiKeyInput.value.trim();
+        if (apiKeyValue === '****' && endpointName) {
+            try {
+                toggleBtn.disabled = true;
+                const result = await api.revealEndpointKey(endpointName);
+                apiKeyInput.value = result.apiKey || '';
+            } catch (error) {
+                notifications.error('Failed to reveal API Key: ' + error.message);
+                toggleBtn.disabled = false;
+                return;
+            }
+        }
+
+        apiKeyInput.type = 'text';
+        toggleBtn.title = 'Hide API Key';
+        toggleBtn.disabled = false;
     }
 
     async fetchModels() {
@@ -434,12 +475,32 @@ class Endpoints {
         const fetchBtn = document.getElementById('fetch-models-btn');
 
         const apiUrl = apiUrlInput.value.trim();
-        const apiKey = apiKeyInput.value.trim();
+        let apiKey = apiKeyInput.value.trim();
         const transformer = transformerSelect.value;
 
-        if (!apiUrl || !apiKey || apiKey === '****') {
+        if (!apiUrl || !apiKey) {
             notifications.error('Please enter API URL and API Key first');
             return;
+        }
+
+        if (apiKey === '****') {
+            const endpointName = document.querySelector('input[name="name"]')?.value.trim();
+            if (!endpointName) {
+                notifications.error('Please enter API URL and API Key first');
+                return;
+            }
+            try {
+                const result = await api.revealEndpointKey(endpointName);
+                apiKey = result.apiKey || '';
+                apiKeyInput.value = apiKey;
+                if (!apiKey) {
+                    notifications.error('Please enter API URL and API Key first');
+                    return;
+                }
+            } catch (error) {
+                notifications.error('Failed to reveal API Key: ' + error.message);
+                return;
+            }
         }
 
         try {

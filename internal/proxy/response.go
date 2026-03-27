@@ -46,6 +46,11 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 		logger.Error("[%s] Failed to apply cursor response compatibility: %v", endpoint.Name, err)
 		return 0, 0, bodyBytes, nil, err
 	}
+	transformedResp, err = p.autoContinueCursorResponseFull(transformedResp, bodyBytes, &requestMeta)
+	if err != nil {
+		logger.Error("[%s] Failed to auto-continue cursor response: %v", endpoint.Name, err)
+		return 0, 0, bodyBytes, nil, err
+	}
 
 	logger.DebugLog("[%s] Transformed Response: %s", endpoint.Name, string(transformedResp))
 
