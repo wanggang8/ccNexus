@@ -293,11 +293,12 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		return nil, err
 	}
 
+	normalizedContent, normalizedStopReason := fixAnthropicToolUseForOpenAI(resp.Content, resp.StopReason)
 	var textContent string
 	var reasoningContent string
 	var toolCalls []map[string]interface{}
 
-	for _, block := range resp.Content {
+	for _, block := range normalizedContent {
 		blockMap, ok := block.(map[string]interface{})
 		if !ok {
 			continue
@@ -334,16 +335,11 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 		message["tool_calls"] = toolCalls
 	}
 
-	finishReason := "stop"
-	if resp.StopReason == "tool_use" || len(toolCalls) > 0 {
-		finishReason = "tool_calls"
-	}
-
 	openaiResp := map[string]interface{}{
 		"id":      resp.ID,
 		"object":  "chat.completion",
 		"model":   model,
-		"choices": []map[string]interface{}{{"index": 0, "message": message, "finish_reason": finishReason}},
+		"choices": []map[string]interface{}{{"index": 0, "message": message, "finish_reason": mapAnthropicStopReasonToOpenAIFinishReason(normalizedStopReason, len(toolCalls) > 0)}},
 		"usage": map[string]interface{}{
 			"prompt_tokens":     resp.Usage.InputTokens,
 			"completion_tokens": resp.Usage.OutputTokens,
@@ -356,6 +352,43 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 
 func newAnthropicToolUseID() string {
 	return "toolu_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:24]
+}
+
+func fixAnthropicToolUseForOpenAI(content []interface{}, stopReason string) ([]interface{}, string) {
+	if len(content) == 0 {
+		return content, stopReason
+	}
+	fixed := make([]interface{}, 0, len(content))
+	hasToolUse := false
+	for _, raw := range content {
+		block, ok := raw.(map[string]interface{})
+		if !ok {
+			fixed = append(fixed, raw)
+			continue
+		}
+		cloned := map[string]interface{}{}
+		for k, v := range block {
+			cloned[k] = v
+		}
+		if blockType, _ := cloned["type"].(string); blockType == "tool_use" {
+			hasToolUse = true
+			if id, _ := cloned["id"].(string); strings.TrimSpace(id) == "" {
+				cloned["id"] = newAnthropicToolUseID()
+			}
+		}
+		fixed = append(fixed, cloned)
+	}
+	if hasToolUse && stopReason != "tool_use" {
+		stopReason = "tool_use"
+	}
+	return fixed, stopReason
+}
+
+func mapAnthropicStopReasonToOpenAIFinishReason(stopReason string, hasToolCalls bool) string {
+	if stopReason == "tool_use" || hasToolCalls {
+		return "tool_calls"
+	}
+	return "stop"
 }
 
 // OpenAIRespToClaude converts OpenAI Chat response to Claude response

@@ -80,3 +80,46 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		t.Fatalf("expected tokens from original stream usage in=7 out=5, got in=%d out=%d", in, out)
 	}
 }
+
+func TestHandleStreamingResponseSetsNoCacheHeadersOnlyForCursorMode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+	originalSSE := "data: [DONE]\n\n"
+
+	makeResp := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(originalSSE)),
+		}
+	}
+
+	cursorRec := httptest.NewRecorder()
+	p.handleStreamingResponse(cursorRec, makeResp(), endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, proxyRequestMeta{
+		CursorMode: true,
+	})
+	if got := cursorRec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("expected cursor mode Cache-Control=no-cache, got %q", got)
+	}
+	if got := cursorRec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("expected cursor mode X-Accel-Buffering=no, got %q", got)
+	}
+
+	normalRec := httptest.NewRecorder()
+	p.handleStreamingResponse(normalRec, makeResp(), endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, proxyRequestMeta{})
+	if got := normalRec.Header().Get("Cache-Control"); got != "" {
+		t.Fatalf("expected non-cursor mode not to force Cache-Control, got %q", got)
+	}
+}

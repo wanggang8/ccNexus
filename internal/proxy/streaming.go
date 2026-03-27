@@ -31,6 +31,10 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	if strings.TrimSpace(w.Header().Get("Content-Type")) == "" {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	}
+	if requestMeta.CursorMode {
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, ok := w.(http.Flusher)
@@ -220,6 +224,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 		} else {
 			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
+		}
+	}
+
+	if requestMeta.CursorMode && outputText.Len() > 0 {
+		continuation, err := p.autoContinueCursorResponseStream(outputText.String(), bodyBytes, &requestMeta)
+		if err == nil && continuation != "" {
+			w.Write([]byte(continuation))
+			flusher.Flush()
 		}
 	}
 

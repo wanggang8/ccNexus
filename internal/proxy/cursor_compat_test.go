@@ -1046,11 +1046,86 @@ func TestFixCursorToolCallsNormalizesArguments(t *testing.T) {
 	if !strings.Contains(args, `"path":"`) {
 		t.Fatalf("expected file_path to normalize to path, got %s", args)
 	}
+	if strings.Contains(args, `"file_path":"`) {
+		t.Fatalf("expected file_path to be removed after normalization, got %s", args)
+	}
 	if !strings.Contains(args, `hello \"world\"`) {
 		t.Fatalf("expected old_string to be repaired to exact file content, got %s", args)
 	}
-	if strings.Contains(args, "”") {
+	if strings.Contains(args, "\u201d") {
 		t.Fatalf("expected smart quotes in new_string to be normalized, got %s", args)
+	}
+}
+
+func TestConvertCursorAssistantToolUseMessageNormalizesFilePath(t *testing.T) {
+	message := convertCursorAssistantToolUseMessage([]interface{}{
+		map[string]interface{}{
+			"type": "tool_use",
+			"id":   "toolu_1",
+			"name": "read_file",
+			"input": map[string]interface{}{
+				"file_path": "/tmp/a.txt",
+			},
+		},
+	})
+
+	toolCalls, ok := message["tool_calls"].([]interface{})
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", message["tool_calls"])
+	}
+	call := toolCalls[0].(map[string]interface{})
+	functionData := call["function"].(map[string]interface{})
+	arguments := functionData["arguments"].(string)
+	if !strings.Contains(arguments, `"path":"/tmp/a.txt"`) {
+		t.Fatalf("expected file_path normalized to path, got %s", arguments)
+	}
+	if strings.Contains(arguments, `"file_path":`) {
+		t.Fatalf("expected file_path removed after normalization, got %s", arguments)
+	}
+}
+
+func TestCompactCursorToolSchemaRemovesDescriptions(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"description": "root",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type": "string",
+				"description": "file path",
+			},
+			"mode": map[string]interface{}{
+				"type": "string",
+				"enum": []interface{}{"r", "w"},
+				"description": "mode",
+			},
+		},
+		"required": []interface{}{"path"},
+	}
+
+	compact := compactCursorSchemaSignature(schema)
+	if compact != "{mode?: r|w, path!: string}" {
+		t.Fatalf("expected compact signature, got %s", compact)
+	}
+}
+
+func TestShouldAutoContinueTruncatedToolResponseDetectsUnclosedAction(t *testing.T) {
+	text := "prefix\n```json action\n{\"tool\":\"Write\",\"parameters\":{\"path\":\"a\""
+	if !shouldAutoContinueTruncatedToolResponse(text, true) {
+		t.Fatalf("expected truncated tool response to trigger continuation")
+	}
+
+	complete := "```json action\n{\"tool\":\"Write\",\"parameters\":{\"path\":\"a\"}}\n```"
+	if shouldAutoContinueTruncatedToolResponse(complete, true) {
+		t.Fatalf("expected complete tool response to skip continuation")
+	}
+}
+
+func TestDeduplicateContinuationRemovesOverlap(t *testing.T) {
+	base := "hello world"
+	continuation := "world!!!"
+	deduped := deduplicateContinuation(base, continuation)
+	if deduped != "world!!!" {
+		t.Fatalf("expected short overlap to remain, got %q", deduped)
 	}
 }
 
