@@ -210,14 +210,7 @@ func emitToolUseChunks(w io.Writer, toolUseID, toolName, inputJSON string, toolC
 		"input_json":  inputJSON,
 	}
 	if toolCtx != nil {
-		if ctx, ok := toolCtx[toolName]; ok {
-			if ctx.McpServerName != "" {
-				toolUse["mcp_server_name"] = ctx.McpServerName
-			}
-			if ctx.McpToolName != "" {
-				toolUse["mcp_tool_name"] = ctx.McpToolName
-			}
-		}
+		attachToolUseMCPMetadata(toolUse, toolName, toolCtx)
 	}
 
 	startNode := map[string]interface{}{

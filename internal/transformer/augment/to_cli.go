@@ -128,6 +128,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 		req["thinking"] = thinking
 	}
 
+	req = sanitizeProviderRequest("cli", req)
 	return json.Marshal(req)
 }
 

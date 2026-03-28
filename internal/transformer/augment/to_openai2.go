@@ -27,6 +27,7 @@ func toOpenAI2Request(ar *AugmentRequest) ([]byte, error) {
 		req["tool_choice"] = "auto"
 	}
 
+	req = sanitizeProviderRequest("openai2", req)
 	return json.Marshal(req)
 }
 
@@ -41,9 +42,7 @@ func buildOpenAI2Input(ar *AugmentRequest) []map[string]interface{} {
 		}
 
 		respNodes := entry.EffectiveResponseNodes()
-		if text := strings.TrimSpace(entry.ResponseText); text != "" {
-			input = append(input, map[string]interface{}{"type": "message", "role": "assistant", "content": text})
-		} else if text := strings.TrimSpace(extractText(respNodes)); text != "" {
+		if text := assistantResponseText(entry.ResponseText, respNodes); text != "" {
 			input = append(input, map[string]interface{}{"type": "message", "role": "assistant", "content": text})
 		}
 
@@ -131,36 +130,6 @@ func stringifyOpenAI2ToolResult(tr *ToolResultNode) string {
 		return ""
 	}
 	return stringifyToolResultContent(buildOpenAIToolResultContent(tr))
-}
-
-type responseToolCall struct {
-	ID        string
-	Name      string
-	Arguments string
-}
-
-func extractResponseToolCalls(nodes []Node) []responseToolCall {
-	var out []responseToolCall
-	preferCompletedToolUse := hasCompletedToolUse(nodes)
-	for _, node := range nodes {
-		if node.ToolUse == nil {
-			continue
-		}
-		if node.Type != 5 && !(node.Type == 7 && !preferCompletedToolUse) {
-			continue
-		}
-		id := strings.TrimSpace(node.ToolUse.ToolUseID)
-		name := strings.TrimSpace(node.ToolUse.ToolName)
-		if id == "" || name == "" {
-			continue
-		}
-		args := strings.TrimSpace(node.ToolUse.InputJSON)
-		if args == "" {
-			args = "{}"
-		}
-		out = append(out, responseToolCall{ID: id, Name: name, Arguments: args})
-	}
-	return out
 }
 
 func buildOpenAI2Tools(defs []ToolDefinition) []map[string]interface{} {

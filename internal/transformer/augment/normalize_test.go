@@ -82,6 +82,7 @@ func TestParseRequest_NormalizesSpecialNodesAndSystemFields(t *testing.T) {
 	body := []byte(`{
 		"personaType":3,
 		"byokSystemPrompt":"extra system",
+		"requestIdOverride":"req-override-1",
 		"nodes":[
 			{"type":3,"imageIdNode":{"imageId":"img_1","format":4}},
 			{"type":5,"editEventsNode":{"source":"editor","editEvents":[{"path":"a.go","edits":[{"afterLineStart":12,"beforeLineStart":10,"beforeText":"old","afterText":"new"}]}]}},
@@ -105,6 +106,9 @@ func TestParseRequest_NormalizesSpecialNodesAndSystemFields(t *testing.T) {
 	}
 	if req.PersonaType != 3 || req.ByokSystemPrompt != "extra system" {
 		t.Fatalf("expected system aliases to normalize, got persona=%d byok=%q", req.PersonaType, req.ByokSystemPrompt)
+	}
+	if req.RequestIDOverride != "req-override-1" {
+		t.Fatalf("expected requestIdOverride alias to normalize, got %q", req.RequestIDOverride)
 	}
 	nodes := req.EffectiveCurrentNodes()
 	if len(nodes) != 6 {

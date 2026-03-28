@@ -58,7 +58,9 @@ func TestFixChatBundleSplitsContentAndToolCallsFromSameChunk(t *testing.T) {
 		"",
 	}, "\n"))
 
-	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	state := &FinalizeState{}
+	state.ChatToolCallsSeen = true
+	fixed, err := FixChatBundle(bundle, "cursor-model", state)
 	if err != nil {
 		t.Fatalf("FixChatBundle failed: %v", err)
 	}
@@ -94,16 +96,12 @@ func TestFixChatBundleAddsNewlineBeforeFirstToolCall(t *testing.T) {
 	}
 
 	payloads := decodeChatChunkPayloads(t, fixed)
-	if len(payloads) != 2 {
-		t.Fatalf("expected newline + tool_call chunks, got %d in %s", len(payloads), string(fixed))
+	if len(payloads) != 1 {
+		t.Fatalf("expected single tool_call chunk without synthetic newline, got %d in %s", len(payloads), string(fixed))
 	}
 	firstDelta := payloadChoiceDelta(t, payloads[0])
-	if firstDelta["content"] != "\n" {
-		t.Fatalf("expected newline prefix chunk, got %#v", firstDelta)
-	}
-	secondDelta := payloadChoiceDelta(t, payloads[1])
-	if secondDelta["tool_calls"] == nil {
-		t.Fatalf("expected tool_calls to remain present, got %#v", secondDelta)
+	if firstDelta["tool_calls"] == nil {
+		t.Fatalf("expected tool_calls to remain present, got %#v", firstDelta)
 	}
 }
 

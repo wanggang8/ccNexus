@@ -628,6 +628,55 @@ func TestStreamConvertOpenAI_ToolUseStartStructure(t *testing.T) {
 	}
 }
 
+func TestStreamConvertOpenAIResponses_MCPFieldsInToolUse(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"call_id\":\"call_1\",\"delta\":\"{\\\"q\\\":\\\"augment\\\"}\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"augment\\\"}\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n" +
+		"data: [DONE]\n\n"
+
+	toolCtx := map[string]*ToolContext{
+		"search": {
+			McpServerName: "web",
+			McpToolName:   "search_web",
+		},
+	}
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai2", toolCtx); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+
+	foundStart := false
+	foundTool := false
+	for _, line := range lines {
+		nodes, _ := line["nodes"].([]interface{})
+		for _, n := range nodes {
+			node := n.(map[string]interface{})
+			toolUse, _ := node["tool_use"].(map[string]interface{})
+			if toolUse == nil {
+				continue
+			}
+			switch int(node["type"].(float64)) {
+			case augmentNodeTypeToolUseStart:
+				foundStart = true
+				if toolUse["mcp_server_name"] != "web" || toolUse["mcp_tool_name"] != "search_web" {
+					t.Fatalf("expected MCP metadata on openai2 TOOL_USE_START, got %#v", toolUse)
+				}
+			case augmentNodeTypeToolUse:
+				foundTool = true
+				if toolUse["mcp_server_name"] != "web" || toolUse["mcp_tool_name"] != "search_web" {
+					t.Fatalf("expected MCP metadata on openai2 TOOL_USE, got %#v", toolUse)
+				}
+			}
+		}
+	}
+	if !foundStart || !foundTool {
+		t.Fatalf("expected both openai2 tool use start and tool use nodes, got %v", lines)
+	}
+}
+
 func TestStreamConvertOpenAIResponses_TextToolAndStop(t *testing.T) {
 	sse := "" +
 		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先检查上下文\"}\n\n" +

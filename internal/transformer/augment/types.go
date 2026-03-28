@@ -536,25 +536,25 @@ type ToolDefinition struct {
 // already-decoded InputSchema over InputSchemaJSON over Parameters.
 func (t *ToolDefinition) EffectiveInputSchema() map[string]interface{} {
 	if len(t.InputSchema) > 0 {
-		return t.InputSchema
+		return normalizeToolSchema(t.InputSchema)
 	}
 	if len(t.InputSchemaAlt) > 0 {
-		return t.InputSchemaAlt
+		return normalizeToolSchema(t.InputSchemaAlt)
 	}
 	if t.InputSchemaJSON != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(t.InputSchemaJSON), &parsed); err == nil && len(parsed) > 0 {
-			return parsed
+			return normalizeToolSchema(parsed)
 		}
 	}
 	if t.InputSchemaJSONAlt != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(t.InputSchemaJSONAlt), &parsed); err == nil && len(parsed) > 0 {
-			return parsed
+			return normalizeToolSchema(parsed)
 		}
 	}
 	if len(t.Parameters) > 0 {
-		return t.Parameters
+		return normalizeToolSchema(t.Parameters)
 	}
-	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	return normalizeToolSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{}})
 }

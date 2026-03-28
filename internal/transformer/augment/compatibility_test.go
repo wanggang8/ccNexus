@@ -151,6 +151,23 @@ func TestTransformAugmentToClaude_UsesStructuredRequestNodesAndContentNodes(t *t
 	imageData := base64.StdEncoding.EncodeToString([]byte("fakepngdata"))
 	input := map[string]interface{}{
 		"model": "claude-sonnet-4-20250514",
+		"tool_definitions": []interface{}{
+			map[string]interface{}{
+				"name":        "search_code",
+				"description": "Search codebase",
+				"input_schema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"q": map[string]interface{}{"description": "query string"},
+						"filters": map[string]interface{}{
+							"properties": map[string]interface{}{
+								"lang": map[string]interface{}{"enum": []interface{}{"go", "ts"}},
+							},
+						},
+					},
+				},
+			},
+		},
 		"structured_request_nodes": []interface{}{
 			map[string]interface{}{
 				"type": 0,
@@ -196,6 +213,25 @@ func TestTransformAugmentToClaude_UsesStructuredRequestNodesAndContentNodes(t *t
 	messages := output["messages"].([]interface{})
 	if len(messages) != 2 {
 		t.Fatalf("expected tool_result message and user text message, got %d", len(messages))
+	}
+	tools, ok := output["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected one normalized tool schema, got %#v", output["tools"])
+	}
+	toolSchema := tools[0].(map[string]interface{})["input_schema"].(map[string]interface{})
+	properties := toolSchema["properties"].(map[string]interface{})
+	q := properties["q"].(map[string]interface{})
+	if q["type"] != "string" {
+		t.Fatalf("expected missing type to normalize to string, got %#v", q)
+	}
+	filters := properties["filters"].(map[string]interface{})
+	if filters["type"] != "object" {
+		t.Fatalf("expected nested properties to normalize to object, got %#v", filters)
+	}
+	nestedProps := filters["properties"].(map[string]interface{})
+	lang := nestedProps["lang"].(map[string]interface{})
+	if lang["type"] != "string" {
+		t.Fatalf("expected enum-only property to normalize to string, got %#v", lang)
 	}
 
 	first := messages[0].(map[string]interface{})
@@ -425,6 +461,26 @@ func TestFormatHistorySummaryPrompt_PreservesHistoryEndPayload(t *testing.T) {
 	assertNotContains(t, text, "history_end_exchanges=1")
 }
 
+func TestAttachToolUseMCPMetadata(t *testing.T) {
+	toolUse := map[string]interface{}{"tool_name": "search"}
+	attachToolUseMCPMetadata(toolUse, "search", map[string]*ToolContext{
+		"search": {
+			McpServerName: "web",
+			McpToolName:   "search_web",
+		},
+	})
+	if toolUse["mcp_server_name"] != "web" || toolUse["mcp_tool_name"] != "search_web" {
+		t.Fatalf("expected MCP metadata attached, got %#v", toolUse)
+	}
+}
+
+func TestAssistantResponseTextPrefersExplicitText(t *testing.T) {
+	text := assistantResponseText("explicit", []Node{{Type: 2, TextNode: &TextNode{Text: "ignored"}}})
+	if text != "explicit" {
+		t.Fatalf("expected explicit response text to win, got %q", text)
+	}
+}
+
 func TestFormatHistorySummaryPrompt_RendersMessageTemplate(t *testing.T) {
 	text := formatHistorySummaryPrompt(&HistorySummaryNode{
 		MessageTemplate:                     "Summary={summary}\nDropped={beginning_part_dropped_num_exchanges}\n{end_part_full}",
@@ -444,6 +500,19 @@ func TestFormatHistorySummaryPrompt_RendersMessageTemplate(t *testing.T) {
 	assertContains(t, text, "tail request")
 	assertContains(t, text, "tail response")
 	assertNotContains(t, text, "[history_summary]")
+}
+
+func TestFormatHistorySummaryPrompt_RendersToolUseStartAndTextNodeType2(t *testing.T) {
+	text := renderHistorySummaryEnd([]ChatHistoryEntry{{
+		RequestMessage: "tail request",
+		ResponseNodes: []Node{
+			{Type: 5, ToolUse: &ToolUseNode{ToolUseID: "call_start_1", ToolName: "grep_code", InputJSON: "{\"pattern\":\"previous_response_id\"}"}},
+			{Type: 2, TextNode: &TextNode{Text: "main_text_finished"}},
+		},
+	}})
+
+	assertContains(t, text, "<tool_use name=\"grep_code\" tool_use_id=\"call_start_1\">")
+	assertContains(t, text, "main_text_finished")
 }
 
 func TestPreprocessHistoryForAPI_DropsHistoryBeforeLastSummary(t *testing.T) {

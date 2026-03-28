@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,12 +16,42 @@ import (
 
 type noUsageStreamTransformer struct{}
 
+type noUsageChatStreamTransformer struct{}
+
 func (t *noUsageStreamTransformer) Name() string {
 	return "test_no_usage"
 }
 
 func (t *noUsageStreamTransformer) TransformRequest(claudeReq []byte) ([]byte, error) {
 	return claudeReq, nil
+}
+
+func (t *noUsageChatStreamTransformer) Name() string {
+	return "test_no_usage_chat"
+}
+
+func (t *noUsageChatStreamTransformer) TransformRequest(req []byte) ([]byte, error) {
+	return req, nil
+}
+
+func (t *noUsageChatStreamTransformer) TransformResponse(targetResp []byte, isStreaming bool) ([]byte, error) {
+	return targetResp, nil
+}
+
+func (t *noUsageChatStreamTransformer) TransformResponseWithContext(targetResp []byte, isStreaming bool, ctx *transformer.StreamContext) ([]byte, error) {
+	if !isStreaming {
+		return targetResp, nil
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(targetResp, &payload); err != nil {
+		return targetResp, nil
+	}
+	delete(payload, "usage")
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return targetResp, nil
+	}
+	return append([]byte("data: "), append(encoded, []byte("\n\n")...)...), nil
 }
 
 func (t *noUsageStreamTransformer) TransformResponse(targetResp []byte, isStreaming bool) ([]byte, error) {
@@ -97,6 +128,60 @@ func (r *terminalErrReadCloser) Read(p []byte) (int, error) {
 func (r *terminalErrReadCloser) Close() error {
 	r.done = true
 	return nil
+}
+
+func TestHandleStreamingResponseCursorChatOpenAIInjectsUsageFallbackWhenFinalChunkMissingUsage(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "OpenAI",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &noUsageChatStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`{"model":"cursor-model","messages":[{"role":"user","content":"hello"}],"stream":true}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected text chunk preserved, got %s", body)
+	}
+	if !strings.Contains(body, `"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}`) {
+		t.Fatalf("expected injected usage fallback chunk, got %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("expected usage fallback chunk to finalize stream, got %s", body)
+	}
 }
 
 func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {

@@ -282,7 +282,6 @@ func buildHistorySummaryExchangeCtx(entry ChatHistoryEntry) historySummaryExchan
 	}
 
 	var thinkingParts []string
-	var responseParts []string
 	for _, node := range entry.EffectiveResponseNodes() {
 		switch node.Type {
 		case 8:
@@ -291,14 +290,11 @@ func buildHistorySummaryExchangeCtx(entry ChatHistoryEntry) historySummaryExchan
 					thinkingParts = append(thinkingParts, text)
 				}
 			}
-		case 0:
-			if node.TextNode != nil {
-				if text := strings.TrimSpace(node.TextNode.EffectiveContent()); text != "" {
-					responseParts = append(responseParts, text)
-				}
-			}
-		case 5:
+		case 5, 7:
 			if node.ToolUse != nil {
+				if node.Type == 7 && hasCompletedToolUse(entry.EffectiveResponseNodes()) {
+					continue
+				}
 				id := strings.TrimSpace(node.ToolUse.ToolUseID)
 				name := strings.TrimSpace(node.ToolUse.ToolName)
 				if id == "" || name == "" {
@@ -318,11 +314,7 @@ func buildHistorySummaryExchangeCtx(entry ChatHistoryEntry) historySummaryExchan
 	}
 
 	ctx.Thinking = strings.Join(thinkingParts, "\n")
-	if len(responseParts) > 0 {
-		ctx.ResponseText = strings.Join(responseParts, "\n")
-	} else {
-		ctx.ResponseText = strings.TrimSpace(entry.ResponseText)
-	}
+	ctx.ResponseText = assistantResponseText(entry.ResponseText, entry.EffectiveResponseNodes())
 	ctx.HasResponse = ctx.Thinking != "" || ctx.ResponseText != "" || len(ctx.ToolUses) > 0
 	return ctx
 }

@@ -67,6 +67,9 @@ func formatChatStreamEvent(eventName string, payload map[string]interface{}, cli
 
 	results := make([]sseItem, 0)
 	finishReason := choice["finish_reason"]
+	if payload["usage"] != nil {
+		state.ChatUsageSeen = true
+	}
 	toolCalls, hasToolCalls := delta["tool_calls"].([]interface{})
 	content, hasContent := delta["content"].(string)
 	reasoning, hasReasoning := delta["reasoning_content"].(string)
@@ -89,7 +92,7 @@ func formatChatStreamEvent(eventName string, payload map[string]interface{}, cli
 					"content": "\n</think>\n\n",
 				}, nil)})
 				state.InThinkingTag = false
-			} else {
+			} else if hasContent {
 				results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
 					"content": "\n",
 				}, nil)})

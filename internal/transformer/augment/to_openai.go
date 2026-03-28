@@ -26,6 +26,7 @@ func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 		req["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 
+	req = sanitizeProviderRequest("openai", req)
 	return json.Marshal(req)
 }
 
@@ -146,11 +147,7 @@ func appendOpenAIResponseNodes(msgs *[]map[string]interface{}, text string, node
 	}
 	msg := map[string]interface{}{"role": "assistant", "content": nil}
 
-	// Use ResponseText if present; otherwise extract text from assistant output nodes.
-	responseText := text
-	if responseText == "" {
-		responseText = extractText(nodes)
-	}
+	responseText := assistantResponseText(text, nodes)
 	if responseText != "" {
 		msg["content"] = responseText
 	}

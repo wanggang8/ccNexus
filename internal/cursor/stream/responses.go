@@ -133,6 +133,16 @@ func formatResponsesStreamEventsWithState(eventName string, payload map[string]i
 
 	if eventName != "response.created" && !state.ResponsesCreatedEmitted {
 		state.ResponsesCreatedEmitted = true
+		prefixPayload := map[string]interface{}{
+			"id":     firstNonEmptyString(state.ResponsesResponseID, "resp_"+uuid.NewString()),
+			"object": "response",
+			"status": "in_progress",
+			"output": []interface{}{},
+		}
+		if clientModel != "" {
+			prefixPayload["model"] = clientModel
+		}
+		prefixEvents = append(prefixEvents, sseItem{eventName: "response.created", payload: prefixPayload})
 	}
 
 	ev, rewritten, ok := formatResponsesStreamEvent(eventName, payload, clientModel)

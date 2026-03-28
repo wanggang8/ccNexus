@@ -148,6 +148,16 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx, requestMeta, firstNonEmptyString(modelName, requestMeta.ClientModel))
+			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+				if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
+					if _, err := w.Write(usageChunk); err == nil {
+						flusher.Flush()
+						if isRecording {
+							transformedRespBuffer.Write(usageChunk)
+						}
+					}
+				}
+			}
 			if err == nil && len(transformedEvent) > 0 {
 				transformedEvent, err = newcursor.FixStream(
 					requestMeta.cursorRequestMeta(),
@@ -159,6 +169,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
 				if isRecording {
 					transformedRespBuffer.Write(transformedEvent)
+				}
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+					requestMeta.CursorState.ChatUsageSeen = true
 				}
 				if _, writeErr := w.Write(transformedEvent); writeErr == nil {
 					flusher.Flush()
@@ -230,6 +243,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+					requestMeta.CursorState.ChatUsageSeen = true
+				}
 
 				if _, writeErr := w.Write(transformedEvent); writeErr != nil {
 					// Client disconnected (broken pipe) is normal for cancelled requests
@@ -288,6 +304,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 			p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 			p.extractTextFromEvent(transformedEvent, &outputText)
+			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+				requestMeta.CursorState.ChatUsageSeen = true
+			}
 			if _, writeErr := w.Write(transformedEvent); writeErr != nil {
 				if strings.Contains(writeErr.Error(), "broken pipe") || strings.Contains(writeErr.Error(), "connection reset") {
 					logger.Debug("[%s] Client disconnected while writing partial event: %v", endpoint.Name, writeErr)
@@ -337,6 +356,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+		if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
+			if _, err := w.Write(usageChunk); err == nil {
+				flusher.Flush()
+				if isRecording {
+					transformedRespBuffer.Write(usageChunk)
+				}
+			}
+		}
 		if finalizeChunk := newcursor.FinalizeStream(
 			requestMeta.cursorRequestMeta(),
 			requestMeta.CursorState,
@@ -404,6 +431,30 @@ func cursorChatBundleHasMeaningfulPayload(bundle []byte) bool {
 	return false
 }
 
+func cursorChatBundleHasUsage(bundle []byte) bool {
+	blocks := bytes.Split(bundle, []byte("\n\n"))
+	for _, block := range blocks {
+		for _, line := range bytes.Split(block, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if !bytes.HasPrefix(line, []byte("data: ")) {
+				continue
+			}
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: ")))
+			if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+				continue
+			}
+			var chunk map[string]interface{}
+			if err := json.Unmarshal(payload, &chunk); err != nil {
+				continue
+			}
+			if _, ok := chunk["usage"].(map[string]interface{}); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func cursorChatPayloadHasMeaningfulContent(payload []byte) bool {
 	var chunk map[string]interface{}
 	if err := json.Unmarshal(payload, &chunk); err != nil {
@@ -437,6 +488,40 @@ func cursorChatPayloadHasMeaningfulContent(payload []byte) bool {
 		}
 	}
 	return false
+}
+
+func buildCursorChatUsageFallbackChunk(modelName string, state *newcursor.StreamFinalizeState, inputTokens, outputTokens int) []byte {
+	if state != nil && state.ChatUsageSeen {
+		return nil
+	}
+	if inputTokens <= 0 && outputTokens <= 0 {
+		return nil
+	}
+	payload := map[string]interface{}{
+		"id":     "",
+		"object": "chat.completion.chunk",
+		"model":  modelName,
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	if state != nil {
+		state.ChatUsageSeen = true
+	}
+	return []byte("data: " + string(encoded) + "\n\n")
 }
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.

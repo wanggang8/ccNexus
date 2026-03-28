@@ -45,6 +45,7 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 		req["thinking"] = thinking
 	}
 
+	req = sanitizeProviderRequest("claude", req)
 	return json.Marshal(req)
 }
 
