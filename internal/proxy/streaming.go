@@ -84,6 +84,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	eventCount := 0
 	streamDone := false
 	doneSeen := false
+	cursorChatEventWritten := false
 	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
 	var readErr error
 
@@ -159,8 +160,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
 					transformedRespBuffer.Write(transformedEvent)
 				}
-				w.Write(transformedEvent)
-				flusher.Flush()
+				if _, writeErr := w.Write(transformedEvent); writeErr == nil {
+					flusher.Flush()
+					if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+						cursorChatEventWritten = true
+					}
+				}
 			}
 			break
 		}
@@ -234,6 +239,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					break
 				}
 				flusher.Flush()
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					cursorChatEventWritten = true
+				}
 			}
 			buffer.Reset()
 		}
@@ -282,6 +290,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				}
 			} else {
 				flusher.Flush()
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					cursorChatEventWritten = true
+				}
 			}
 		}
 		buffer.Reset()
@@ -324,13 +335,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
 					transformedRespBuffer.Write(finalizeChunk)
 				}
+				cursorChatEventWritten = true
 			}
 		}
 		if requestMeta.CursorState != nil {
 			requestMeta.CursorState.InThinkingTag = false
 		}
 	}
-	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && !doneSeen && isGracefulStreamReadError(readErr) {
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
 		if _, err := w.Write([]byte("data: [DONE]\n\n")); err == nil {
 			flusher.Flush()
 			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
@@ -377,7 +389,7 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 	defer resp.Body.Close()
 
 	var completedPayload []byte
-	var lastJSONPayload []byte
+	var lastTerminalPayload []byte
 	lineReader := bufio.NewReaderSize(reader, 128*1024)
 	var readErr error
 	for {
@@ -404,38 +416,38 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 			continue
 		}
 		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, []byte("data: "+jsonData+"\n\n"))
-		lastJSONPayload = []byte(jsonData)
 
 		var event map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
 			continue
 		}
+		terminalPayload, isTerminal, err := extractAggregateTerminalPayload([]byte(jsonData), event)
+		if err != nil {
+			return 0, 0, "", err
+		}
+		if isTerminal {
+			lastTerminalPayload = terminalPayload
+		}
 		if eventType, _ := event["type"].(string); eventType != "response.completed" {
 			continue
 		}
-
-		if responseObj, ok := event["response"]; ok {
-			payload, err := json.Marshal(responseObj)
-			if err != nil {
-				return 0, 0, "", err
-			}
-			completedPayload = payload
-		} else {
-			completedPayload = []byte(jsonData)
-		}
+		completedPayload = terminalPayload
 		break
 	}
 	if readErr != nil && !isGracefulStreamReadError(readErr) {
 		return 0, 0, "", readErr
 	}
-	if readErr != nil && len(completedPayload) == 0 && len(lastJSONPayload) == 0 {
+	if readErr != nil && len(completedPayload) == 0 && len(lastTerminalPayload) == 0 {
+		if isGracefulStreamReadError(readErr) {
+			return 0, 0, "", fmt.Errorf("stream closed before response.completed: %w", readErr)
+		}
 		return 0, 0, "", readErr
 	}
-	if err := readErr; err != nil && isGracefulStreamReadError(err) && len(completedPayload) > 0 {
+	if err := readErr; err != nil && isGracefulStreamReadError(err) && (len(completedPayload) > 0 || len(lastTerminalPayload) > 0) {
 		logger.Warn("[%s] Aggregated upstream stream ended early after completed payload: %v", endpoint.Name, err)
 	}
 	if len(completedPayload) == 0 {
-		if len(lastJSONPayload) == 0 {
+		if len(lastTerminalPayload) == 0 {
 			if readErr != nil {
 				return 0, 0, "", fmt.Errorf("stream closed before response.completed: %w", readErr)
 			}
@@ -443,7 +455,7 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 		}
 		// Fallback for providers that don't emit type=response.completed but still
 		// provide final JSON payload in the stream.
-		completedPayload = lastJSONPayload
+		completedPayload = lastTerminalPayload
 	}
 
 	transformedResp, err := trans.TransformResponse(completedPayload, false)
@@ -685,4 +697,45 @@ func readStreamLine(reader *bufio.Reader) (string, error) {
 
 func isGracefulStreamReadError(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+func extractAggregateTerminalPayload(rawJSON []byte, event map[string]interface{}) ([]byte, bool, error) {
+	if len(rawJSON) == 0 || event == nil {
+		return nil, false, nil
+	}
+
+	eventType := strings.TrimSpace(fmt.Sprint(event["type"]))
+	if eventType != "" {
+		if eventType != "response.completed" {
+			return nil, false, nil
+		}
+		if responseObj, ok := event["response"]; ok {
+			payload, err := json.Marshal(responseObj)
+			if err != nil {
+				return nil, false, err
+			}
+			return payload, true, nil
+		}
+		return append([]byte(nil), rawJSON...), true, nil
+	}
+
+	if strings.TrimSpace(fmt.Sprint(event["object"])) != "response" {
+		return nil, false, nil
+	}
+
+	status := strings.TrimSpace(fmt.Sprint(event["status"]))
+	switch status {
+	case "", "completed", "failed", "cancelled", "canceled", "incomplete":
+	default:
+		return nil, false, nil
+	}
+	if status == "" {
+		if _, hasOutput := event["output"]; !hasOutput {
+			if _, hasUsage := event["usage"]; !hasUsage {
+				return nil, false, nil
+			}
+		}
+	}
+
+	return append([]byte(nil), rawJSON...), true, nil
 }

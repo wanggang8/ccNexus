@@ -52,6 +52,24 @@ func (t *passthroughStreamTransformer) TransformResponseWithContext(resp []byte,
 	return resp, nil
 }
 
+type errorStreamTransformer struct{}
+
+func (t *errorStreamTransformer) Name() string {
+	return "test_error"
+}
+
+func (t *errorStreamTransformer) TransformRequest(req []byte) ([]byte, error) {
+	return req, nil
+}
+
+func (t *errorStreamTransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {
+	return resp, nil
+}
+
+func (t *errorStreamTransformer) TransformResponseWithContext(resp []byte, isStreaming bool, ctx *transformer.StreamContext) ([]byte, error) {
+	return nil, io.ErrClosedPipe
+}
+
 type terminalErrReadCloser struct {
 	remaining   string
 	terminalErr error
@@ -317,6 +335,53 @@ func TestHandleStreamingResponseGracefullyEndsCursorChatOnUnexpectedEOF(t *testi
 	}
 }
 
+func TestHandleStreamingResponseDoesNotEmitDoneWithoutCursorChatPayload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := `data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &errorStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`{}`), 0, meta)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected no synthetic [DONE] when no chat payload reached client, got %s", body)
+	}
+	if strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected no partial chat chunk when transformer failed, got %s", body)
+	}
+}
+
 func TestHandleStreamingAsNonStreamingAcceptsUnexpectedEOFAfterCompletedPayload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
@@ -356,5 +421,44 @@ func TestHandleStreamingAsNonStreamingAcceptsUnexpectedEOFAfterCompletedPayload(
 	}
 	if !strings.Contains(rec.Body.String(), `"id":"resp_1"`) {
 		t.Fatalf("expected completed payload written to client, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleStreamingAsNonStreamingRejectsUnexpectedEOFWithOnlyDeltaEvent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := `data: {"type":"response.output_text.delta","delta":"hello"}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+
+	_, _, _, err := p.handleStreamingAsNonStreaming(rec, resp, endpoint, &passthroughStreamTransformer{}, 0, proxyRequestMeta{})
+	if err == nil {
+		t.Fatalf("expected aggregate non-stream path to reject delta-only EOF")
+	}
+	if !strings.Contains(err.Error(), "response.completed") {
+		t.Fatalf("expected response.completed error, got %v", err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no response body on delta-only EOF failure, got %s", rec.Body.String())
 	}
 }
