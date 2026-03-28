@@ -12,16 +12,19 @@ import (
 )
 
 type cursorRealFixture struct {
-	name         string
-	requestBody  string
-	lastUserText string
-	toolNames    []string
+	name          string
+	requestBody   string
+	systemAnchor  string
+	lastUserText  string
+	hasToolChoice bool
+	toolNames     []string
 }
 
 func TestCursorChatRealFixturesAcrossBackends(t *testing.T) {
 	fixtures := []cursorRealFixture{
 		loadCursorRealFixture(t, "requst-1.log"),
 		loadCursorRealFixture(t, "request-2.log"),
+		loadCursorRealFixture(t, "request-3.log"),
 	}
 
 	tests := []struct {
@@ -41,15 +44,19 @@ func TestCursorChatRealFixturesAcrossBackends(t *testing.T) {
 				if _, ok := prepared.requestPayload["previous_response_id"]; ok {
 					t.Fatalf("expected openai chat payload to strip previous_response_id, got %#v", prepared.requestPayload["previous_response_id"])
 				}
-				if prepared.requestPayload["tool_choice"] != "auto" {
-					t.Fatalf("expected openai chat tool_choice auto, got %#v", prepared.requestPayload["tool_choice"])
+				if fixture.hasToolChoice {
+					if prepared.requestPayload["tool_choice"] != "auto" {
+						t.Fatalf("expected openai chat tool_choice auto, got %#v", prepared.requestPayload["tool_choice"])
+					}
+				} else if prepared.requestPayload["tool_choice"] != nil {
+					t.Fatalf("expected openai chat payload to omit tool_choice when request omitted it, got %#v", prepared.requestPayload["tool_choice"])
 				}
 				messages := prepared.requestPayload["messages"].([]interface{})
 				first := messages[0].(map[string]interface{})
 				if first["role"] != "system" {
 					t.Fatalf("expected normalized system message prepended, got %#v", first)
 				}
-				if !strings.Contains(stringValueForTest(first["content"]), "You are an AI coding assistant") {
+				if !strings.Contains(stringValueForTest(first["content"]), fixture.systemAnchor) {
 					t.Fatalf("expected system text preserved, got %#v", first["content"])
 				}
 				if hasCacheControlInOpenAIMessages(messages) {
@@ -75,7 +82,7 @@ func TestCursorChatRealFixturesAcrossBackends(t *testing.T) {
 					t.Fatalf("expected claude chat payload to strip previous_response_id, got %#v", prepared.requestPayload["previous_response_id"])
 				}
 				systemText := flattenTextForTest(prepared.requestPayload["system"])
-				if !strings.Contains(systemText, "You are an AI coding assistant") {
+				if !strings.Contains(systemText, fixture.systemAnchor) {
 					t.Fatalf("expected claude request to preserve system prompt, got %#v", prepared.requestPayload["system"])
 				}
 				if toolChoice := prepared.requestPayload["tool_choice"]; toolChoice != nil {
@@ -114,7 +121,7 @@ func TestCursorChatRealFixturesAcrossBackends(t *testing.T) {
 				}
 				systemInstruction := prepared.requestPayload["systemInstruction"].(map[string]interface{})
 				systemText := flattenTextForTest(systemInstruction["parts"])
-				if !strings.Contains(systemText, "You are an AI coding assistant") {
+				if !strings.Contains(systemText, fixture.systemAnchor) {
 					t.Fatalf("expected gemini request to preserve system instruction, got %#v", prepared.requestPayload["systemInstruction"])
 				}
 				contents := prepared.requestPayload["contents"].([]interface{})
@@ -184,6 +191,10 @@ func loadCursorRealFixture(t *testing.T, filename string) cursorRealFixture {
 	if !ok || len(messages) == 0 {
 		t.Fatalf("fixture %s missing messages", path)
 	}
+	systemAnchor := extractFixtureSystemAnchor(payload, messages)
+	if strings.TrimSpace(systemAnchor) == "" {
+		t.Fatalf("fixture %s missing system anchor", path)
+	}
 	lastUserText := stringValueForTest(lastMessageByRole(messages, "user")["content"])
 	if strings.TrimSpace(lastUserText) == "" {
 		t.Fatalf("fixture %s missing last user text", path)
@@ -199,11 +210,39 @@ func loadCursorRealFixture(t *testing.T, filename string) cursorRealFixture {
 	}
 
 	return cursorRealFixture{
-		name:         filename,
-		requestBody:  string(encoded),
-		lastUserText: lastUserText,
-		toolNames:    toolNames,
+		name:          filename,
+		requestBody:   string(encoded),
+		systemAnchor:  systemAnchor,
+		lastUserText:  lastUserText,
+		hasToolChoice: payload["tool_choice"] != nil,
+		toolNames:     toolNames,
 	}
+}
+
+func extractFixtureSystemAnchor(payload map[string]interface{}, messages []interface{}) string {
+	if systemText := stringValueForTest(payload["system"]); strings.TrimSpace(systemText) != "" {
+		return firstNonEmptySystemLine(systemText)
+	}
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]interface{})
+		if !ok || message["role"] != "system" {
+			continue
+		}
+		if systemText := stringValueForTest(message["content"]); strings.TrimSpace(systemText) != "" {
+			return firstNonEmptySystemLine(systemText)
+		}
+	}
+	return ""
+}
+
+func firstNonEmptySystemLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func stringValueForTest(value interface{}) string {
