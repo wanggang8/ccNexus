@@ -194,6 +194,9 @@ func TestOpenAI2StreamToOpenAIIncludesUsageOnCompleted(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 		t.Fatalf("unmarshal chunk failed: %v, raw=%s", err, jsonData)
 	}
+	if !strings.HasPrefix(chunk["id"].(string), "chatcmpl-") {
+		t.Fatalf("expected chat completion style id, got %#v", chunk["id"])
+	}
 
 	usage, ok := chunk["usage"].(map[string]interface{})
 	if !ok {
@@ -739,6 +742,26 @@ func TestOpenAI2StreamToOpenAIUsesExistingUsageWhenCompletedOmitsValues(t *testi
 	usage := chunk["usage"].(map[string]interface{})
 	if usage["prompt_tokens"] != float64(7) || usage["completion_tokens"] != float64(3) || usage["total_tokens"] != float64(10) {
 		t.Fatalf("expected preserved context usage, got %#v", usage)
+	}
+}
+
+func TestOpenAIStreamToOpenAI2UsesTopLevelFinalChunkUsage(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	out, err := OpenAIStreamToOpenAI2([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`), ctx)
+	if err != nil {
+		t.Fatalf("OpenAIStreamToOpenAI2 failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected completed responses output, got nil")
+	}
+
+	outStr := string(out)
+	if !strings.Contains(outStr, `"type":"response.completed"`) {
+		t.Fatalf("expected response.completed event, got %s", outStr)
+	}
+	if !strings.Contains(outStr, `"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}`) {
+		t.Fatalf("expected response.completed to use final chat chunk usage, got %s", outStr)
 	}
 }
 

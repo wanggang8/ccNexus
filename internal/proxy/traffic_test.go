@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -187,6 +188,128 @@ func TestTrafficRecorderClearRemovesAllLogs(t *testing.T) {
 	}
 	if detail := recorder.GetLogByID("log-1"); detail != nil {
 		t.Fatal("GetLogByID() after clear returned non-nil detail")
+	}
+}
+
+func TestTrafficRecorderPreservesLargeBodiesWithoutTruncation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "traffic.log")
+
+	recorder := NewTrafficRecorder()
+	if err := recorder.EnableFileLogging(path); err != nil {
+		t.Fatalf("EnableFileLogging failed: %v", err)
+	}
+	defer recorder.DisableFileLogging()
+
+	recorder.SetRecording(true)
+
+	largeBody := []byte(strings.Repeat("x", 600*1024))
+	logID := "large-log"
+	recorder.Record(&TrafficLog{
+		ID:                  logID,
+		RequestID:           "req-large",
+		EventType:           TrafficEventTypeUnified,
+		Timestamp:           time.Unix(1710000000, 0).UTC(),
+		EndpointName:        "endpoint",
+		ClientFormat:        "openai",
+		TransformerName:     "openai",
+		Method:              httpMethodPost,
+		Path:                "/v1/chat/completions",
+		StatusCode:          200,
+		OriginalRequest:     largeBody,
+		TransformedRequest:  largeBody,
+		OriginalResponse:    largeBody,
+		TransformedResponse: largeBody,
+	})
+
+	detail := recorder.GetLogByID(logID)
+	if detail == nil {
+		t.Fatal("GetLogByID() returned nil")
+	}
+	if detail.Truncated {
+		t.Fatal("expected large traffic log to remain untruncated")
+	}
+	if detail.OriginalRequest != string(largeBody) {
+		t.Fatalf("detail.OriginalRequest length = %d, want %d", len(detail.OriginalRequest), len(largeBody))
+	}
+	if detail.TransformedResponse != string(largeBody) {
+		t.Fatalf("detail.TransformedResponse length = %d, want %d", len(detail.TransformedResponse), len(largeBody))
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		t.Fatal("expected traffic file to contain data")
+	}
+
+	var entry map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("failed to unmarshal traffic entry: %v", err)
+	}
+	if entry["truncated"] != false {
+		t.Fatalf("expected file log truncated=false, got %#v", entry["truncated"])
+	}
+	if got := entry["originalRequest"].(string); got != string(largeBody) {
+		t.Fatalf("file originalRequest length = %d, want %d", len(got), len(largeBody))
+	}
+	if got := entry["transformedResponse"].(string); got != string(largeBody) {
+		t.Fatalf("file transformedResponse length = %d, want %d", len(got), len(largeBody))
+	}
+}
+
+func TestTrafficRecorderClonesBodiesBeforeStoring(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewTrafficRecorder()
+	recorder.SetRecording(true)
+
+	origReq := []byte(`{"request":"before"}`)
+	transReq := []byte(`{"transformed":"before"}`)
+	origResp := []byte(`{"response":"before"}`)
+	transResp := []byte(`{"client":"before"}`)
+
+	recorder.Record(&TrafficLog{
+		ID:                  "clone-test",
+		RequestID:           "req-clone",
+		EventType:           TrafficEventTypeUnified,
+		Timestamp:           time.Unix(1710000000, 0).UTC(),
+		EndpointName:        "endpoint",
+		ClientFormat:        "openai",
+		TransformerName:     "openai",
+		Method:              httpMethodPost,
+		Path:                "/v1/chat/completions",
+		StatusCode:          200,
+		OriginalRequest:     origReq,
+		TransformedRequest:  transReq,
+		OriginalResponse:    origResp,
+		TransformedResponse: transResp,
+		DegradedReason:      []string{"first"},
+	})
+
+	copy(origReq, []byte(`{"request":"after "}`))
+	copy(transReq, []byte(`{"transformed":"after "}`))
+	copy(origResp, []byte(`{"response":"after "}`))
+	copy(transResp, []byte(`{"client":"after "}`))
+
+	detail := recorder.GetLogByID("clone-test")
+	if detail == nil {
+		t.Fatal("GetLogByID() returned nil")
+	}
+	if detail.OriginalRequest != `{"request":"before"}` {
+		t.Fatalf("detail.OriginalRequest = %q, want original snapshot", detail.OriginalRequest)
+	}
+	if detail.TransformedRequest != `{"transformed":"before"}` {
+		t.Fatalf("detail.TransformedRequest = %q, want original snapshot", detail.TransformedRequest)
+	}
+	if detail.OriginalResponse != `{"response":"before"}` {
+		t.Fatalf("detail.OriginalResponse = %q, want original snapshot", detail.OriginalResponse)
+	}
+	if detail.TransformedResponse != `{"client":"before"}` {
+		t.Fatalf("detail.TransformedResponse = %q, want original snapshot", detail.TransformedResponse)
 	}
 }
 

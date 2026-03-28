@@ -572,6 +572,14 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 		return nil, nil
 	}
+	if chunk.Usage != nil {
+		if chunk.Usage.PromptTokens > 0 {
+			ctx.InputTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			ctx.OutputTokens = chunk.Usage.CompletionTokens
+		}
+	}
 
 	var result strings.Builder
 	writeEvent := func(evt map[string]interface{}) {
@@ -591,6 +599,10 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	if len(chunk.Choices) > 0 {
 		delta := chunk.Choices[0].Delta
 		finishReason := chunk.Choices[0].FinishReason
+		totalTokens := ctx.InputTokens + ctx.OutputTokens
+		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+			totalTokens = chunk.Usage.TotalTokens
+		}
 
 		// Handle text content
 		if delta.ReasoningContent != "" {
@@ -670,7 +682,11 @@ func OpenAIStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
+					"usage": map[string]interface{}{
+						"input_tokens":  ctx.InputTokens,
+						"output_tokens": ctx.OutputTokens,
+						"total_tokens":  totalTokens,
+					},
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -701,15 +717,21 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 
 	switch evt.Type {
 	case "response.created":
-		if evt.Response != nil {
-			ctx.MessageID = evt.Response.ID
+		if ctx.MessageID == "" {
+			ctx.MessageID = newChatCompletionID()
 		}
 		return nil, nil
 
 	case "response.reasoning_summary_text.delta":
+		if ctx.MessageID == "" {
+			ctx.MessageID = newChatCompletionID()
+		}
 		return buildOpenAIReasoningChunk(ctx.MessageID, model, evt.Delta, "")
 
 	case "response.output_text.delta":
+		if ctx.MessageID == "" {
+			ctx.MessageID = newChatCompletionID()
+		}
 		return buildOpenAIChunk(ctx.MessageID, model, evt.Delta, nil, "")
 
 	case "response.output_item.added":
@@ -732,6 +754,9 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 
 	case "response.output_item.done":
 		if evt.Item != nil && evt.Item.Type == "function_call" {
+			if ctx.MessageID == "" {
+				ctx.MessageID = newChatCompletionID()
+			}
 			tool := ensureOpenAI2ToolStateByOutputIndex(ctx, evt.OutputIndex)
 			if tool == nil {
 				return nil, nil
@@ -754,6 +779,9 @@ func OpenAI2StreamToOpenAI(event []byte, ctx *transformer.StreamContext, model s
 		return nil, nil
 
 	case "response.completed":
+		if ctx.MessageID == "" {
+			ctx.MessageID = newChatCompletionID()
+		}
 		if evt.Response != nil {
 			if evt.Response.Usage.InputTokens > 0 {
 				ctx.InputTokens = evt.Response.Usage.InputTokens

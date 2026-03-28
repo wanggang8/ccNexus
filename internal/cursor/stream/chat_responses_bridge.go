@@ -60,7 +60,6 @@ func formatChatFromResponsesEvent(eventName string, payload map[string]interface
 		id := stringValue(response["id"])
 		if state != nil {
 			state.OpenAI2ChatStarted = true
-			state.OpenAI2ChatResponseID = id
 		}
 		return []sseItem{{
 			payload: buildChatChunkPayload(firstNonEmptyChatID(id, state), clientModel, map[string]interface{}{
@@ -325,14 +324,15 @@ func intValue(value interface{}) int {
 }
 
 func firstNonEmptyChatID(candidate string, state *FinalizeState) string {
-	if candidate != "" {
-		if state != nil {
-			state.OpenAI2ChatResponseID = candidate
-		}
-		return candidate
-	}
 	if state != nil && state.OpenAI2ChatResponseID != "" {
 		return state.OpenAI2ChatResponseID
 	}
-	return "chatcmpl-responses-bridge"
+	id := candidate
+	if id == "" || bytes.HasPrefix([]byte(id), []byte("resp_")) {
+		id = newChatCompletionID()
+	}
+	if state != nil {
+		state.OpenAI2ChatResponseID = id
+	}
+	return id
 }

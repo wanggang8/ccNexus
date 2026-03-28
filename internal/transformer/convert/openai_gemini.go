@@ -200,7 +200,7 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 	}
 
 	openaiResp := map[string]interface{}{
-		"id":      "gemini-resp",
+		"id":      newChatCompletionID(),
 		"object":  "chat.completion",
 		"model":   model,
 		"choices": []map[string]interface{}{{"index": 0, "message": message, "finish_reason": finishReason}},
@@ -226,12 +226,18 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = transformer.NewStreamContext()
+	}
 
 	// Sync Gemini usage metadata to context
 	syncGeminiUsageMetadata(&resp, ctx)
 
 	if len(resp.Candidates) == 0 {
 		return nil, nil
+	}
+	if ctx.MessageID == "" {
+		ctx.MessageID = newChatCompletionID()
 	}
 
 	var result strings.Builder
@@ -241,7 +247,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" && part.Thought {
 			reasoningChunk := map[string]interface{}{
-				"id":     "gemini-chunk",
+				"id":     ctx.MessageID,
 				"object": "chat.completion.chunk",
 				"model":  model,
 				"choices": []map[string]interface{}{
@@ -258,7 +264,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			result.WriteString(fmt.Sprintf("data: %s\n\n", encoded))
 		}
 		if part.Text != "" && !part.Thought {
-			chunk, _ := buildOpenAIChunk("gemini-chunk", model, part.Text, nil, "")
+			chunk, _ := buildOpenAIChunk(ctx.MessageID, model, part.Text, nil, "")
 			result.Write(chunk)
 		}
 		if part.FunctionCall != nil {
@@ -275,7 +281,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 					},
 				},
 			}
-			chunk, _ := buildOpenAIChunk("gemini-chunk", model, "", toolCall, "")
+			chunk, _ := buildOpenAIChunk(ctx.MessageID, model, "", toolCall, "")
 			result.Write(chunk)
 			ctx.ContentIndex++
 		}
@@ -285,7 +291,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	if candidate.FinishReason != "" {
 		finishReason := geminiFinishReason(candidate.FinishReason, hasToolCall)
 		usage := currentOpenAIUsage(ctx)
-		chunk, _ := buildOpenAIChunkWithUsage("gemini-chunk", model, "", nil, finishReason, usage)
+		chunk, _ := buildOpenAIChunkWithUsage(ctx.MessageID, model, "", nil, finishReason, usage)
 		result.Write(chunk)
 		result.WriteString("data: [DONE]\n\n")
 	}

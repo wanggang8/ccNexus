@@ -371,6 +371,9 @@ func TestClaudeRespToOpenAIPreservesThinkingAsReasoningContent(t *testing.T) {
 	if err := json.Unmarshal(openaiRespBytes, &openaiResp); err != nil {
 		t.Fatalf("Failed to unmarshal OpenAI response: %v", err)
 	}
+	if !strings.HasPrefix(openaiResp["id"].(string), "chatcmpl-") {
+		t.Fatalf("expected chat completion style id, got %#v", openaiResp["id"])
+	}
 
 	message := openaiResp["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
 	if message["reasoning_content"] != "think first" {
@@ -410,6 +413,76 @@ func TestClaudeRespToOpenAIFixesMissingToolUseIDAndFinishReason(t *testing.T) {
 	if choice["finish_reason"] != "tool_calls" {
 		t.Fatalf("expected finish_reason=tool_calls, got %#v", choice["finish_reason"])
 	}
+}
+
+func TestClaudeStreamToOpenAIEmitsIncrementalToolCallDeltasWithoutBlockStop(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":0}}}
+`,
+		`event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"ApplyPatch","input":{}}}
+`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\""}}
+`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"input"}}
+`,
+		`event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}
+`,
+		`event: message_stop
+data: {"type":"message_stop"}
+`,
+	}
+
+	var out strings.Builder
+	for _, event := range events {
+		chunk, err := ClaudeStreamToOpenAI([]byte(event+"\n"), ctx, "gpt-5.4")
+		if err != nil {
+			t.Fatalf("ClaudeStreamToOpenAI failed: %v", err)
+		}
+		out.Write(chunk)
+	}
+
+	got := out.String()
+	assertContains(t, got, `"id":"chatcmpl-`, "expected chat completion style stream id")
+	assertContains(t, got, `"role":"assistant"`, "expected assistant role start chunk")
+	assertContains(t, got, `"tool_calls":[{"function":{"arguments":"","name":"ApplyPatch"},"id":"call_1","index":0,"type":"function"}]`, "expected tool slot chunk")
+	assertContains(t, got, `"tool_calls":[{"function":{"arguments":"{\""},"index":0}]`, "expected first partial tool arguments chunk")
+	assertContains(t, got, `"tool_calls":[{"function":{"arguments":"input"},"index":0}]`, "expected second partial tool arguments chunk")
+	assertContains(t, got, `"finish_reason":"tool_calls"`, "expected tool_calls finish reason")
+	assertContains(t, got, `"usage":{"completion_tokens":7,"prompt_tokens":12,"total_tokens":19}`, "expected final usage on message_delta")
+	assertContains(t, got, `data: [DONE]`, "expected message_stop to map to DONE")
+}
+
+func TestClaudeStreamToOpenAIPreservesEstimatedPromptTokensWhenMessageStartReportsZero(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.InputTokens = 42
+
+	events := []string{
+		`event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+`,
+		`event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}
+`,
+	}
+
+	var out strings.Builder
+	for _, event := range events {
+		chunk, err := ClaudeStreamToOpenAI([]byte(event+"\n"), ctx, "gpt-5.4")
+		if err != nil {
+			t.Fatalf("ClaudeStreamToOpenAI failed: %v", err)
+		}
+		out.Write(chunk)
+	}
+
+	got := out.String()
+	assertContains(t, got, `"usage":{"completion_tokens":7,"prompt_tokens":42,"total_tokens":49}`, "expected final usage to preserve pre-estimated prompt tokens")
 }
 
 func TestClaudeReqToOpenAISkipsInvalidToolBlocks(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 const (
 	// MaxTrafficLogs is the maximum number of traffic logs to keep in memory.
 	MaxTrafficLogs = 10
-	// MaxBodySize is the maximum size of request/response body to store (512KB).
+	// MaxBodySize is the maximum streaming body capture size to retain in memory.
 	MaxBodySize = 512 * 1024
 
 	TrafficEventTypeUnified             = "traffic"
@@ -60,23 +60,23 @@ type TrafficLog struct {
 
 // TrafficLogSummary is a lightweight version of TrafficLog for list display.
 type TrafficLogSummary struct {
-	ID              string `json:"id"`
-	RequestID       string `json:"requestId"`
-	EventType       string `json:"eventType"`
-	Timestamp       int64  `json:"timestamp"`
-	EndpointName    string `json:"endpointName"`
-	ClientFormat    string `json:"clientFormat"`
-	TransformerName string `json:"transformerName"`
-	Method          string `json:"method"`
-	Path            string `json:"path"`
-	StatusCode      int    `json:"statusCode"`
-	Duration        int64  `json:"duration"`
-	InputTokens     int    `json:"inputTokens"`
-	OutputTokens    int    `json:"outputTokens"`
-	Error           string `json:"error,omitempty"`
-	IsStreaming     bool   `json:"isStreaming"`
-	Truncated       bool   `json:"truncated,omitempty"`
-	Degraded        bool   `json:"degraded,omitempty"`
+	ID              string   `json:"id"`
+	RequestID       string   `json:"requestId"`
+	EventType       string   `json:"eventType"`
+	Timestamp       int64    `json:"timestamp"`
+	EndpointName    string   `json:"endpointName"`
+	ClientFormat    string   `json:"clientFormat"`
+	TransformerName string   `json:"transformerName"`
+	Method          string   `json:"method"`
+	Path            string   `json:"path"`
+	StatusCode      int      `json:"statusCode"`
+	Duration        int64    `json:"duration"`
+	InputTokens     int      `json:"inputTokens"`
+	OutputTokens    int      `json:"outputTokens"`
+	Error           string   `json:"error,omitempty"`
+	IsStreaming     bool     `json:"isStreaming"`
+	Truncated       bool     `json:"truncated,omitempty"`
+	Degraded        bool     `json:"degraded,omitempty"`
 	DegradedReason  []string `json:"degradedReason,omitempty"`
 }
 
@@ -162,17 +162,13 @@ func (tr *TrafficRecorder) Record(log *TrafficLog) {
 		return
 	}
 
+	log = cloneTrafficLog(log)
 	if log.ID == "" {
 		log.ID = uuid.New().String()
 	}
 
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-
-	log.OriginalRequest = truncateBody(log.OriginalRequest, &log.Truncated)
-	log.TransformedRequest = truncateBody(log.TransformedRequest, &log.Truncated)
-	log.OriginalResponse = truncateBody(log.OriginalResponse, &log.Truncated)
-	log.TransformedResponse = truncateBody(log.TransformedResponse, &log.Truncated)
 
 	tr.logs[tr.head] = nil
 	tr.logs[tr.head] = log
@@ -182,6 +178,29 @@ func (tr *TrafficRecorder) Record(log *TrafficLog) {
 	}
 
 	tr.writeFileLog(log)
+}
+
+func cloneTrafficLog(log *TrafficLog) *TrafficLog {
+	if log == nil {
+		return nil
+	}
+
+	cloned := *log
+	cloned.OriginalRequest = bytesClone(log.OriginalRequest)
+	cloned.TransformedRequest = bytesClone(log.TransformedRequest)
+	cloned.OriginalResponse = bytesClone(log.OriginalResponse)
+	cloned.TransformedResponse = bytesClone(log.TransformedResponse)
+	if len(log.DegradedReason) > 0 {
+		cloned.DegradedReason = append([]string(nil), log.DegradedReason...)
+	}
+	return &cloned
+}
+
+func bytesClone(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	return append([]byte(nil), data...)
 }
 
 func (tr *TrafficRecorder) writeFileLog(log *TrafficLog) {
@@ -318,14 +337,6 @@ func (tr *TrafficRecorder) GetCount() int {
 	tr.mu.RLock()
 	defer tr.mu.RUnlock()
 	return tr.count
-}
-
-func truncateBody(body []byte, truncated *bool) []byte {
-	if len(body) > MaxBodySize {
-		*truncated = true
-		return body[:MaxBodySize]
-	}
-	return body
 }
 
 func toSummary(log *TrafficLog) TrafficLogSummary {

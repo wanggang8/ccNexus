@@ -94,12 +94,6 @@ func (a *App) startup(ctx context.Context) {
 
 	logger.Info("Application starting...")
 
-	if os.Getenv("DEBUG") != "" {
-		if err := logger.GetLogger().EnableDebugFile("debug.log"); err != nil {
-			logger.Warn("Failed to enable debug file: %v", err)
-		}
-	}
-
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		logger.Error("Failed to get home directory: %v", err)
@@ -131,6 +125,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 	a.config = cfg
+	if os.Getenv("DEBUG") != "" && !isWailsDevMode() {
+		if err := logger.GetLogger().EnableDebugFile("debug.log"); err != nil {
+			logger.Warn("Failed to enable debug file: %v", err)
+		}
+	}
 
 	if cfg.GetLogLevel() >= 0 {
 		logger.GetLogger().SetMinLevel(logger.LogLevel(cfg.GetLogLevel()))
@@ -146,6 +145,7 @@ func (a *App) startup(ctx context.Context) {
 
 	statsAdapter := storage.NewStatsStorageAdapter(sqliteStorage)
 	a.proxy = proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
+	enableWailsDevLogging(configDir, a.proxy.GetTrafficRecorder())
 
 	a.proxy.SetOnEndpointSuccess(func(endpointName string) {
 		runtime.EventsEmit(ctx, "endpoint:success", endpointName)
@@ -196,6 +196,7 @@ func (a *App) shutdown(ctx context.Context) {
 		}
 	}
 	if a.proxy != nil {
+		a.proxy.GetTrafficRecorder().DisableFileLogging()
 		a.proxy.Stop()
 	}
 	if a.storage != nil {

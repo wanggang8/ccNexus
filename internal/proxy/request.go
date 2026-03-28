@@ -209,14 +209,11 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 		return nil, err
 	}
 
-	// Copy headers (except Host and Accept-Encoding)
-	for key, values := range r.Header {
-		if key == "Host" || key == "Accept-Encoding" {
-			continue
-		}
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
+	// Align Cursor upstream requests with api2cursor: rebuild a minimal header set
+	// instead of forwarding the client's original headers wholesale. Ordinary /v1/*
+	// requests keep the existing passthrough header behavior.
+	if requestMeta == nil || !requestMeta.CursorMode {
+		copyRequestHeaders(proxyReq.Header, r.Header)
 	}
 
 	// Force gzip or no compression to avoid unsupported encodings (e.g., brotli)
@@ -245,6 +242,13 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 			proxyReq.Header.Set(k, v)
 		}
 	}
+	if strings.TrimSpace(proxyReq.Header.Get("Content-Type")) == "" {
+		proxyReq.Header.Set("Content-Type", "application/json")
+	}
+	if shouldCloseUpstreamConnection(proxyReq.URL, requestBody) {
+		proxyReq.Close = true
+		proxyReq.Header.Set("Connection", "close")
+	}
 
 	// Set Host header
 	if parsedBase, err := url.Parse(normalizedAPIUrl); err == nil && strings.TrimSpace(parsedBase.Host) != "" {
@@ -253,6 +257,32 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 	applyCodexCredentialHeaders(proxyReq, credential, requestBody)
 
 	return proxyReq, nil
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+	for key, values := range src {
+		if key == "Host" || key == "Accept-Encoding" {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func shouldCloseUpstreamConnection(targetURL *url.URL, payload []byte) bool {
+	if targetURL == nil {
+		return false
+	}
+	// Some self-hosted HTTP SSE gateways end streams by closing the socket instead of
+	// sending a clean terminator. Avoid reusing those plain-HTTP connections.
+	if strings.EqualFold(strings.TrimSpace(targetURL.Scheme), "http") && isStreamingRequest(payload) {
+		return true
+	}
+	return false
 }
 
 func applyCodexCredentialHeaders(req *http.Request, credential *storage.EndpointCredential, payload []byte) {

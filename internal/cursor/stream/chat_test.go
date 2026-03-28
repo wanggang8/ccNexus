@@ -64,21 +64,45 @@ func TestFixChatBundleSplitsContentAndToolCallsFromSameChunk(t *testing.T) {
 	}
 
 	payloads := decodeChatChunkPayloads(t, fixed)
-	if len(payloads) != 3 {
-		t.Fatalf("expected content/newline/tool_call chunks, got %d in %s", len(payloads), string(fixed))
+	if len(payloads) != 2 {
+		t.Fatalf("expected content/tool_call chunks, got %d in %s", len(payloads), string(fixed))
 	}
 	if payloadChoiceDelta(t, payloads[0])["content"] != "Hello" {
 		t.Fatalf("expected first chunk to keep content, got %#v", payloadChoiceDelta(t, payloads[0]))
 	}
-	if payloadChoiceDelta(t, payloads[1])["content"] != "\n" {
-		t.Fatalf("expected explicit newline before first tool call, got %#v", payloadChoiceDelta(t, payloads[1]))
+	if payloadChoiceDelta(t, payloads[0])["tool_calls"] != nil {
+		t.Fatalf("did not expect tool_calls mixed into content chunk, got %#v", payloadChoiceDelta(t, payloads[0]))
 	}
-	toolCalls := payloadChoiceDelta(t, payloads[2])["tool_calls"].([]interface{})
+	toolCalls := payloadChoiceDelta(t, payloads[1])["tool_calls"].([]interface{})
 	if toolCalls[0].(map[string]interface{})["id"] != "call_1" {
 		t.Fatalf("expected final chunk to preserve tool call, got %#v", toolCalls[0])
 	}
-	if payloadChoice(t, payloads[2])["finish_reason"] != "tool_calls" {
-		t.Fatalf("expected tool_calls finish_reason on tool chunk, got %#v", payloadChoice(t, payloads[2])["finish_reason"])
+	if payloadChoice(t, payloads[1])["finish_reason"] != "tool_calls" {
+		t.Fatalf("expected tool_calls finish_reason on tool chunk, got %#v", payloadChoice(t, payloads[1])["finish_reason"])
+	}
+}
+
+func TestFixChatBundleDoesNotInjectNewlineBeforeFirstToolCall(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 1 {
+		t.Fatalf("expected only tool_call chunk, got %d in %s", len(payloads), string(fixed))
+	}
+	delta := payloadChoiceDelta(t, payloads[0])
+	if delta["content"] != nil {
+		t.Fatalf("did not expect extra content chunk before tool call, got %#v", delta)
+	}
+	if delta["tool_calls"] == nil {
+		t.Fatalf("expected tool_calls to remain present, got %#v", delta)
 	}
 }
 
@@ -176,7 +200,7 @@ func TestBridgeChatFromResponsesBundleEmitsCursorToolCallTiming(t *testing.T) {
 		t.Fatalf("expected chat usage mapped from responses usage, got %#v", usage)
 	}
 
-	if !state.OpenAI2ChatStarted || !state.OpenAI2ChatSawToolCall || state.OpenAI2ChatResponseID != "resp_123" {
+	if !state.OpenAI2ChatStarted || !state.OpenAI2ChatSawToolCall || !strings.HasPrefix(state.OpenAI2ChatResponseID, "chatcmpl-") {
 		t.Fatalf("expected bridge state tracked, got %#v", state)
 	}
 }

@@ -112,6 +112,18 @@ func (p *Proxy) recordTrafficLog(requestID string, log *TrafficLog) {
 	p.trafficRecorder.Record(log)
 }
 
+func (p *Proxy) closeIdleUpstreamConnections() {
+	if p == nil || p.httpClient == nil {
+		return
+	}
+	type idleCloser interface {
+		CloseIdleConnections()
+	}
+	if transport, ok := p.httpClient.Transport.(idleCloser); ok {
+		transport.CloseIdleConnections()
+	}
+}
+
 // Start starts the proxy server.
 func (p *Proxy) Start() error {
 	return p.StartWithMux(nil)
@@ -672,6 +684,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			logger.Error("[%s] Request failed: %v", endpoint.Name, err)
 			if isTransientNetworkError(err) {
+				p.closeIdleUpstreamConnections()
 				logger.Warn("[%s] Transient network error, retrying same endpoint: %v", endpoint.Name, err)
 				p.markRequestInactive(endpoint.Name)
 				time.Sleep(300 * time.Millisecond)

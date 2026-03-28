@@ -49,3 +49,7 @@ node_modules/
 
 # Logs
 *.log
+
+
+# Local experiments
+api2cursor/

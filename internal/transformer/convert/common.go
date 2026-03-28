@@ -42,6 +42,10 @@ func parseSSE(data []byte) (eventType, jsonData string) {
 	return
 }
 
+func newChatCompletionID() string {
+	return "chatcmpl-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
 // buildClaudeEvent builds a Claude SSE event
 func buildClaudeEvent(eventType string, data map[string]interface{}) []byte {
 	data["type"] = eventType

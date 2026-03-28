@@ -10,6 +10,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/config"
 	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/transformer"
+	cxchat "github.com/lich0821/ccNexus/internal/transformer/cx/chat"
 )
 
 type noUsageStreamTransformer struct{}
@@ -112,7 +113,9 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		},
 	})
 
-	p := &Proxy{config: cfg}
+	recorder := NewTrafficRecorder()
+	recorder.SetRecording(true)
+	p := &Proxy{config: cfg, trafficRecorder: recorder}
 	endpoint := cfg.GetEndpoints()[0]
 	originalSSE := strings.Join([]string{
 		`data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}}`,
@@ -159,7 +162,9 @@ func TestHandleStreamingResponseSetsNoCacheHeadersOnlyForCursorMode(t *testing.T
 			Model:       "gpt-4.1",
 		},
 	})
-	p := &Proxy{config: cfg}
+	trafficRecorder := NewTrafficRecorder()
+	trafficRecorder.SetRecording(true)
+	p := &Proxy{config: cfg, trafficRecorder: trafficRecorder}
 	endpoint := cfg.GetEndpoints()[0]
 	originalSSE := "data: [DONE]\n\n"
 
@@ -188,6 +193,62 @@ func TestHandleStreamingResponseSetsNoCacheHeadersOnlyForCursorMode(t *testing.T
 	p.handleStreamingResponse(normalRec, makeResp(), endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, proxyRequestMeta{})
 	if got := normalRec.Header().Get("Cache-Control"); got != "" {
 		t.Fatalf("expected non-cursor mode not to force Cache-Control, got %q", got)
+	}
+}
+
+func TestHandleStreamingResponsePreservesLargeRecordedBodies(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	trafficRecorder := NewTrafficRecorder()
+	trafficRecorder.SetRecording(true)
+	p := &Proxy{config: cfg, trafficRecorder: trafficRecorder}
+	endpoint := cfg.GetEndpoints()[0]
+
+	largeDelta := strings.Repeat("x", 600*1024)
+	originalSSE := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"` + largeDelta + `"}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+
+	_, _, _, original, transformed := p.handleStreamingResponse(
+		rec,
+		resp,
+		endpoint,
+		&passthroughStreamTransformer{},
+		"cx_chat_openai",
+		false,
+		"gpt-4.1",
+		[]byte(`{}`),
+		0,
+		proxyRequestMeta{},
+	)
+
+	if !strings.Contains(string(original), largeDelta) {
+		t.Fatalf("expected original stream capture to preserve large delta, got length %d", len(original))
+	}
+	if !strings.Contains(string(transformed), largeDelta) {
+		t.Fatalf("expected transformed stream capture to preserve large delta, got length %d", len(transformed))
+	}
+	if len(original) <= len(largeDelta) || len(transformed) <= len(largeDelta) {
+		t.Fatalf("expected stream captures to include full SSE envelope, got original=%d transformed=%d", len(original), len(transformed))
 	}
 }
 
@@ -379,6 +440,139 @@ func TestHandleStreamingResponseDoesNotEmitDoneWithoutCursorChatPayload(t *testi
 	}
 	if strings.Contains(body, `"content":"hello"`) {
 		t.Fatalf("expected no partial chat chunk when transformer failed, got %s", body)
+	}
+}
+
+func TestHandleStreamingResponseClaudeEmptyStartEOFDoesNotEmitSyntheticDone(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "Claude",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "claude",
+			Model:       "claude-sonnet-4-20250514",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "gpt-5.4",
+		},
+		TransformerName: "cx_chat_claude",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, cxchat.NewClaudeTransformer("gpt-5.4"), "cx_chat_claude", false, "gpt-5.4", []byte(`{}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("expected initial assistant chunk preserved, got %s", body)
+	}
+	if strings.Contains(body, `"tool_calls":[`) {
+		t.Fatalf("did not expect synthesized tool calls, got %s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected no synthetic [DONE] for empty Claude start before EOF, got %s", body)
+	}
+}
+
+func TestHandleStreamingResponseCursorChatClaudePreservesPromptUsageOnZeroInputTokens(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "Claude",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "claude",
+			Model:       "claude-sonnet-4-20250514",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	trans, err := prepareTransformerForClient(ClientFormatOpenAIChat, endpoint)
+	if err != nil {
+		t.Fatalf("prepareTransformerForClient failed: %v", err)
+	}
+
+	originalSSE := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}}`,
+		"",
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "gpt-5.4",
+		},
+		TransformerName: trans.Name(),
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	in, out, _, _, _ := p.handleStreamingResponse(
+		rec,
+		resp,
+		endpoint,
+		trans,
+		trans.Name(),
+		false,
+		"gpt-5.4",
+		[]byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+		0,
+		meta,
+	)
+
+	if in == 0 {
+		t.Fatalf("expected non-zero prompt tokens from request estimate fallback, got %d", in)
+	}
+	if out != 7 {
+		t.Fatalf("expected output tokens from message_delta usage, got %d", out)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"completion_tokens":7`) {
+		t.Fatalf("expected final chunk completion usage, got %s", body)
+	}
+	if strings.Contains(body, `"prompt_tokens":0`) {
+		t.Fatalf("expected final chunk to avoid prompt_tokens=0, got %s", body)
 	}
 }
 

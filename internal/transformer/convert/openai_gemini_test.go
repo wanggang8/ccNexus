@@ -59,6 +59,9 @@ func TestGeminiRespToOpenAIRestoresReasoningContent(t *testing.T) {
 	if err := json.Unmarshal(converted, &payload); err != nil {
 		t.Fatalf("converted response is not valid json: %v", err)
 	}
+	if !strings.HasPrefix(payload["id"].(string), "chatcmpl-") {
+		t.Fatalf("expected chat completion style id, got %#v", payload["id"])
+	}
 
 	message := payload["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
 	if message["reasoning_content"] != "think first" {
@@ -78,6 +81,9 @@ func TestGeminiStreamToOpenAIEmitsReasoningContent(t *testing.T) {
 	}
 
 	output := string(converted)
+	if !strings.Contains(output, `"id":"chatcmpl-`) {
+		t.Fatalf("expected chat completion style stream id, got %s", output)
+	}
 	if !strings.Contains(output, `"reasoning_content":"think first"`) {
 		t.Fatalf("expected reasoning_content stream chunk, got %s", output)
 	}

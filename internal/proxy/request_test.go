@@ -3,9 +3,12 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 )
 
 func TestEnsureCodexResponsesPayload(t *testing.T) {
@@ -242,5 +245,117 @@ func TestBuildProxyRequestForGeminiNonStreamOmitsAltSSE(t *testing.T) {
 	}
 	if got := req.Header.Get("x-goog-api-key"); got != "" {
 		t.Fatalf("expected x-goog-api-key to be empty for bearer auth, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForCursorOpenAIUsesSanitizedHeaders(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "http://localhost/cursor/v1/chat/completions", nil)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("OpenAI-Previous-Response-ID", "resp_123")
+	r.Header.Set("X-Cursor-Debug", "keep-me-out")
+
+	endpoint := config.Endpoint{
+		Name:        "OpenAI",
+		APIUrl:      "https://api.openai.com",
+		APIKey:      "sk-test",
+		Transformer: "openai",
+		Model:       "gpt-5",
+		Enabled:     true,
+	}
+	meta := &proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode: true,
+		},
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"messages":[]}`), "cx_chat_openai", nil, meta)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
+		t.Fatalf("expected Authorization bearer header, got %q", got)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %q", got)
+	}
+	if got := req.Header.Get("Accept-Encoding"); got != "gzip, identity" {
+		t.Fatalf("expected Accept-Encoding gzip, identity, got %q", got)
+	}
+	if got := req.Header.Get("OpenAI-Previous-Response-ID"); got != "" {
+		t.Fatalf("expected cursor request to drop client continuation header, got %q", got)
+	}
+	if got := req.Header.Get("X-Cursor-Debug"); got != "" {
+		t.Fatalf("expected cursor request to drop arbitrary client header, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForOrdinaryOpenAIPreservesClientHeaders(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", nil)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Cursor-Debug", "preserve-me")
+
+	endpoint := config.Endpoint{
+		Name:        "OpenAI",
+		APIUrl:      "https://api.openai.com",
+		APIKey:      "sk-test",
+		Transformer: "openai",
+		Model:       "gpt-5",
+		Enabled:     true,
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"messages":[]}`), "cx_chat_openai", nil, nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("X-Cursor-Debug"); got != "preserve-me" {
+		t.Fatalf("expected ordinary request to preserve client header, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestClosesPlainHTTPStreamingUpstreamConnections(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "http://localhost/cursor/v1/chat/completions", nil)
+	r.Header.Set("Content-Type", "application/json")
+
+	endpoint := config.Endpoint{
+		Name:        "ClaudeGateway",
+		APIUrl:      "http://160.187.211.168:8080",
+		APIKey:      "sk-test",
+		Transformer: "claude",
+		Model:       "claude-sonnet-4-20250514",
+		Enabled:     true,
+	}
+	meta := &proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode: true,
+		},
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"messages":[],"stream":true}`), "cx_chat_claude", nil, meta)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if !req.Close {
+		t.Fatal("expected plain HTTP streaming upstream request to disable keep-alive")
+	}
+	if got := req.Header.Get("Connection"); got != "close" {
+		t.Fatalf("expected Connection close header, got %q", got)
+	}
+}
+
+func TestShouldCloseUpstreamConnectionOnlyForPlainHTTPStreaming(t *testing.T) {
+	httpURL, _ := url.Parse("http://example.test/v1/messages")
+	httpsURL, _ := url.Parse("https://example.test/v1/messages")
+
+	if !shouldCloseUpstreamConnection(httpURL, []byte(`{"stream":true}`)) {
+		t.Fatal("expected plain HTTP streaming request to close upstream connection")
+	}
+	if shouldCloseUpstreamConnection(httpURL, []byte(`{"stream":false}`)) {
+		t.Fatal("expected plain HTTP non-stream request to keep upstream connection reusable")
+	}
+	if shouldCloseUpstreamConnection(httpsURL, []byte(`{"stream":true}`)) {
+		t.Fatal("expected HTTPS streaming request to keep upstream connection reusable")
 	}
 }

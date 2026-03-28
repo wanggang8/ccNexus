@@ -84,7 +84,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	eventCount := 0
 	streamDone := false
 	doneSeen := false
-	cursorChatEventWritten := false
+	cursorChatMeaningfulEventWritten := false
 	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
 	var readErr error
 
@@ -96,7 +96,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	); len(prefix) > 0 {
 		if _, writeErr := w.Write(prefix); writeErr == nil {
 			flusher.Flush()
-			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+			if isRecording {
 				transformedRespBuffer.Write(prefix)
 			}
 		}
@@ -143,7 +143,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			buffer.WriteString(line + "\n")
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount+1, string(eventData))
-			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+			if isRecording {
 				originalRespBuffer.Write(eventData)
 			}
 
@@ -157,13 +157,16 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
-				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				if isRecording {
 					transformedRespBuffer.Write(transformedEvent)
 				}
 				if _, writeErr := w.Write(transformedEvent); writeErr == nil {
 					flusher.Flush()
-					if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
-						cursorChatEventWritten = true
+					if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
+						doneSeen = true
+					}
+					if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
+						cursorChatMeaningfulEventWritten = true
 					}
 				}
 			}
@@ -176,7 +179,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			eventCount++
 			eventData := buffer.Bytes()
 			logger.DebugLog("[%s] SSE Event #%d (Original): %s", endpoint.Name, eventCount, string(eventData))
-			if isRecording && originalRespBuffer.Len() < MaxBodySize {
+			if isRecording {
 				originalRespBuffer.Write(eventData)
 			}
 
@@ -221,7 +224,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
-				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				if isRecording {
 					transformedRespBuffer.Write(transformedEvent)
 				}
 
@@ -239,8 +242,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					break
 				}
 				flusher.Flush()
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
-					cursorChatEventWritten = true
+				if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
+					doneSeen = true
+				}
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
+					cursorChatMeaningfulEventWritten = true
 				}
 			}
 			buffer.Reset()
@@ -255,7 +261,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		eventCount++
 		eventData := append([]byte(nil), buffer.Bytes()...)
 		logger.DebugLog("[%s] SSE Event #%d (Original, partial): %s", endpoint.Name, eventCount, string(eventData))
-		if isRecording && originalRespBuffer.Len() < MaxBodySize {
+		if isRecording {
 			originalRespBuffer.Write(eventData)
 		}
 
@@ -277,7 +283,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		}
 		if err == nil && len(transformedEvent) > 0 {
 			logger.DebugLog("[%s] SSE Event #%d (Transformed, partial): %s", endpoint.Name, eventCount, string(transformedEvent))
-			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+			if isRecording {
 				transformedRespBuffer.Write(transformedEvent)
 			}
 			p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
@@ -290,8 +296,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				}
 			} else {
 				flusher.Flush()
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
-					cursorChatEventWritten = true
+				if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
+					doneSeen = true
+				}
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
+					cursorChatMeaningfulEventWritten = true
 				}
 			}
 		}
@@ -304,6 +313,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	if err := readErr; err != nil {
 		errMsg := err.Error()
 		if isGracefulStreamReadError(err) {
+			if !doneSeen {
+				p.closeIdleUpstreamConnections()
+			}
 			logger.Warn("[%s] Upstream stream ended before clean terminator, finalizing partial response: %v", endpoint.Name, err)
 		} else if strings.Contains(errMsg, "stream error") || strings.Contains(errMsg, "INTERNAL_ERROR") {
 			// Check if it's an HTTP/2 stream error
@@ -332,20 +344,19 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		); len(finalizeChunk) > 0 {
 			if _, err := w.Write(finalizeChunk); err == nil {
 				flusher.Flush()
-				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				if isRecording {
 					transformedRespBuffer.Write(finalizeChunk)
 				}
-				cursorChatEventWritten = true
 			}
 		}
 		if requestMeta.CursorState != nil {
 			requestMeta.CursorState.InThinkingTag = false
 		}
 	}
-	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatMeaningfulEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
 		if _, err := w.Write([]byte("data: [DONE]\n\n")); err == nil {
 			flusher.Flush()
-			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+			if isRecording {
 				transformedRespBuffer.WriteString("data: [DONE]\n\n")
 			}
 		}
@@ -371,6 +382,61 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func cursorChatBundleHasMeaningfulPayload(bundle []byte) bool {
+	blocks := bytes.Split(bundle, []byte("\n\n"))
+	for _, block := range blocks {
+		for _, line := range bytes.Split(block, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if !bytes.HasPrefix(line, []byte("data: ")) {
+				continue
+			}
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: ")))
+			if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+				continue
+			}
+			if cursorChatPayloadHasMeaningfulContent(payload) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func cursorChatPayloadHasMeaningfulContent(payload []byte) bool {
+	var chunk map[string]interface{}
+	if err := json.Unmarshal(payload, &chunk); err != nil {
+		return false
+	}
+
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, rawChoice := range choices {
+		choice, ok := rawChoice.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+			return true
+		}
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if content, ok := delta["content"].(string); ok && content != "" {
+			return true
+		}
+		if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+			return true
+		}
+		if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.

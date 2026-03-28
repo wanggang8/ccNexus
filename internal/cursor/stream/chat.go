@@ -88,14 +88,6 @@ func formatChatStreamEvent(eventName string, payload map[string]interface{}, cli
 			}, nil)})
 			state.InThinkingTag = false
 		}
-		if !state.ToolCallsSeen {
-			state.ToolCallsSeen = true
-			if len(results) == 0 || stringValue(extractDelta(results[len(results)-1].payload)["content"]) != "\n</think>\n\n" {
-				results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
-					"content": "\n",
-				}, nil)})
-			}
-		}
 		results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
 			"tool_calls": toolCalls,
 		}, finishReason)})

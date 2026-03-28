@@ -105,3 +105,7 @@ func stringValue(value interface{}) string {
 func newToolCallID() string {
 	return "call_" + uuid.NewString()
 }
+
+func newChatCompletionID() string {
+	return "chatcmpl-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}

@@ -8,7 +8,6 @@ import (
 
 type FinalizeState struct {
 	InThinkingTag           bool
-	ToolCallsSeen           bool
 	OpenAI2ChatStarted      bool
 	OpenAI2ChatResponseID   string
 	OpenAI2ChatNextToolSlot int
@@ -21,19 +20,19 @@ type FinalizeState struct {
 	RespOpenAIUpstreamThinkInTag bool
 	RespOpenAIUpstreamThinkBuf   string
 	RespOpenAIUpstreamToolSeen   bool
-	MessagesReasoningBuf    string
-	MessagesThinkingShown   bool
-	MessagesIndexOffset     int
-	ResponsesCreatedEmitted bool
-	ResponsesResponseID     string
-	ResponsesReasoningID    string
-	ResponsesReasoningBuf   string
-	ResponsesReasoningOn    bool
-	ResponsesMessageID      string
-	ResponsesMessageText    string
-	ResponsesMessageOn      bool
-	ResponsesTools          map[int]*ResponseToolState
-	ResponsesOutput         []map[string]interface{}
+	MessagesReasoningBuf         string
+	MessagesThinkingShown        bool
+	MessagesIndexOffset          int
+	ResponsesCreatedEmitted      bool
+	ResponsesResponseID          string
+	ResponsesReasoningID         string
+	ResponsesReasoningBuf        string
+	ResponsesReasoningOn         bool
+	ResponsesMessageID           string
+	ResponsesMessageText         string
+	ResponsesMessageOn           bool
+	ResponsesTools               map[int]*ResponseToolState
+	ResponsesOutput              []map[string]interface{}
 }
 
 type ResponseToolState struct {

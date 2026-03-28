@@ -730,3 +730,138 @@ func TestCursorStreamingRoundTripMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestCursorStreamingFinalUsageMatrix(t *testing.T) {
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
+
+	type usageCase struct {
+		name        string
+		path        string
+		requestBody string
+		endpoint    config.Endpoint
+		events      []string
+		wantUsage   string
+		alsoWant    string
+	}
+
+	tests := []usageCase{
+		{
+			name:        "chat openai final usage",
+			path:        "/cursor/v1/chat/completions",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "openai", Transformer: "openai", Model: "gpt-5"},
+			events: []string{
+				"data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+				"data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+			},
+			wantUsage: `"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}`,
+		},
+		{
+			name:        "chat openai2 final usage",
+			path:        "/cursor/v1/chat/completions",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "openai2", Transformer: "openai2", Model: "gpt-5"},
+			events: []string{
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"upstream\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+				"data: [DONE]\n\n",
+			},
+			wantUsage: `"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}`,
+		},
+		{
+			name:        "chat claude final usage",
+			path:        "/cursor/v1/chat/completions",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "claude", Transformer: "claude", Model: "claude-sonnet-4-20250514"},
+			events: []string{
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			},
+			wantUsage: `"usage":{"completion_tokens":7,"prompt_tokens":10,"total_tokens":17}`,
+		},
+		{
+			name:        "chat gemini final usage",
+			path:        "/cursor/v1/chat/completions",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "gemini", Transformer: "gemini", Model: "gemini-2.5-pro"},
+			events: []string{
+				"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}\n\n",
+			},
+			wantUsage: `"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}`,
+		},
+		{
+			name:        "responses openai final usage",
+			path:        "/cursor/v1/responses",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "openai", Transformer: "openai", Model: "gpt-5"},
+			events: []string{
+				"data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+				"data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+			},
+			wantUsage: `"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}`,
+			alsoWant:  `event: response.completed`,
+		},
+		{
+			name:        "responses openai2 final usage",
+			path:        "/cursor/v1/responses",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "openai2", Transformer: "openai2", Model: "gpt-5"},
+			events: []string{
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"upstream\",\"output\":[]}}\n\n",
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"upstream\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+			},
+			wantUsage: `"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}`,
+			alsoWant:  `"type":"response.completed"`,
+		},
+		{
+			name:        "responses claude final usage",
+			path:        "/cursor/v1/responses",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "claude", Transformer: "claude", Model: "claude-sonnet-4-20250514"},
+			events: []string{
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			},
+			wantUsage: `"usage":{"input_tokens":10,"output_tokens":7,"total_tokens":17}`,
+			alsoWant:  `event: response.completed`,
+		},
+		{
+			name:        "responses gemini final usage",
+			path:        "/cursor/v1/responses",
+			requestBody: `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "gemini", Transformer: "gemini", Model: "gemini-2.5-pro"},
+			events: []string{
+				"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}\n\n",
+			},
+			wantUsage: `"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}`,
+			alsoWant:  `event: response.completed`,
+		},
+		{
+			name:        "messages claude preserves usage events",
+			path:        "/cursor/v1/messages",
+			requestBody: `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			endpoint:    config.Endpoint{Name: "claude", Transformer: "claude", Model: "claude-sonnet-4-20250514"},
+			events: []string{
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+			},
+			wantUsage: `"usage":{"output_tokens":7}`,
+			alsoWant:  `"usage":{"input_tokens":10,"output_tokens":0}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared := prepareCursorRoundTrip(t, tt.path, tt.requestBody, tt.endpoint)
+			final := runCursorRoundTripStream(t, prepared, tt.events...)
+			if !strings.Contains(final, tt.wantUsage) {
+				t.Fatalf("expected final stream usage %s, got %s", tt.wantUsage, final)
+			}
+			if tt.alsoWant != "" && !strings.Contains(final, tt.alsoWant) {
+				t.Fatalf("expected final stream to contain %s, got %s", tt.alsoWant, final)
+			}
+		})
+	}
+}

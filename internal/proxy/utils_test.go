@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,5 +49,30 @@ func TestHandleProxyAnswersOptionsEarly(t *testing.T) {
 	}
 	if allowMethods := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(allowMethods, "OPTIONS") {
 		t.Fatalf("expected CORS headers on OPTIONS response, got %q", allowMethods)
+	}
+}
+
+type idleTrackingTransport struct {
+	closed bool
+}
+
+func (t *idleTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, io.EOF
+}
+
+func (t *idleTrackingTransport) CloseIdleConnections() {
+	t.closed = true
+}
+
+func TestCloseIdleUpstreamConnectionsClosesTransportPool(t *testing.T) {
+	transport := &idleTrackingTransport{}
+	p := &Proxy{
+		httpClient: &http.Client{Transport: transport},
+	}
+
+	p.closeIdleUpstreamConnections()
+
+	if !transport.closed {
+		t.Fatal("expected CloseIdleConnections to be forwarded to the underlying transport")
 	}
 }

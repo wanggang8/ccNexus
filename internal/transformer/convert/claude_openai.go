@@ -347,7 +347,7 @@ func ClaudeRespToOpenAI(claudeResp []byte, model string) ([]byte, error) {
 	}
 
 	openaiResp := map[string]interface{}{
-		"id":      resp.ID,
+		"id":      newChatCompletionID(),
 		"object":  "chat.completion",
 		"model":   model,
 		"choices": []map[string]interface{}{{"index": 0, "message": message, "finish_reason": mapAnthropicStopReasonToOpenAIFinishReason(normalizedStopReason, len(toolCalls) > 0)}},
@@ -461,9 +461,35 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	switch eventType {
 	case "message_start":
 		if msg, ok := data["message"].(map[string]interface{}); ok {
-			ctx.MessageID, _ = msg["id"].(string)
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				if inputTokens, ok := usage["input_tokens"].(float64); ok {
+					// Keep the pre-estimated request prompt tokens when Anthropic streams
+					// report 0 at message_start; otherwise Cursor loses final usage size.
+					if inputTokens > 0 {
+						ctx.InputTokens = int(inputTokens)
+					}
+				}
+			}
 		}
-		return nil, nil
+		if ctx.MessageID == "" {
+			ctx.MessageID = newChatCompletionID()
+		}
+		startChunk := map[string]interface{}{
+			"id":     ctx.MessageID,
+			"object": "chat.completion.chunk",
+			"model":  model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+					},
+				},
+			},
+		}
+		encoded, _ := json.Marshal(startChunk)
+		return []byte("data: " + string(encoded) + "\n\n"), nil
 
 	case "content_block_start":
 		if block, ok := data["content_block"].(map[string]interface{}); ok {
@@ -471,6 +497,21 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 				ctx.ToolBlockStarted = true
 				ctx.CurrentToolID, _ = block["id"].(string)
 				ctx.CurrentToolName, _ = block["name"].(string)
+				ctx.ToolArguments = ""
+				toolIndex := ctx.ContentIndex
+				ctx.ToolIndex = toolIndex
+				ctx.ContentIndex++
+				return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{
+						"index": toolIndex,
+						"id":    ctx.CurrentToolID,
+						"type":  "function",
+						"function": map[string]interface{}{
+							"name":      ctx.CurrentToolName,
+							"arguments": "",
+						},
+					},
+				}, "")
 			}
 		}
 		return nil, nil
@@ -485,20 +526,27 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			text, _ := delta["text"].(string)
 			return buildOpenAIChunk(ctx.MessageID, model, text, nil, "")
 		case "input_json_delta":
-			ctx.ToolArguments += delta["partial_json"].(string)
+			partialJSON, _ := delta["partial_json"].(string)
+			ctx.ToolArguments += partialJSON
+			if ctx.ToolBlockStarted && partialJSON != "" {
+				return buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
+					{
+						"index": ctx.ToolIndex,
+						"function": map[string]interface{}{
+							"arguments": partialJSON,
+						},
+					},
+				}, "")
+			}
 		}
 		return nil, nil
 
 	case "content_block_stop":
 		if ctx.ToolBlockStarted {
-			chunk, _ := buildOpenAIChunk(ctx.MessageID, model, "", []map[string]interface{}{
-				{"index": ctx.ContentIndex, "id": ctx.CurrentToolID, "type": "function",
-					"function": map[string]interface{}{"name": ctx.CurrentToolName, "arguments": ctx.ToolArguments}},
-			}, "")
 			ctx.ToolBlockStarted = false
 			ctx.ToolArguments = ""
-			ctx.ContentIndex++
-			return chunk, nil
+			ctx.CurrentToolID = ""
+			ctx.CurrentToolName = ""
 		}
 		return nil, nil
 
@@ -509,7 +557,23 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 			if stopReason == "tool_use" {
 				finish = "tool_calls"
 			}
-			return buildOpenAIChunk(ctx.MessageID, model, "", nil, finish)
+			usage := map[string]interface{}{
+				"prompt_tokens":     ctx.InputTokens,
+				"completion_tokens": 0,
+				"total_tokens":      ctx.InputTokens,
+			}
+			if usageObj, ok := data["usage"].(map[string]interface{}); ok {
+				if outputTokens, ok := usageObj["output_tokens"].(float64); ok {
+					ctx.OutputTokens = int(outputTokens)
+				}
+			}
+			usage["completion_tokens"] = ctx.OutputTokens
+			usage["total_tokens"] = ctx.InputTokens + ctx.OutputTokens
+			ctx.ToolBlockStarted = false
+			ctx.ToolArguments = ""
+			ctx.CurrentToolID = ""
+			ctx.CurrentToolName = ""
+			return buildOpenAIChunkWithUsage(ctx.MessageID, model, "", nil, finish, usage)
 		}
 		return nil, nil
 
