@@ -82,7 +82,7 @@ func TestFixChatBundleSplitsContentAndToolCallsFromSameChunk(t *testing.T) {
 	}
 }
 
-func TestFixChatBundleDoesNotInjectNewlineBeforeFirstToolCall(t *testing.T) {
+func TestFixChatBundleAddsNewlineBeforeFirstToolCall(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
 		"",
@@ -94,15 +94,16 @@ func TestFixChatBundleDoesNotInjectNewlineBeforeFirstToolCall(t *testing.T) {
 	}
 
 	payloads := decodeChatChunkPayloads(t, fixed)
-	if len(payloads) != 1 {
-		t.Fatalf("expected only tool_call chunk, got %d in %s", len(payloads), string(fixed))
+	if len(payloads) != 2 {
+		t.Fatalf("expected newline + tool_call chunks, got %d in %s", len(payloads), string(fixed))
 	}
-	delta := payloadChoiceDelta(t, payloads[0])
-	if delta["content"] != nil {
-		t.Fatalf("did not expect extra content chunk before tool call, got %#v", delta)
+	firstDelta := payloadChoiceDelta(t, payloads[0])
+	if firstDelta["content"] != "\n" {
+		t.Fatalf("expected newline prefix chunk, got %#v", firstDelta)
 	}
-	if delta["tool_calls"] == nil {
-		t.Fatalf("expected tool_calls to remain present, got %#v", delta)
+	secondDelta := payloadChoiceDelta(t, payloads[1])
+	if secondDelta["tool_calls"] == nil {
+		t.Fatalf("expected tool_calls to remain present, got %#v", secondDelta)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 type FinalizeState struct {
 	InThinkingTag           bool
+	ChatToolCallsSeen       bool
 	OpenAI2ChatStarted      bool
 	OpenAI2ChatResponseID   string
 	OpenAI2ChatNextToolSlot int

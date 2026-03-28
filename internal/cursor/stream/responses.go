@@ -66,6 +66,7 @@ func formatResponsesStreamEventsWithState(eventName string, payload map[string]i
 		ev, p := formatNativeResponsesStreamEvent(eventName, payload, clientModel)
 		return []sseItem{{eventName: ev, payload: p}}
 	}
+
 	if state == nil {
 		ev, p, ok := formatResponsesStreamEvent(eventName, payload, clientModel)
 		if !ok {
@@ -98,6 +99,7 @@ func formatResponsesStreamEventsWithState(eventName string, payload map[string]i
 			}
 			payload["response"] = rewritten
 		}
+		state.ResponsesCreatedEmitted = true
 	case "response.output_item.added":
 		trackResponsesAdded(state, payload)
 		payload = enrichResponsesStreamItemEvent(state, payload, false)
@@ -127,6 +129,10 @@ func formatResponsesStreamEventsWithState(eventName string, payload map[string]i
 		prefixEvents = append(prefixEvents, buildResponsesFinalizeDoneEvents(state, clientModel)...)
 		payload = injectResponsesCompletedOutput(state, payload, clientModel)
 		storeResponsesThinkingCacheFromEvent(payload, cacheMessages, thinkingCache)
+	}
+
+	if eventName != "response.created" && !state.ResponsesCreatedEmitted {
+		state.ResponsesCreatedEmitted = true
 	}
 
 	ev, rewritten, ok := formatResponsesStreamEvent(eventName, payload, clientModel)

@@ -484,9 +484,15 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 		case "reasoning":
 			reasoningContent += extractTypedOpenAI2ReasoningText(item)
 		case "function_call":
+			callID := item.CallID
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", len(toolCalls))
+			}
+			index := len(toolCalls)
 			toolCalls = append(toolCalls, map[string]interface{}{
-				"id":   item.CallID,
-				"type": "function",
+				"index": index,
+				"id":    callID,
+				"type":  "function",
 				"function": map[string]interface{}{
 					"name":      item.Name,
 					"arguments": item.Arguments,
@@ -495,7 +501,10 @@ func OpenAI2RespToOpenAI(openai2Resp []byte, model string) ([]byte, error) {
 		}
 	}
 
-	message := map[string]interface{}{"role": "assistant", "content": textContent}
+	message := map[string]interface{}{"role": "assistant"}
+	if textContent != "" {
+		message["content"] = textContent
+	}
 	if reasoningContent != "" {
 		message["reasoning_content"] = reasoningContent
 	}

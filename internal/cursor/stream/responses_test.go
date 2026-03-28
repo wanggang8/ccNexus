@@ -24,7 +24,7 @@ func TestFixResponsesBundleRewritesEvents(t *testing.T) {
 		"",
 	}, "\n"))
 
-	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), nil)
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), newResponsesState())
 	if err != nil {
 		t.Fatalf("FixResponsesBundle failed: %v", err)
 	}
@@ -44,6 +44,26 @@ func TestFixResponsesBundleRewritesEvents(t *testing.T) {
 	}
 	if strings.Contains(fixedStr, `"type":"response.created"`) {
 		t.Fatalf("did not expect event type echoed inside created payload, got %s", fixedStr)
+	}
+}
+
+func TestFixResponsesBundlePrefixesCreatedWhenMissing(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), newResponsesState())
+	if err != nil {
+		t.Fatalf("FixResponsesBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, "event: response.created") {
+		t.Fatalf("expected response.created prefix, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"delta":"hello"`) {
+		t.Fatalf("expected output_text delta preserved, got %s", fixedStr)
 	}
 }
 

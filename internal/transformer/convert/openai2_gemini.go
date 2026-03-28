@@ -78,10 +78,10 @@ func GeminiRespToOpenAI2(geminiResp []byte) ([]byte, error) {
 					})
 					continue
 				}
-				outputContent = append(outputContent, map[string]interface{}{
-					"type": "output_text",
-					"text": part.Text,
-				})
+		outputContent = append(outputContent, map[string]interface{}{
+			"type": "output_text",
+			"text": part.Text,
+		})
 			}
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
@@ -227,15 +227,16 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 		if part.FunctionCall != nil {
 			closeResponsesReasoningItem(ctx, writeEvent)
 			args, _ := json.Marshal(part.FunctionCall.Args)
-			callID := fmt.Sprintf("call_%d", ctx.ToolCallCounter)
+			callIndex := ctx.ToolCallCounter
+			callID := fmt.Sprintf("call_%d", callIndex)
 			ctx.ToolCallCounter++
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.added", "output_index": ctx.ToolCallCounter,
+				"type": "response.output_item.added", "output_index": callIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": "", "status": "in_progress"},
 			})
-			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": ctx.ToolCallCounter, "arguments": string(args)})
+			writeEvent(map[string]interface{}{"type": "response.function_call_arguments.done", "output_index": callIndex, "arguments": string(args)})
 			writeEvent(map[string]interface{}{
-				"type": "response.output_item.done", "output_index": ctx.ToolCallCounter,
+				"type": "response.output_item.done", "output_index": callIndex,
 				"item": map[string]interface{}{"type": "function_call", "call_id": callID, "name": part.FunctionCall.Name, "arguments": string(args), "status": "completed"},
 			})
 		}

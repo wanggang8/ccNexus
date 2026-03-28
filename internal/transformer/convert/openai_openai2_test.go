@@ -417,6 +417,42 @@ func TestOpenAI2RespToOpenAIRestoresReasoningContent(t *testing.T) {
 	}
 }
 
+func TestOpenAI2RespToOpenAISetsToolCallIndexAndID(t *testing.T) {
+	openai2Resp := `{
+		"id":"resp_1",
+		"object":"response",
+		"status":"completed",
+		"output":[
+			{"type":"function_call","name":"read_file","arguments":"{\"path\":\"README.md\"}"}
+		],
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
+	}`
+
+	respBytes, err := OpenAI2RespToOpenAI([]byte(openai2Resp), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2RespToOpenAI failed: %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("unmarshal transformed response failed: %v", err)
+	}
+
+	message := resp["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	toolCalls := message["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	if toolCall["index"] != float64(0) {
+		t.Fatalf("expected tool_call index 0, got %#v", toolCall["index"])
+	}
+	if toolCall["id"] == "" {
+		t.Fatalf("expected tool_call id to be set, got %#v", toolCall)
+	}
+	if toolCall["id"] != "call_0" {
+		t.Fatalf("expected tool_call id call_0, got %#v", toolCall["id"])
+	}
+}
+
+
 func TestOpenAI2RespToOpenAIMapsIncompleteToLength(t *testing.T) {
 	openai2Resp := `{
 		"id":"resp_1",
@@ -443,10 +479,9 @@ func TestOpenAI2RespToOpenAIMapsIncompleteToLength(t *testing.T) {
 		t.Fatalf("expected finish_reason=length, got %#v", choice["finish_reason"])
 	}
 }
-
 func TestOpenAIStreamToOpenAI2EmitsReasoningEvents(t *testing.T) {
 	ctx := transformer.NewStreamContext()
-
+	
 	event := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"reasoning_content":"think first"}}]}`)
 	out, err := OpenAIStreamToOpenAI2(event, ctx)
 	if err != nil {
@@ -455,7 +490,7 @@ func TestOpenAIStreamToOpenAI2EmitsReasoningEvents(t *testing.T) {
 	if out == nil {
 		t.Fatal("expected transformed output, got nil")
 	}
-
+	
 	output := string(out)
 	if !strings.Contains(output, `"type":"response.reasoning_summary_text.delta"`) {
 		t.Fatalf("expected reasoning_summary_text delta event, got %s", output)

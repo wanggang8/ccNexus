@@ -82,7 +82,19 @@ func formatChatStreamEvent(eventName string, payload map[string]interface{}, cli
 		delete(delta, "reasoning_content")
 	}
 	if hasToolCalls && len(toolCalls) > 0 {
-		if state.InThinkingTag {
+		if !state.ChatToolCallsSeen {
+			state.ChatToolCallsSeen = true
+			if state.InThinkingTag {
+				results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
+					"content": "\n</think>\n\n",
+				}, nil)})
+				state.InThinkingTag = false
+			} else {
+				results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
+					"content": "\n",
+				}, nil)})
+			}
+		} else if state.InThinkingTag {
 			results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
 				"content": "\n</think>\n\n",
 			}, nil)})
