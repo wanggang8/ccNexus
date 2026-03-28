@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,7 +118,11 @@ func (h *ToolChainHandler) ExecuteChain() (io.Reader, error) {
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("recursive API call failed: %w", err)

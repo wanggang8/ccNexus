@@ -8,7 +8,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
-func TestOpenAIReqToOpenAI2DefaultsToolChoiceAutoWhenToolsPresent(t *testing.T) {
+func TestOpenAIReqToOpenAI2DoesNotDefaultToolChoiceWhenOmitted(t *testing.T) {
 	openaiReq := `{
 		"model":"gpt-4.1",
 		"stream":true,
@@ -26,14 +26,50 @@ func TestOpenAIReqToOpenAI2DefaultsToolChoiceAutoWhenToolsPresent(t *testing.T) 
 		t.Fatalf("unmarshal transformed req failed: %v", err)
 	}
 
-	if req["tool_choice"] != "auto" {
-		t.Fatalf("expected tool_choice=auto, got %#v", req["tool_choice"])
+	if _, ok := req["tool_choice"]; ok {
+		t.Fatalf("did not expect implicit tool_choice, got %#v", req["tool_choice"])
 	}
 	if _, ok := req["store"]; ok {
 		t.Fatalf("did not expect store in generic openai2 conversion, got %#v", req["store"])
 	}
 	if _, ok := req["instructions"]; ok {
 		t.Fatalf("did not expect instructions without system prompt, got %#v", req["instructions"])
+	}
+}
+
+func TestOpenAIReqToOpenAI2CopiesSamplingAndTokenOptions(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"stream":true,
+		"max_tokens":321,
+		"temperature":0.7,
+		"top_p":0.8,
+		"tool_choice":"auto",
+		"messages":[{"role":"user","content":"test"}],
+		"tools":[{"type":"function","function":{"name":"Write","description":"Write file","parameters":{"type":"object"}}}]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if req["max_output_tokens"] != float64(321) {
+		t.Fatalf("expected max_output_tokens=321, got %#v", req["max_output_tokens"])
+	}
+	if req["temperature"] != 0.7 {
+		t.Fatalf("expected temperature=0.7, got %#v", req["temperature"])
+	}
+	if req["top_p"] != 0.8 {
+		t.Fatalf("expected top_p=0.8, got %#v", req["top_p"])
+	}
+	if req["tool_choice"] != "auto" {
+		t.Fatalf("expected explicit tool_choice=auto, got %#v", req["tool_choice"])
 	}
 }
 
@@ -234,6 +270,55 @@ func TestOpenAI2ReqToOpenAIAttachesReasoningToAssistantMessage(t *testing.T) {
 	}
 	if req.Messages[0].ReasoningContent != "think first" {
 		t.Fatalf("expected reasoning_content to be attached, got %#v", req.Messages[0].ReasoningContent)
+	}
+}
+
+func TestOpenAI2ReqToOpenAIStringifiesStructuredFunctionCallOutputAndCopiesOptions(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"max_output_tokens":256,
+		"temperature":0.4,
+		"top_p":0.9,
+		"input":[
+			{"type":"function_call_output","call_id":"call_1","output":{"ok":true,"count":2}}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if req.MaxTokens != 256 {
+		t.Fatalf("expected max_tokens=256, got %d", req.MaxTokens)
+	}
+	if req.Temperature == nil || *req.Temperature != 0.4 {
+		t.Fatalf("expected temperature=0.4, got %#v", req.Temperature)
+	}
+	if req.TopP == nil || *req.TopP != 0.9 {
+		t.Fatalf("expected top_p=0.9, got %#v", req.TopP)
+	}
+	if len(req.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(req.Messages))
+	}
+	if req.Messages[0].Role != "tool" || req.Messages[0].ToolCallID != "call_1" {
+		t.Fatalf("expected tool message preserved, got %#v", req.Messages[0])
+	}
+	content, ok := req.Messages[0].Content.(string)
+	if !ok {
+		t.Fatalf("expected stringified tool output, got %#v", req.Messages[0].Content)
+	}
+	var output map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &output); err != nil {
+		t.Fatalf("expected JSON string output, got %q (%v)", content, err)
+	}
+	if output["ok"] != true || output["count"] != float64(2) {
+		t.Fatalf("expected structured output preserved, got %#v", output)
 	}
 }
 
@@ -439,6 +524,77 @@ func TestOpenAI2ReqToOpenAIPreservesInputImageParts(t *testing.T) {
 	}
 	if imageURL["detail"] != "high" {
 		t.Fatalf("expected preserved image detail, got %#v", imageURL)
+	}
+}
+
+func TestOpenAI2ReqToOpenAIConvertsMessageToolBlocks(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"input":[
+			{"type":"message","role":"assistant","content":[
+				{"type":"text","text":"calling tool"},
+				{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"README.md"}}
+			]},
+			{"type":"message","role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"ok"}]}
+			]}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if len(req.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %#v", req.Messages)
+	}
+	assistant := req.Messages[0]
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected assistant tool call message, got %#v", assistant)
+	}
+	if assistant.ToolCalls[0].Function.Name != "read_file" {
+		t.Fatalf("expected tool name read_file, got %#v", assistant.ToolCalls[0].Function.Name)
+	}
+	if !strings.Contains(assistant.ToolCalls[0].Function.Arguments, `"path":"README.md"`) {
+		t.Fatalf("expected tool arguments preserved, got %#v", assistant.ToolCalls[0].Function.Arguments)
+	}
+
+	toolMsg := req.Messages[1]
+	if toolMsg.Role != "tool" || toolMsg.ToolCallID != "call_1" || toolMsg.Content != "ok" {
+		t.Fatalf("expected converted tool_result message, got %#v", toolMsg)
+	}
+}
+
+func TestOpenAI2ReqToOpenAISupportsToolsInputSchema(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"input":[{"role":"user","content":"test"}],
+		"tools":[
+			{"type":"function","name":"Read","description":"Read file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("expected one tool, got %#v", req.Tools)
+	}
+	params := req.Tools[0].Function.Parameters
+	if params["type"] != "object" {
+		t.Fatalf("expected input_schema mapped to parameters, got %#v", params)
 	}
 }
 

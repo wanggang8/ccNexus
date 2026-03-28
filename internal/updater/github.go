@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +37,12 @@ type Asset struct {
 
 // GetLatestRelease fetches the latest release from GitHub
 func GetLatestRelease(proxyURL string) (*ReleaseInfo, error) {
-	client := &http.Client{Timeout: httpTimeout}
+	client := &http.Client{
+		Timeout: httpTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	if proxyURL != "" {
 		if transport, err := createProxyTransport(proxyURL); err == nil {
@@ -119,7 +125,9 @@ func createProxyTransport(proxyURL string) (*http.Transport, error) {
 		return nil, err
 	}
 
-	transport := &http.Transport{}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 
 	switch parsed.Scheme {
 	case "socks5", "socks5h":

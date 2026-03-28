@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -256,7 +257,12 @@ func (p *Proxy) storeCredentialRateLimits(credentialID int64, data *storage.Code
 }
 
 func codexRateLimitHTTPClient() *http.Client {
-	return &http.Client{Timeout: codexRateLimitTimeout}
+	return &http.Client{
+		Timeout: codexRateLimitTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 }
 
 func (p *Proxy) codexRateLimitHTTPClient() *http.Client {

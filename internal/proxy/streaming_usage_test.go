@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
@@ -31,6 +32,52 @@ func (t *noUsageStreamTransformer) TransformResponseWithContext(targetResp []byt
 	}
 	// Simulate transformer that drops usage data.
 	return []byte("data: {\"type\":\"response.completed\"}\n\n"), nil
+}
+
+type passthroughStreamTransformer struct{}
+
+func (t *passthroughStreamTransformer) Name() string {
+	return "test_passthrough"
+}
+
+func (t *passthroughStreamTransformer) TransformRequest(req []byte) ([]byte, error) {
+	return req, nil
+}
+
+func (t *passthroughStreamTransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {
+	return resp, nil
+}
+
+func (t *passthroughStreamTransformer) TransformResponseWithContext(resp []byte, isStreaming bool, ctx *transformer.StreamContext) ([]byte, error) {
+	return resp, nil
+}
+
+type terminalErrReadCloser struct {
+	remaining   string
+	terminalErr error
+	done        bool
+}
+
+func (r *terminalErrReadCloser) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	if r.remaining == "" {
+		r.done = true
+		return 0, r.terminalErr
+	}
+	n := copy(p, r.remaining)
+	r.remaining = r.remaining[n:]
+	if r.remaining == "" {
+		r.done = true
+		return n, r.terminalErr
+	}
+	return n, nil
+}
+
+func (r *terminalErrReadCloser) Close() error {
+	r.done = true
+	return nil
 }
 
 func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
@@ -108,7 +155,9 @@ func TestHandleStreamingResponseSetsNoCacheHeadersOnlyForCursorMode(t *testing.T
 
 	cursorRec := httptest.NewRecorder()
 	p.handleStreamingResponse(cursorRec, makeResp(), endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, proxyRequestMeta{
-		CursorMode: true,
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode: true,
+		},
 	})
 	if got := cursorRec.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Fatalf("expected cursor mode Cache-Control=no-cache, got %q", got)
@@ -121,5 +170,191 @@ func TestHandleStreamingResponseSetsNoCacheHeadersOnlyForCursorMode(t *testing.T
 	p.handleStreamingResponse(normalRec, makeResp(), endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, proxyRequestMeta{})
 	if got := normalRec.Header().Get("Cache-Control"); got != "" {
 		t.Fatalf("expected non-cursor mode not to force Cache-Control, got %q", got)
+	}
+}
+
+func TestHandleStreamingResponseCursorResponsesBridgeEmitsCreatedAndNoDone(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_resp_openai",
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &passthroughStreamTransformer{}, "cx_resp_openai", false, "cursor-model", []byte(`{}`), 0, meta)
+
+	out := rec.Body.String()
+	createdIndex := strings.Index(out, "event: response.created")
+	completedIndex := strings.Index(out, "event: response.completed")
+	doneIndex := strings.Index(out, "data: [DONE]")
+	if createdIndex == -1 || completedIndex == -1 {
+		t.Fatalf("expected created and completed events, got %s", out)
+	}
+	if createdIndex > completedIndex {
+		t.Fatalf("expected created before completed, got %s", out)
+	}
+	if doneIndex != -1 {
+		t.Fatalf("expected responses stream without [DONE], got %s", out)
+	}
+}
+
+func TestHandleStreamingResponseFinalizesUnclosedCursorThinkTag(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := "data: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+		},
+		CursorState: &newcursor.StreamFinalizeState{InThinkingTag: true},
+	}
+	p.handleStreamingResponse(rec, resp, endpoint, &noUsageStreamTransformer{}, "cc_openai2", false, "gpt-4.1", []byte(`{}`), 0, meta)
+
+	if !strings.Contains(rec.Body.String(), `\u003c/think\u003e`) {
+		t.Fatalf("expected finalize chunk to close think tag, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleStreamingResponseGracefullyEndsCursorChatOnUnexpectedEOF(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := `data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &passthroughStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`{}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected partial chat chunk preserved on unexpected EOF, got %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected graceful [DONE] termination on unexpected EOF, got %s", body)
+	}
+}
+
+func TestHandleStreamingAsNonStreamingAcceptsUnexpectedEOFAfterCompletedPayload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+
+	in, out, outputText, err := p.handleStreamingAsNonStreaming(rec, resp, endpoint, &passthroughStreamTransformer{}, 0, proxyRequestMeta{})
+	if err != nil {
+		t.Fatalf("expected aggregated non-stream path to tolerate unexpected EOF after completed payload, got %v", err)
+	}
+	if in != 7 || out != 5 {
+		t.Fatalf("expected usage preserved, got in=%d out=%d", in, out)
+	}
+	if outputText != "" {
+		t.Fatalf("expected empty output text for bare completed response, got %q", outputText)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_1"`) {
+		t.Fatalf("expected completed payload written to client, got %s", rec.Body.String())
 	}
 }

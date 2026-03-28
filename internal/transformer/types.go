@@ -39,6 +39,8 @@ type OpenAIRequest struct {
 	MaxTokens           int             `json:"max_tokens,omitempty"` // Legacy field
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64        `json:"temperature,omitempty"`
+	TopP                *float64        `json:"top_p,omitempty"`
+	Stop                interface{}     `json:"stop,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
 	EnableThinking      bool            `json:"enable_thinking,omitempty"` // For models that support reasoning/thinking
@@ -112,6 +114,7 @@ type ClaudeRequest struct {
 	Messages    []ClaudeMessage `json:"messages"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Temperature float64         `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	System      interface{}     `json:"system,omitempty"`   // Can be string or array of system messages
 	Thinking    interface{}     `json:"thinking,omitempty"` // Claude's thinking/extended thinking parameter
@@ -228,9 +231,9 @@ func NewStreamContext() *StreamContext {
 		ToolCallBuffer:       "",
 		ToolCallIDMap:        make(map[string]string),
 		ToolCallCounter:      0,
-		InThinkingTag:        false,
-		ThinkingBuffer:       "",
-		PendingThinkingText:  "",
+		InThinkingTag:       false,
+		ThinkingBuffer:      "",
+		PendingThinkingText: "",
 	}
 }
 
@@ -366,6 +369,7 @@ type OpenAI2Request struct {
 	Stream          bool          `json:"stream,omitempty"`
 	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
 	Temperature     *float64      `json:"temperature,omitempty"`
+	TopP            *float64      `json:"top_p,omitempty"`
 }
 
 // OpenAI2OutputItem represents an output item in Responses API response

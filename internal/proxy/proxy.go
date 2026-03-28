@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
@@ -62,6 +64,7 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 	httpClient := &http.Client{
 		Timeout: 300 * time.Second,
 		Transport: &http.Transport{
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
 			MaxIdleConns:           100,
 			MaxIdleConnsPerHost:    10,
 			IdleConnTimeout:        90 * time.Second,
@@ -174,6 +177,22 @@ func (p *Proxy) getEnabledEndpoints() []config.Endpoint {
 	return enabled
 }
 
+func (p *Proxy) getEnabledEndpointsForRequest(meta proxyRequestMeta) []config.Endpoint {
+	endpoints := p.getEnabledEndpoints()
+	if !meta.CursorMode {
+		return endpoints
+	}
+
+	cursorMeta := meta.cursorRequestMeta()
+	filtered := make([]config.Endpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if err := newcursor.ValidateEndpointTransformer(cursorMeta, endpoint.Transformer); err == nil {
+			filtered = append(filtered, endpoint)
+		}
+	}
+	return filtered
+}
+
 // getCurrentEndpoint returns the current endpoint (thread-safe)
 func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 	p.mu.RLock()
@@ -187,6 +206,31 @@ func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 	// Make sure currentIndex is within bounds
 	index := p.currentIndex % len(endpoints)
 	return endpoints[index]
+}
+
+func (p *Proxy) getCurrentEndpointForRequest(meta proxyRequestMeta) config.Endpoint {
+	if !meta.CursorMode {
+		return p.getCurrentEndpoint()
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	endpoints := p.getEnabledEndpoints()
+	if len(endpoints) == 0 {
+		return config.Endpoint{}
+	}
+
+	startIndex := p.currentIndex % len(endpoints)
+	cursorMeta := meta.cursorRequestMeta()
+	for offset := 0; offset < len(endpoints); offset++ {
+		endpoint := endpoints[(startIndex+offset)%len(endpoints)]
+		if err := newcursor.ValidateEndpointTransformer(cursorMeta, endpoint.Transformer); err == nil {
+			return endpoint
+		}
+	}
+
+	return config.Endpoint{}
 }
 
 // markRequestActive marks an endpoint as having active requests
@@ -318,26 +362,15 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	return fmt.Errorf("endpoint '%s' not found or not enabled", targetName)
 }
 
-// ClientFormat represents the API format used by the client
-type ClientFormat string
+// ClientFormat is shared with the dedicated Cursor subsystem so proxy does not
+// keep a parallel format enum.
+type ClientFormat = newcursor.ClientFormat
 
 const (
-	ClientFormatClaude          ClientFormat = "claude"           // Claude Code: /v1/messages
-	ClientFormatOpenAIChat      ClientFormat = "openai_chat"      // Codex (chat): /v1/chat/completions
-	ClientFormatOpenAIResponses ClientFormat = "openai_responses" // Codex (responses): /v1/responses
+	ClientFormatClaude          = newcursor.ClientFormatClaude
+	ClientFormatOpenAIChat      = newcursor.ClientFormatOpenAIChat
+	ClientFormatOpenAIResponses = newcursor.ClientFormatOpenAIResponses
 )
-
-// detectClientFormat identifies the client format based on request path
-func detectClientFormat(path string) ClientFormat {
-	switch {
-	case strings.HasPrefix(path, "/v1/chat/completions") || strings.HasPrefix(path, "/chat/completions"):
-		return ClientFormatOpenAIChat
-	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses"):
-		return ClientFormatOpenAIResponses
-	default:
-		return ClientFormatClaude
-	}
-}
 
 // handleProxy handles the main proxy logic
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -399,10 +432,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	json.Unmarshal(bodyBytes, &streamReq)
 
-	endpoints := p.getEnabledEndpoints()
+	endpoints := p.getEnabledEndpointsForRequest(requestMeta)
 	if len(endpoints) == 0 {
-		logger.Error("No enabled endpoints available")
-		http.Error(w, "No enabled endpoints configured", http.StatusServiceUnavailable)
+		logger.Error("No compatible endpoints available for request path=%s format=%s", requestMeta.OriginalPath, clientFormat)
+		http.Error(w, "No compatible endpoints configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -412,9 +445,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	refreshedCredentialAttempts := make(map[int64]bool)
 
 	for retry := 0; retry < maxRetries; retry++ {
-		endpoint := p.getCurrentEndpoint()
+		endpoint := p.getCurrentEndpointForRequest(requestMeta)
 		if endpoint.Name == "" {
-			http.Error(w, "No enabled endpoints available", http.StatusServiceUnavailable)
+			http.Error(w, "No compatible endpoints configured", http.StatusServiceUnavailable)
 			return
 		}
 
@@ -502,7 +535,32 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		transformerName := trans.Name()
+		requestMeta.ClientFormat = clientFormat
+		if err := newcursor.ValidateTransformer(requestMeta.cursorRequestMeta(), transformerName); err != nil {
+			logger.Error("[%s] %v", endpoint.Name, err)
+			p.stats.RecordError(endpoint.Name)
+			p.markRequestInactive(endpoint.Name)
+			p.recordTrafficLog(requestID, &TrafficLog{
+				Timestamp:       startTime,
+				EndpointName:    endpoint.Name,
+				ClientFormat:    string(clientFormat),
+				TransformerName: transformerName,
+				Method:          r.Method,
+				Path:            requestMeta.OriginalPath,
+				Duration:        time.Since(startTime),
+				Error:           err.Error(),
+				OriginalRequest: bodyBytes,
+			})
+			if endpointAttempts >= 2 {
+				p.rotateEndpoint()
+				endpointAttempts = 0
+			}
+			continue
+		}
 		requestMeta.TransformerName = transformerName
+		if requestMeta.CursorMode && clientFormat == ClientFormatOpenAIResponses {
+			logger.Info("[%s] Cursor responses routing mode=%s transformer=%s", endpoint.Name, newcursor.ResponsesRouteMode(transformerName), transformerName)
+		}
 
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
@@ -546,6 +604,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			cleanedBody = transformedBody
 		}
 		transformedBody = cleanedBody
+		if newcursor.NeedPassthroughModelOverride(requestMeta.cursorRequestMeta(), transformerName) {
+			transformedBody = overrideModelInPayload(transformedBody, endpoint.Model)
+		}
 		if config.NormalizeAuthMode(endpoint.AuthMode) == config.AuthModeCodexTokenPool {
 			transformedBody = overrideModelInPayload(transformedBody, endpoint.Model)
 		}
@@ -565,7 +626,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		proxyReq, err := buildProxyRequest(effectiveRequest, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
+		proxyReq, err := buildProxyRequest(effectiveRequest, endpoint, apiKey, transformedBody, transformerName, selectedCredential, &requestMeta)
 		if err != nil {
 			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
 			p.stats.RecordError(endpoint.Name)

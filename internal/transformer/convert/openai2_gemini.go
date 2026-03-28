@@ -49,73 +49,11 @@ func ensureOpenAI2GeminiToolState(ctx *transformer.StreamContext, outputIndex in
 
 // OpenAI2ReqToGemini converts OpenAI Responses API request to Gemini request
 func OpenAI2ReqToGemini(openai2Req []byte, model string) ([]byte, error) {
-	var req transformer.OpenAI2Request
-	if err := json.Unmarshal(openai2Req, &req); err != nil {
+	openaiReq, err := OpenAI2ReqToOpenAI(openai2Req, model)
+	if err != nil {
 		return nil, err
 	}
-
-	geminiReq := map[string]interface{}{}
-
-	// Convert instructions to system instruction
-	if req.Instructions != "" {
-		geminiReq["systemInstruction"] = map[string]interface{}{
-			"parts": []map[string]interface{}{{"text": req.Instructions}},
-		}
-	}
-
-	// Convert input to contents
-	contents := convertOpenAI2InputToGeminiContents(req.Input)
-	geminiReq["contents"] = contents
-
-	// Generation config
-	genConfig := map[string]interface{}{}
-	if req.MaxOutputTokens > 0 {
-		genConfig["maxOutputTokens"] = req.MaxOutputTokens
-	}
-	if req.Temperature != nil {
-		genConfig["temperature"] = *req.Temperature
-	}
-	if len(genConfig) > 0 {
-		geminiReq["generationConfig"] = genConfig
-	}
-
-	// Convert tools
-	if len(req.Tools) > 0 {
-		var funcDecls []map[string]interface{}
-		for _, tool := range req.Tools {
-			var params map[string]interface{}
-			switch tool.Type {
-			case "function":
-				params = tool.Parameters
-			case "custom":
-				params = map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"input": map[string]interface{}{"type": "string", "description": "The input for this tool"},
-					},
-					"required": []string{"input"},
-				}
-			default:
-				continue
-			}
-			funcDecls = append(funcDecls, map[string]interface{}{
-				"name":        tool.Name,
-				"description": tool.Description,
-				"parameters":  cleanSchemaForGemini(params),
-			})
-		}
-		if len(funcDecls) > 0 {
-			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
-		}
-	}
-
-	return json.Marshal(geminiReq)
+	return OpenAIReqToGemini(openaiReq, model)
 }
 
 // GeminiRespToOpenAI2 converts Gemini response to OpenAI Responses API response
@@ -521,7 +459,7 @@ func convertOpenAI2InputToGeminiContents(input interface{}) []map[string]interfa
 				flushPendingFuncCalls()
 				callID, _ := itemMap["call_id"].(string)
 				name := callIDToName[callID]
-				output, _ := itemMap["output"].(string)
+				output := toolResultToString(itemMap["output"])
 				pendingFuncResponses = append(pendingFuncResponses, map[string]interface{}{
 					"functionResponse": map[string]interface{}{"name": name, "response": map[string]interface{}{"result": output}},
 				})

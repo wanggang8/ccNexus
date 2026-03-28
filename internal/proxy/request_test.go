@@ -102,7 +102,7 @@ func TestBuildProxyRequestForCLIUsesBetaPathAndHeaders(t *testing.T) {
 	}
 	body := []byte(`{"stream":true,"tools":[{"name":"read_file"}]}`)
 
-	req, err := buildProxyRequest(r, endpoint, "test-key", body, "cx_chat_cli", nil)
+	req, err := buildProxyRequest(r, endpoint, "test-key", body, "cx_chat_cli", nil, nil)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
 	}
@@ -118,5 +118,129 @@ func TestBuildProxyRequestForCLIUsesBetaPathAndHeaders(t *testing.T) {
 	}
 	if got := req.Header.Get("x-api-key"); got != "test-key" {
 		t.Fatalf("expected x-api-key=test-key, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForAnthropicUsesAPIKeyHeaderForSKKeys(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "Claude",
+		APIUrl:      "https://api.anthropic.com",
+		APIKey:      "sk-ant-test",
+		Transformer: "claude",
+		Model:       "claude-sonnet-4-20250514",
+		Enabled:     true,
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"messages":[]}`), "cx_chat_claude", nil, nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("anthropic-version"); got == "" {
+		t.Fatal("expected anthropic-version header")
+	}
+	if got := req.Header.Get("x-api-key"); got != "sk-ant-test" {
+		t.Fatalf("expected x-api-key=sk-ant-test, got %q", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("did not expect bearer auth for sk-* key, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForAnthropicUsesBearerHeaderForNonSKKeys(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "Claude",
+		APIUrl:      "https://api.anthropic.com",
+		APIKey:      "session-token",
+		Transformer: "claude",
+		Model:       "claude-sonnet-4-20250514",
+		Enabled:     true,
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"messages":[]}`), "cx_chat_claude", nil, nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("anthropic-version"); got == "" {
+		t.Fatal("expected anthropic-version header")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer session-token" {
+		t.Fatalf("expected bearer auth, got %q", got)
+	}
+	if got := req.Header.Get("x-api-key"); got != "" {
+		t.Fatalf("did not expect x-api-key for non sk-* token, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForGeminiUsesV1ModelsAndGoogleAPIKeyHeader(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions?trace=1", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "Gemini",
+		APIUrl:      "https://generativelanguage.googleapis.com",
+		APIKey:      "AIza-test-key",
+		Transformer: "gemini",
+		Model:       "gemini-2.5-pro",
+		Enabled:     true,
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"stream":true}`), "cx_chat_gemini", nil, nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.URL.String(); got != "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:streamGenerateContent?alt=sse&trace=1" {
+		t.Fatalf("expected Gemini stream URL with v1 models path, got %s", got)
+	}
+	if got := req.Header.Get("x-goog-api-key"); got != endpoint.APIKey {
+		t.Fatalf("expected x-goog-api-key=%s, got %q", endpoint.APIKey, got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("expected Authorization to be empty for Google API key auth, got %q", got)
+	}
+}
+
+func TestBuildProxyRequestForGeminiNonStreamOmitsAltSSE(t *testing.T) {
+	r, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+
+	endpoint := config.Endpoint{
+		Name:        "Gemini",
+		APIUrl:      "https://generativelanguage.googleapis.com",
+		APIKey:      "bearer-token",
+		Transformer: "gemini",
+		Model:       "gemini-2.5-pro",
+		Enabled:     true,
+	}
+
+	req, err := buildProxyRequest(r, endpoint, endpoint.APIKey, []byte(`{"stream":false}`), "cx_resp_gemini", nil, nil)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.URL.String(); got != "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent" {
+		t.Fatalf("expected Gemini non-stream URL without alt=sse, got %s", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer bearer-token" {
+		t.Fatalf("expected bearer auth for non-Google Gemini key, got %q", got)
+	}
+	if got := req.Header.Get("x-goog-api-key"); got != "" {
+		t.Fatalf("expected x-goog-api-key to be empty for bearer auth, got %q", got)
 	}
 }

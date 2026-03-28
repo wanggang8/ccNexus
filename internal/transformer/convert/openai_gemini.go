@@ -19,14 +19,33 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 
 	// Convert messages
 	var contents []map[string]interface{}
-	var systemInstruction string
+	var systemParts []string
 	toolCallIDToName := make(map[string]string) // Map tool_call_id to function name
 
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			if content, ok := msg.Content.(string); ok {
-				systemInstruction += content + "\n"
+		if msg.Role == "system" || msg.Role == "developer" {
+			if content := extractOpenAIRequestText(msg.Content); content != "" {
+				systemParts = append(systemParts, content)
 			}
+			continue
+		}
+
+		if msg.Role == "tool" {
+			funcName := strings.TrimSpace(toolCallIDToName[msg.ToolCallID])
+			if funcName == "" {
+				funcName = msg.ToolCallID
+			}
+			contents = append(contents, map[string]interface{}{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{
+						"functionResponse": map[string]interface{}{
+							"name":     funcName,
+							"response": parseGeminiJSONSafe(msg.Content),
+						},
+					},
+				},
+			})
 			continue
 		}
 
@@ -45,7 +64,7 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 				parts = append(parts, map[string]interface{}{"text": content})
 			}
 		case []interface{}:
-			parts = convertOpenAIContentToGeminiParts(content)
+			parts = append(parts, convertOpenAIContentToGeminiParts(content)...)
 		}
 
 		// Handle tool_calls
@@ -53,35 +72,23 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 			if tc.ID != "" && tc.Function.Name != "" {
 				toolCallIDToName[tc.ID] = tc.Function.Name
 			}
-			var args map[string]interface{}
-			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			args := parseGeminiJSONSafe(tc.Function.Arguments)
 			parts = append(parts, map[string]interface{}{
 				"functionCall": map[string]interface{}{"name": tc.Function.Name, "args": args},
 			})
 		}
 
-		// Handle tool message
-		if msg.Role == "tool" {
-			funcName := toolCallIDToName[msg.ToolCallID]
-			parts = []map[string]interface{}{
-				{
-					"functionResponse": map[string]interface{}{
-						"name":     funcName,
-						"response": map[string]interface{}{"result": msg.Content},
-					},
-				},
-			}
-			role = "user"
+		if len(parts) == 0 {
+			continue
 		}
-
 		contents = append(contents, map[string]interface{}{"role": role, "parts": parts})
 	}
 
-	geminiReq["contents"] = contents
+	geminiReq["contents"] = mergeAdjacentGeminiContents(contents)
 
-	if systemInstruction != "" {
+	if len(systemParts) > 0 {
 		geminiReq["systemInstruction"] = map[string]interface{}{
-			"parts": []map[string]interface{}{{"text": strings.TrimSpace(systemInstruction)}},
+			"parts": []map[string]interface{}{{"text": strings.Join(systemParts, "\n\n")}},
 		}
 	}
 
@@ -95,6 +102,26 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 	if req.Temperature != nil {
 		genConfig["temperature"] = *req.Temperature
 	}
+	if req.TopP != nil {
+		genConfig["topP"] = *req.TopP
+	}
+	switch stop := req.Stop.(type) {
+	case string:
+		if strings.TrimSpace(stop) != "" {
+			genConfig["stopSequences"] = []string{stop}
+		}
+	case []interface{}:
+		sequences := make([]string, 0, len(stop))
+		for _, item := range stop {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				sequences = append(sequences, text)
+			}
+		}
+		if len(sequences) > 0 {
+			genConfig["stopSequences"] = sequences
+		}
+	}
 	if len(genConfig) > 0 {
 		geminiReq["generationConfig"] = genConfig
 	}
@@ -107,18 +134,12 @@ func OpenAIReqToGemini(openaiReq []byte, model string) ([]byte, error) {
 				funcDecls = append(funcDecls, map[string]interface{}{
 					"name":        tool.Function.Name,
 					"description": tool.Function.Description,
-					"parameters":  cleanSchemaForGemini(tool.Function.Parameters),
+					"parameters":  tool.Function.Parameters,
 				})
 			}
 		}
 		if len(funcDecls) > 0 {
 			geminiReq["tools"] = []map[string]interface{}{{"functionDeclarations": funcDecls}}
-			// Add toolConfig to enable function calling
-			geminiReq["toolConfig"] = map[string]interface{}{
-				"functionCallingConfig": map[string]interface{}{
-					"mode": "AUTO",
-				},
-			}
 		}
 	}
 
@@ -156,9 +177,9 @@ func GeminiRespToOpenAI(geminiResp []byte, model string) ([]byte, error) {
 						"arguments": string(args),
 					},
 				})
-				finishReason = "tool_calls"
 			}
 		}
+		finishReason = geminiFinishReason(candidate.FinishReason, len(toolCalls) > 0)
 	}
 
 	message := map[string]interface{}{"role": "assistant", "content": textContent}
@@ -262,10 +283,7 @@ func GeminiStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 
 	// Check for finish
 	if candidate.FinishReason != "" {
-		finishReason := "stop"
-		if hasToolCall || candidate.FinishReason == "TOOL_CODE" {
-			finishReason = "tool_calls"
-		}
+		finishReason := geminiFinishReason(candidate.FinishReason, hasToolCall)
 		usage := currentOpenAIUsage(ctx)
 		chunk, _ := buildOpenAIChunkWithUsage("gemini-chunk", model, "", nil, finishReason, usage)
 		result.Write(chunk)
@@ -334,4 +352,57 @@ func convertOpenAIContentToGeminiParts(content []interface{}) []map[string]inter
 		}
 	}
 	return parts
+}
+
+func parseGeminiJSONSafe(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case nil:
+		return map[string]interface{}{}
+	case string:
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(typed), &decoded); err == nil {
+			return decoded
+		}
+		return typed
+	default:
+		return typed
+	}
+}
+
+func mergeAdjacentGeminiContents(contents []map[string]interface{}) []map[string]interface{} {
+	if len(contents) == 0 {
+		return contents
+	}
+
+	merged := []map[string]interface{}{contents[0]}
+	for _, content := range contents[1:] {
+		if content == nil {
+			continue
+		}
+		last := merged[len(merged)-1]
+		if fmt.Sprint(last["role"]) == fmt.Sprint(content["role"]) {
+			lastParts, _ := last["parts"].([]map[string]interface{})
+			currentParts, _ := content["parts"].([]map[string]interface{})
+			last["parts"] = append(lastParts, currentParts...)
+			continue
+		}
+		merged = append(merged, content)
+	}
+	return merged
+}
+
+func geminiFinishReason(reason string, hasToolCall bool) string {
+	if hasToolCall && reason == "STOP" {
+		return "tool_calls"
+	}
+	switch reason {
+	case "MAX_TOKENS":
+		return "length"
+	case "SAFETY", "RECITATION":
+		return "content_filter"
+	case "TOOL_CODE":
+		return "tool_calls"
+	default:
+		return "stop"
+	}
 }

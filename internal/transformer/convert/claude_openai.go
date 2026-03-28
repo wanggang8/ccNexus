@@ -120,10 +120,13 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	}
 
 	if req.MaxTokens > 0 {
-		openaiReq.MaxCompletionTokens = req.MaxTokens
+		openaiReq.MaxTokens = req.MaxTokens
 	}
 	if req.Temperature > 0 {
 		openaiReq.Temperature = &req.Temperature
+	}
+	if req.TopP != nil {
+		openaiReq.TopP = req.TopP
 	}
 
 	// Convert tools
@@ -192,6 +195,9 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	if req.Temperature != nil {
 		claudeReq["temperature"] = *req.Temperature
 	}
+	if req.TopP != nil {
+		claudeReq["top_p"] = *req.TopP
+	}
 
 	// Convert messages
 	var systemPrompt string
@@ -199,7 +205,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			if content, ok := msg.Content.(string); ok {
+			if content := extractOpenAIRequestText(msg.Content); content != "" {
 				systemPrompt += content + "\n"
 			}
 			continue
@@ -234,8 +240,13 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 		// Handle tool_calls
 		if len(msg.ToolCalls) > 0 {
 			var blocks []map[string]interface{}
-			if text, ok := claudeMsg["content"].(string); ok && text != "" {
-				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+			switch content := claudeMsg["content"].(type) {
+			case string:
+				if content != "" {
+					blocks = append(blocks, map[string]interface{}{"type": "text", "text": content})
+				}
+			case []map[string]interface{}:
+				blocks = append(blocks, content...)
 			}
 			for _, tc := range msg.ToolCalls {
 				var args map[string]interface{}
@@ -254,7 +265,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 		if msg.Role == "tool" {
 			claudeMsg["role"] = "user"
 			claudeMsg["content"] = []map[string]interface{}{
-				{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content},
+				{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": toolResultToString(msg.Content)},
 			}
 		}
 
@@ -264,7 +275,7 @@ func OpenAIReqToClaude(openaiReq []byte, model string) ([]byte, error) {
 	if systemPrompt != "" {
 		claudeReq["system"] = strings.TrimSpace(systemPrompt)
 	}
-	claudeReq["messages"] = messages
+	claudeReq["messages"] = mergeAdjacentClaudeMessages(messages)
 
 	// Convert tools
 	if len(req.Tools) > 0 {

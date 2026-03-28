@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -356,7 +357,12 @@ func (a *App) OpenURL(url string) {
 // FetchImageAsBase64 fetches an image from URL and returns it as base64 data URL
 // This is used to bypass CORS restrictions for external images
 func (a *App) FetchImageAsBase64(imageUrl string) string {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	req, err := http.NewRequest("GET", imageUrl, nil)
 	if err != nil {
@@ -399,7 +405,12 @@ func (a *App) FetchImageAsBase64(imageUrl string) string {
 
 // FetchBroadcast fetches broadcast JSON from URL
 func (a *App) FetchBroadcast(url string) string {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

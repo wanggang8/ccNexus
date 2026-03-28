@@ -232,9 +232,12 @@ func OpenAI2ReqToClaude(openai2Req []byte, model string) ([]byte, error) {
 	if req.Temperature != nil {
 		claudeReq["temperature"] = *req.Temperature
 	}
+	if req.TopP != nil {
+		claudeReq["top_p"] = *req.TopP
+	}
 
 	// Convert input to messages
-	messages := convertOpenAI2InputToClaude(req.Input)
+	messages := mergeAdjacentClaudeMessages(convertOpenAI2InputToClaude(req.Input))
 	claudeReq["messages"] = messages
 
 	// Convert tools
@@ -938,7 +941,7 @@ func convertOpenAI2InputToClaude(input interface{}) []map[string]interface{} {
 				flushPendingToolUses()
 				// Convert to Claude tool_result
 				callID, _ := itemMap["call_id"].(string)
-				output, _ := itemMap["output"].(string)
+				output := toolResultToString(itemMap["output"])
 				pendingToolResults = append(pendingToolResults, map[string]interface{}{
 					"type": "tool_result", "tool_use_id": callID, "content": output,
 				})

@@ -44,6 +44,7 @@ ccNexus/
 ├── app.go                  # 核心应用逻辑
 ├── internal/
 │   ├── proxy/              # HTTP 代理核心
+│   ├── cursor/             # /cursor/* 数据面与 Cursor 协议语义
 │   ├── transformer/        # API 格式转换器
 │   ├── storage/            # SQLite 数据存储
 │   ├── config/             # 配置管理

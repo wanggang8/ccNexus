@@ -2,13 +2,16 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
@@ -19,6 +22,58 @@ func assertContainsAll(t *testing.T, text string, expected []string, message str
 			t.Fatalf("%s: missing %s, got %s", message, token, text)
 		}
 	}
+}
+
+func compactCursorSchemaSignatureForTest(schema map[string]interface{}) string {
+	if schema == nil {
+		return "{}"
+	}
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok || len(props) == 0 {
+		return "{}"
+	}
+	requiredSet := map[string]bool{}
+	if required, ok := schema["required"].([]interface{}); ok {
+		for _, value := range required {
+			if name, ok := value.(string); ok {
+				requiredSet[name] = true
+			}
+		}
+	}
+	parts := make([]string, 0, len(props))
+	for name, raw := range props {
+		prop, _ := raw.(map[string]interface{})
+		typeStr := "any"
+		if propType, ok := prop["type"].(string); ok && propType != "" {
+			typeStr = propType
+		}
+		if enumValues, ok := prop["enum"].([]interface{}); ok && len(enumValues) > 0 {
+			values := make([]string, 0, len(enumValues))
+			for _, v := range enumValues {
+				values = append(values, fmt.Sprint(v))
+			}
+			typeStr = strings.Join(values, "|")
+		}
+		if typeStr == "array" {
+			if items, ok := prop["items"].(map[string]interface{}); ok {
+				if itemType, ok := items["type"].(string); ok && itemType != "" {
+					typeStr = itemType + "[]"
+				}
+			}
+		}
+		if typeStr == "object" {
+			if subProps, ok := prop["properties"].(map[string]interface{}); ok && len(subProps) > 0 {
+				typeStr = compactCursorSchemaSignatureForTest(prop)
+			}
+		}
+		marker := "?"
+		if requiredSet[name] {
+			marker = "!"
+		}
+		parts = append(parts, fmt.Sprintf("%s%s: %s", name, marker, typeStr))
+	}
+	sort.Strings(parts)
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 func TestPrepareProxyRequestStripsCursorPrefixAndNormalizesChatPayload(t *testing.T) {
@@ -94,14 +149,14 @@ func TestPrepareProxyRequestConvertsChatPayloadForCursorResponses(t *testing.T) 
 }
 
 func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForResponses(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
 	cacheMessages := []map[string]interface{}{
 		{"role": "user", "content": "hi"},
 		{"role": "assistant", "content": "hello"},
 		{"role": "assistant", "content": ""},
 		{"role": "user", "content": "continue"},
 	}
-	globalCursorThinkingCache.StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
+	newcursor.DefaultThinkingCache().StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
 
 	body := []byte(`{
 		"model":"gpt-5",
@@ -113,9 +168,11 @@ func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForResponses(t *
 		]
 	}`)
 	meta := proxyRequestMeta{
-		CursorMode:    true,
-		ClientFormat:  ClientFormatOpenAIResponses,
-		ClientModel:   "gpt-5",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "gpt-5",
+		},
 		CacheMessages: cacheMessages,
 	}
 
@@ -143,19 +200,21 @@ func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForResponses(t *
 }
 
 func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForClaudeResponses(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
 	cacheMessages := []map[string]interface{}{
 		{"role": "user", "content": "hi"},
 		{"role": "assistant", "content": "hello"},
 		{"role": "assistant", "content": ""},
 		{"role": "user", "content": "continue"},
 	}
-	globalCursorThinkingCache.StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
+	newcursor.DefaultThinkingCache().StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
 
 	meta := proxyRequestMeta{
-		CursorMode:    true,
-		ClientFormat:  ClientFormatOpenAIResponses,
-		ClientModel:   "claude-sonnet",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "claude-sonnet",
+		},
 		CacheMessages: cacheMessages,
 	}
 
@@ -200,20 +259,168 @@ func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForClaudeRespons
 	}
 }
 
+func TestApplyCursorTransformedRequestCompatAddsCacheControlForClaudeResponses(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "claude-sonnet",
+		},
+	}
+
+	transformedBody := []byte(`{
+		"model":"claude-sonnet",
+		"system":"follow the rules",
+		"tools":[{"name":"Read","input_schema":{"type":"object"}}],
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":[{"type":"thinking","thinking":"reason"},{"type":"text","text":"hello"}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cx_resp_claude")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid claude json: %v", err)
+	}
+
+	system := payload["system"].([]interface{})
+	if _, ok := system[0].(map[string]interface{})["cache_control"]; !ok {
+		t.Fatalf("expected system cache_control anchor, got %#v", system[0])
+	}
+	tools := payload["tools"].([]interface{})
+	if _, ok := tools[0].(map[string]interface{})["cache_control"]; !ok {
+		t.Fatalf("expected tool cache_control anchor, got %#v", tools[0])
+	}
+	messages := payload["messages"].([]interface{})
+	lastContent := messages[2].(map[string]interface{})["content"].([]interface{})
+	if _, ok := lastContent[0].(map[string]interface{})["cache_control"]; !ok {
+		t.Fatalf("expected last cacheable block to be anchored, got %#v", lastContent[0])
+	}
+}
+
+func TestApplyCursorTransformedRequestCompatAddsCacheControlForClaudeChat(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "claude-sonnet",
+		},
+	}
+
+	transformedBody := []byte(`{
+		"model":"claude-sonnet",
+		"tools":[{"name":"Read","input_schema":{"type":"object"}}],
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":"hello"}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cx_chat_claude")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid claude json: %v", err)
+	}
+
+	messages := payload["messages"].([]interface{})
+	userContent := messages[0].(map[string]interface{})["content"].([]interface{})
+	if userContent[0].(map[string]interface{})["type"] != "text" {
+		t.Fatalf("expected chat content normalized to text block, got %#v", userContent[0])
+	}
+	if _, ok := userContent[0].(map[string]interface{})["cache_control"]; ok {
+		t.Fatalf("did not expect first block to be anchored, got %#v", userContent[0])
+	}
+	assistantContent := messages[1].(map[string]interface{})["content"].([]interface{})
+	if _, ok := assistantContent[0].(map[string]interface{})["cache_control"]; !ok {
+		t.Fatalf("expected last message block cache_control anchor, got %#v", assistantContent[0])
+	}
+	if payload["max_tokens"] != float64(8192) {
+		t.Fatalf("expected cursor Claude chat max_tokens floor to 8192, got %#v", payload["max_tokens"])
+	}
+}
+
+func TestApplyCursorTransformedRequestCompatDoesNotAddCacheControlForClaudeMessagesPassthrough(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatClaude,
+			ClientModel:  "claude-sonnet",
+		},
+	}
+
+	transformedBody := []byte(`{
+		"model":"claude-sonnet",
+		"messages":[
+			{"role":"user","content":"hi"}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cc_claude")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+	if string(updated) != string(transformedBody) {
+		t.Fatalf("expected Claude passthrough to remain unchanged, got %s", updated)
+	}
+}
+
+func TestApplyCursorTransformedRequestCompatDoesNotApplyClaudeMaxTokensFloorForMessagesPassthrough(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatClaude,
+			ClientModel:  "claude-sonnet",
+		},
+	}
+
+	transformedBody := []byte(`{
+		"model":"claude-sonnet",
+		"max_tokens":256,
+		"messages":[
+			{"role":"user","content":"hi"}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cc_claude")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
+	}
+	if payload["max_tokens"] != float64(256) {
+		t.Fatalf("expected messages passthrough max_tokens to remain unchanged, got %#v", payload["max_tokens"])
+	}
+}
+
 func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForGeminiResponses(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
 	cacheMessages := []map[string]interface{}{
 		{"role": "user", "content": "hi"},
 		{"role": "assistant", "content": "hello"},
 		{"role": "assistant", "content": ""},
 		{"role": "user", "content": "continue"},
 	}
-	globalCursorThinkingCache.StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
+	newcursor.DefaultThinkingCache().StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
 
 	meta := proxyRequestMeta{
-		CursorMode:    true,
-		ClientFormat:  ClientFormatOpenAIResponses,
-		ClientModel:   "gemini-2.5-pro",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "gemini-2.5-pro",
+		},
 		CacheMessages: cacheMessages,
 	}
 
@@ -257,6 +464,132 @@ func TestApplyCursorTransformedRequestCompatInjectsThinkingCacheForGeminiRespons
 	}
 }
 
+func TestApplyCursorTransformedRequestCompatWrapsGeminiPlainStringFunctionPayloads(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "gemini-2.5-pro",
+		},
+	}
+
+	transformedBody := []byte(`{
+		"contents":[
+			{
+				"role":"model",
+				"parts":[
+					{"functionCall":{"name":"tool_a","args":"plain args"}},
+					{"functionResponse":{"name":"tool_a","response":"plain output"}}
+				]
+			}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cx_chat_gemini")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid gemini json: %v", err)
+	}
+
+	contents := payload["contents"].([]interface{})
+	parts := contents[0].(map[string]interface{})["parts"].([]interface{})
+	functionCall := parts[0].(map[string]interface{})["functionCall"].(map[string]interface{})
+	callArgs := functionCall["args"].(map[string]interface{})
+	if callArgs["result"] != "plain args" {
+		t.Fatalf("expected plain gemini args to be wrapped like api2cursor, got %#v", functionCall["args"])
+	}
+
+	functionResponse := parts[1].(map[string]interface{})["functionResponse"].(map[string]interface{})
+	response := functionResponse["response"].(map[string]interface{})
+	if response["result"] != "plain output" {
+		t.Fatalf("expected plain gemini function response to be wrapped like api2cursor, got %#v", functionResponse["response"])
+	}
+}
+
+func TestApplyCursorTransformedRequestCompatNormalizesOpenAIChatAfterResponsesConversion(t *testing.T) {
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "gpt-5",
+		},
+		CacheMessages: nil,
+	}
+
+	transformedBody := []byte(`{
+		"model":"gpt-5",
+		"messages":[
+			{
+				"role":"assistant",
+				"content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{"file_path":"README.md"}}]
+			},
+			{
+				"role":"user",
+				"content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"ok"}]}]
+			}
+		],
+		"tools":[{"name":"read_file","description":"Read file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}],
+		"tool_choice":{"type":"any"}
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cx_resp_openai")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
+	}
+	if payload["tool_choice"] != "required" {
+		t.Fatalf("expected normalized tool_choice required, got %#v", payload["tool_choice"])
+	}
+	tools, ok := payload["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected one normalized tool, got %#v", payload["tools"])
+	}
+	tool := tools[0].(map[string]interface{})
+	if tool["type"] != "function" {
+		t.Fatalf("expected normalized function tool, got %#v", tool)
+	}
+	messages := payload["messages"].([]interface{})
+	assistant := messages[0].(map[string]interface{})
+	if _, ok := assistant["tool_calls"]; !ok {
+		t.Fatalf("expected tool_use blocks converted to tool_calls, got %#v", assistant)
+	}
+}
+
+func TestFixCursorMessagesResponseBodyInjectsThinkingBlock(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1",
+		"type":"message",
+		"content":[{"type":"text","text":"answer"}],
+		"reasoning_content":"think first"
+	}`)
+
+	updated, err := newcursor.FixMessagesResponseBody(body)
+	if err != nil {
+		t.Fatalf("FixMessagesResponseBody failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
+	}
+	if _, ok := payload["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content field consumed into thinking block, got %#v", payload["reasoning_content"])
+	}
+	content := payload["content"].([]interface{})
+	first := content[0].(map[string]interface{})
+	if first["type"] != "thinking" || first["thinking"] != "think first" {
+		t.Fatalf("expected thinking block prepended, got %#v", first)
+	}
+}
+
 func TestFixCursorChatResponseBodyRepairsLegacyFields(t *testing.T) {
 	body := []byte(`{
 		"id":"chatcmpl_1",
@@ -276,9 +609,11 @@ func TestFixCursorChatResponseBodyRepairsLegacyFields(t *testing.T) {
 	}`)
 
 	fixed, err := fixCursorResponseBody(body, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIChat,
-		ClientModel:  "cursor-model",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
 		CacheMessages: []map[string]interface{}{
 			{"role": "user", "content": "hello"},
 		},
@@ -313,7 +648,7 @@ func TestFixCursorChatResponseBodyRepairsLegacyFields(t *testing.T) {
 }
 
 func TestCursorThinkingCacheStoresAndInjectsForChatRequests(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
 
 	sourceMessages := []map[string]interface{}{
 		{"role": "user", "content": "hi"},
@@ -327,9 +662,11 @@ func TestCursorThinkingCacheStoresAndInjectsForChatRequests(t *testing.T) {
 	}`)
 
 	if _, err := fixCursorResponseBody(assistantResponse, proxyRequestMeta{
-		CursorMode:    true,
-		ClientFormat:  ClientFormatOpenAIChat,
-		ClientModel:   "cursor-model",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
 		CacheMessages: sourceMessages,
 	}); err != nil {
 		t.Fatalf("fixCursorResponseBody failed: %v", err)
@@ -353,10 +690,18 @@ func TestCursorThinkingCacheStoresAndInjectsForChatRequests(t *testing.T) {
 	if !meta.CursorMode {
 		t.Fatalf("expected cursor mode")
 	}
+	if meta.CacheMessages[2]["reasoning_content"] != nil {
+		t.Fatalf("expected prepareProxyRequest to defer cache injection until backend is known, got %#v", meta.CacheMessages[2]["reasoning_content"])
+	}
+
+	updated, err := applyCursorTransformedRequestCompat(normalizedBody, &meta, "cx_chat_openai")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
 
 	var payload map[string]interface{}
-	if err := json.Unmarshal(normalizedBody, &payload); err != nil {
-		t.Fatalf("normalized body is not valid json: %v", err)
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
 	}
 	messages := payload["messages"].([]interface{})
 	assistant := messages[2].(map[string]interface{})
@@ -365,9 +710,58 @@ func TestCursorThinkingCacheStoresAndInjectsForChatRequests(t *testing.T) {
 	}
 }
 
+func TestApplyCursorTransformedRequestCompatSkipsPreparedCacheForChatResponsesBackend(t *testing.T) {
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
+	cacheMessages := []map[string]interface{}{
+		{"role": "user", "content": "hi"},
+		{"role": "assistant", "content": "hello"},
+		{"role": "assistant", "content": ""},
+		{"role": "user", "content": "continue"},
+	}
+	newcursor.DefaultThinkingCache().StoreFromResponse(cacheMessages, map[string]interface{}{"reasoning_content": "cached think"})
+
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "gpt-5",
+		},
+		CacheMessages: cacheMessages,
+	}
+	transformedBody := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`)
+
+	updated, err := applyCursorTransformedRequestCompat(transformedBody, &meta, "cx_chat_openai2")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
+	if meta.CacheMessages[2]["reasoning_content"] != nil {
+		t.Fatalf("expected cache messages to remain uninjected for responses backend, got %#v", meta.CacheMessages[2]["reasoning_content"])
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
+	}
+	input := payload["input"].([]interface{})
+	assistant := input[2].(map[string]interface{})
+	content := assistant["content"].([]interface{})
+	part := content[0].(map[string]interface{})
+	if _, ok := part["reasoning_content"]; ok {
+		t.Fatalf("did not expect prepared reasoning cache injection for chat->responses backend, got %#v", part)
+	}
+}
+
 func TestPrepareProxyRequestDoesNotInjectThinkingCacheWithoutCursorPrefix(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
-	globalCursorThinkingCache.store["deadbeef:deadbeef"] = cursorThinkingCacheEntry{
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
+	newcursor.DefaultThinkingCache().Store["deadbeef:deadbeef"] = newcursor.ThinkingCacheEntry{
 		Reasoning: "should not inject",
 		StoredAt:  time.Now(),
 	}
@@ -413,9 +807,11 @@ func TestFixCursorStreamBundleRewritesResponsesEvents(t *testing.T) {
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorStreamBundle failed: %v", err)
@@ -439,8 +835,39 @@ func TestFixCursorStreamBundleRewritesResponsesEvents(t *testing.T) {
 	}
 }
 
+func TestFixCursorStreamBundleBridgeResponsesUsesUnwrappedPayload(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress","model":"upstream-model"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if strings.Contains(fixedStr, `"type":"response.created"`) {
+		t.Fatalf("expected bridge mode to unwrap created payload, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, `"response":{"id":"resp_1"`) {
+		t.Fatalf("expected bridge mode to remove response wrapper, got %s", fixedStr)
+	}
+	if !strings.Contains(fixedStr, `"object":"response"`) {
+		t.Fatalf("expected unwrapped response payload content, got %s", fixedStr)
+	}
+}
+
 func TestFixCursorResponseBodyStoresThinkingCacheForResponses(t *testing.T) {
-	globalCursorThinkingCache = &cursorThinkingCache{store: make(map[string]cursorThinkingCacheEntry)}
+	newcursor.SetDefaultThinkingCacheForTest(newcursor.NewThinkingCache())
 
 	cacheMessages := []map[string]interface{}{
 		{"role": "user", "content": "hi"},
@@ -458,9 +885,11 @@ func TestFixCursorResponseBodyStoresThinkingCacheForResponses(t *testing.T) {
 	}`)
 
 	if _, err := fixCursorResponseBody(body, proxyRequestMeta{
-		CursorMode:      true,
-		ClientFormat:    ClientFormatOpenAIResponses,
-		ClientModel:     "cursor-model",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
 		TransformerName: "cx_resp_openai",
 		CacheMessages:   cacheMessages,
 	}); err != nil {
@@ -477,19 +906,23 @@ func TestFixCursorResponseBodyStoresThinkingCacheForResponses(t *testing.T) {
 		]
 	}`)
 	req := httptest.NewRequest("POST", "http://localhost/cursor/v1/chat/completions", strings.NewReader(""))
-	_, normalizedBody, _, err := prepareProxyRequest(req, reqBody)
+	_, normalizedBody, meta, err := prepareProxyRequest(req, reqBody)
 	if err != nil {
 		t.Fatalf("prepareProxyRequest failed: %v", err)
 	}
+	updated, err := applyCursorTransformedRequestCompat(normalizedBody, &meta, "cx_chat_openai")
+	if err != nil {
+		t.Fatalf("applyCursorTransformedRequestCompat failed: %v", err)
+	}
 
 	var payload map[string]interface{}
-	if err := json.Unmarshal(normalizedBody, &payload); err != nil {
-		t.Fatalf("normalized body is not valid json: %v", err)
+	if err := json.Unmarshal(updated, &payload); err != nil {
+		t.Fatalf("updated body is not valid json: %v", err)
 	}
 	messages := payload["messages"].([]interface{})
 	assistant := messages[2].(map[string]interface{})
 	if assistant["reasoning_content"] != "stored think" {
-		t.Fatalf("expected responses reasoning to be stored for later injection, got %#v", assistant["reasoning_content"])
+		t.Fatalf("expected responses route to store reasoning for later injection, got %#v", assistant["reasoning_content"])
 	}
 }
 
@@ -502,9 +935,11 @@ func TestFixCursorStreamBundlePreservesNativeResponsesEventShape(t *testing.T) {
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:      true,
-		ClientFormat:    ClientFormatOpenAIResponses,
-		ClientModel:     "cursor-model",
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
 		TransformerName: "cx_resp_openai2",
 	})
 	if err != nil {
@@ -547,11 +982,13 @@ func TestFixCursorStreamBundleReconstructsCompletedResponsesOutput(t *testing.T)
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -600,11 +1037,13 @@ func TestFixCursorStreamBundleEnrichesTransformedResponsesEventShape(t *testing.
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -633,7 +1072,7 @@ func TestFixCursorStreamBundleEnrichesTransformedResponsesEventShape(t *testing.
 	}
 }
 
-func TestFixCursorStreamBundlePreservesTransformedResponsesContextFields(t *testing.T) {
+func TestFixCursorStreamBundleDropsTransformedResponsesContextFields(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"type":"response.output_text.delta","output_index":1,"content_index":2,"item_id":"msg_1","delta":"hello"}`,
 		"",
@@ -644,11 +1083,13 @@ func TestFixCursorStreamBundlePreservesTransformedResponsesContextFields(t *test
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -658,28 +1099,67 @@ func TestFixCursorStreamBundlePreservesTransformedResponsesContextFields(t *test
 
 	fixedStr := string(fixed)
 	assertContainsAll(t, fixedStr, []string{
-		`"type":"output_text"`, `"output_index":1`, `"content_index":2`, `"item_id":"msg_1"`,
-	}, "expected output_text context fields to be preserved")
+		`"type":"output_text"`, `"delta":"hello"`,
+	}, "expected output_text payload to remain")
 	assertContainsAll(t, fixedStr, []string{
-		`"type":"summary_text"`, `"output_index":0`, `"summary_index":1`, `"item_id":"rs_1"`,
-	}, "expected reasoning summary context fields to be preserved")
+		`"type":"summary_text"`, `"delta":"think"`,
+	}, "expected reasoning summary payload to remain")
 	assertContainsAll(t, fixedStr, []string{
-		`"type":"function_call"`, `"output_index":2`, `"item_id":"fc_1"`, `"call_id":"call_1"`,
-	}, "expected function call context fields to be preserved")
+		`"type":"function_call"`, `"delta":"{\"path\":\"README.md\"}"`,
+	}, "expected function call payload to remain")
+	for _, token := range []string{`"output_index":`, `"content_index":`, `"summary_index":`, `"item_id":`, `"call_id":`} {
+		if strings.Contains(fixedStr, token) {
+			t.Fatalf("did not expect transformed responses bridge context field %s, got %s", token, fixedStr)
+		}
+	}
 }
 
-func TestFixCursorStreamBundlePreservesOutputTextDoneContextFields(t *testing.T) {
+func TestFixCursorStreamBundleDropsTransformedResponsesContentPartDone(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.content_part.added","part":{"type":"output_text","text":"hello"}}`,
+		"",
+		`data: {"type":"response.content_part.done","output_index":1,"content_index":0,"part":{"type":"output_text"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if !strings.Contains(fixedStr, `event: response.content_part.added`) {
+		t.Fatalf("expected content_part.added to remain, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, `event: response.content_part.done`) {
+		t.Fatalf("did not expect transformed responses bridge to emit content_part.done, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundleDropsOutputTextDoneContextFields(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"type":"response.output_text.done","output_index":3,"content_index":4,"item_id":"msg_done_1","text":"done text"}`,
 		"",
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -694,23 +1174,27 @@ func TestFixCursorStreamBundlePreservesOutputTextDoneContextFields(t *testing.T)
 	if !strings.Contains(fixedStr, `"type":"output_text"`) || !strings.Contains(fixedStr, `"text":"done text"`) {
 		t.Fatalf("expected output_text.done payload shape, got %s", fixedStr)
 	}
-	assertContainsAll(t, fixedStr, []string{
-		`"output_index":3`, `"content_index":4`, `"item_id":"msg_done_1"`,
-	}, "expected output_text.done context fields to be preserved")
+	for _, token := range []string{`"output_index":`, `"content_index":`, `"item_id":`} {
+		if strings.Contains(fixedStr, token) {
+			t.Fatalf("did not expect output_text.done context field %s, got %s", token, fixedStr)
+		}
+	}
 }
 
-func TestFixCursorStreamBundlePreservesReasoningSummaryDoneContextFields(t *testing.T) {
+func TestFixCursorStreamBundleDropsReasoningSummaryDoneContextFields(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":2,"item_id":"rs_done_1","text":"summary done"}`,
 		"",
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -725,12 +1209,14 @@ func TestFixCursorStreamBundlePreservesReasoningSummaryDoneContextFields(t *test
 	if !strings.Contains(fixedStr, `"type":"summary_text"`) || !strings.Contains(fixedStr, `"text":"summary done"`) {
 		t.Fatalf("expected summary_text.done payload shape, got %s", fixedStr)
 	}
-	assertContainsAll(t, fixedStr, []string{
-		`"output_index":0`, `"summary_index":2`, `"item_id":"rs_done_1"`,
-	}, "expected reasoning_summary_text.done context fields to be preserved")
+	for _, token := range []string{`"output_index":`, `"summary_index":`, `"item_id":`} {
+		if strings.Contains(fixedStr, token) {
+			t.Fatalf("did not expect reasoning_summary_text.done context field %s, got %s", token, fixedStr)
+		}
+	}
 }
 
-func TestFixCursorStreamBundlePreservesFunctionCallArgumentsDoneContextFields(t *testing.T) {
+func TestFixCursorStreamBundleDropsFunctionCallArgumentsDoneContextFields(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_5","call_id":"call_5","name":"read_file"}}`,
 		"",
@@ -741,11 +1227,13 @@ func TestFixCursorStreamBundlePreservesFunctionCallArgumentsDoneContextFields(t 
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -760,9 +1248,19 @@ func TestFixCursorStreamBundlePreservesFunctionCallArgumentsDoneContextFields(t 
 	if !strings.Contains(fixedStr, `"type":"function_call"`) || !strings.Contains(fixedStr, `"arguments":"{\"path\":\"README.md\"}"`) {
 		t.Fatalf("expected function_call_arguments.done payload shape, got %s", fixedStr)
 	}
-	assertContainsAll(t, fixedStr, []string{
-		`"output_index":5`, `"item_id":"fc_5"`, `"call_id":"call_5"`,
-	}, "expected function_call_arguments.done context fields to be preserved")
+	start := strings.Index(fixedStr, "event: response.function_call_arguments.done")
+	if start == -1 {
+		t.Fatalf("expected function_call_arguments.done chunk, got %s", fixedStr)
+	}
+	doneChunk := fixedStr[start:]
+	if end := strings.Index(doneChunk, "\n\n"); end != -1 {
+		doneChunk = doneChunk[:end]
+	}
+	for _, token := range []string{`"output_index":`, `"item_id":`, `"call_id":`} {
+		if strings.Contains(doneChunk, token) {
+			t.Fatalf("did not expect function_call_arguments.done context field %s, got %s", token, doneChunk)
+		}
+	}
 }
 
 func TestFixCursorStreamBundleHandlesInterleavedResponseToolCalls(t *testing.T) {
@@ -790,11 +1288,13 @@ func TestFixCursorStreamBundleHandlesInterleavedResponseToolCalls(t *testing.T) 
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -824,11 +1324,13 @@ func TestFixCursorStreamBundleKeepsCompletedBeforeDone(t *testing.T) {
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -839,8 +1341,11 @@ func TestFixCursorStreamBundleKeepsCompletedBeforeDone(t *testing.T) {
 	fixedStr := string(fixed)
 	completedIndex := strings.Index(fixedStr, "event: response.completed")
 	doneIndex := strings.Index(fixedStr, "data: [DONE]")
-	if completedIndex == -1 || doneIndex == -1 || completedIndex > doneIndex {
-		t.Fatalf("expected response.completed before [DONE], got %s", fixedStr)
+	if completedIndex == -1 {
+		t.Fatalf("expected response.completed event, got %s", fixedStr)
+	}
+	if doneIndex != -1 {
+		t.Fatalf("expected responses stream to omit [DONE], got %s", fixedStr)
 	}
 }
 
@@ -861,11 +1366,13 @@ func TestFixCursorStreamBundleRoutesArgumentsDoneByOutputIndex(t *testing.T) {
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIResponses,
-		ClientModel:  "cursor-model",
-		CursorState: &cursorCompatState{
-			ResponsesTools:  make(map[int]*cursorResponsesToolState),
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
 			ResponsesOutput: make([]map[string]interface{}, 0),
 		},
 	})
@@ -891,10 +1398,12 @@ func TestFixCursorStreamBundlePreservesErrorAfterPartialOutput(t *testing.T) {
 	}, "\n"))
 
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIChat,
-		ClientModel:  "cursor-model",
-		CursorState:  &cursorCompatState{},
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorStreamBundle failed: %v", err)
@@ -921,8 +1430,10 @@ func TestFixCursorResponseBodyInjectsMessagesThinkingBlock(t *testing.T) {
 	}`)
 
 	fixed, err := fixCursorResponseBody(body, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatClaude,
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatClaude,
+		},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorResponseBody failed: %v", err)
@@ -942,10 +1453,12 @@ func TestFixCursorResponseBodyInjectsMessagesThinkingBlock(t *testing.T) {
 func TestFixCursorStreamBundleSplitsThinkTagsForChat(t *testing.T) {
 	bundle := []byte("data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<think>reason</think>Hello\"},\"finish_reason\":null}]}\n\n")
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIChat,
-		ClientModel:  "cursor-model",
-		CursorState:  &cursorCompatState{},
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorStreamBundle failed: %v", err)
@@ -969,10 +1482,12 @@ func TestFixCursorStreamBundleStopsThinkingBeforeToolCalls(t *testing.T) {
 		"",
 	}, "\n"))
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatOpenAIChat,
-		ClientModel:  "cursor-model",
-		CursorState:  &cursorCompatState{},
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorStreamBundle failed: %v", err)
@@ -984,11 +1499,65 @@ func TestFixCursorStreamBundleStopsThinkingBeforeToolCalls(t *testing.T) {
 	if !strings.Contains(fixedStr, `"tool_calls":[`) {
 		t.Fatalf("expected tool_calls chunk preserved, got %s", fixedStr)
 	}
+	if !strings.Contains(fixedStr, `"\n\u003c/think\u003e\n\n"`) && !strings.Contains(fixedStr, `"\n</think>\n\n"`) {
+		t.Fatalf("expected explicit </think> closing chunk before tool_calls, got %s", fixedStr)
+	}
 	if !strings.Contains(fixedStr, `"content":"Hello"`) {
 		t.Fatalf("expected post-tool text to stay normal content, got %s", fixedStr)
 	}
 	if strings.Contains(fixedStr, `"reasoning_content":"Hello"`) {
 		t.Fatalf("did not expect post-tool text to remain in reasoning mode, got %s", fixedStr)
+	}
+}
+
+func TestFixCursorStreamBundleEmitsFinalizeDoneEventsBeforeCompleted(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
+		"",
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"think"}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","status":"in_progress","call_id":"call_1","name":"read_file","arguments":""}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"README.md\"}"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIResponses,
+			ClientModel:  "cursor-model",
+		},
+		CursorState: &newcursor.StreamFinalizeState{
+			ResponsesTools:  make(map[int]*newcursor.ResponseToolState),
+			ResponsesOutput: make([]map[string]interface{}, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixCursorStreamBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	doneReasoningIndex := strings.Index(fixedStr, "event: response.reasoning_summary_text.done")
+	doneTextIndex := strings.Index(fixedStr, "event: response.output_text.done")
+	doneArgsIndex := strings.Index(fixedStr, "event: response.function_call_arguments.done")
+	completedIndex := strings.Index(fixedStr, "event: response.completed")
+	if doneReasoningIndex == -1 || doneTextIndex == -1 || doneArgsIndex == -1 {
+		t.Fatalf("expected finalize done events for reasoning/text/function args, got %s", fixedStr)
+	}
+	if completedIndex == -1 {
+		t.Fatalf("expected response.completed event, got %s", fixedStr)
+	}
+	if !(doneReasoningIndex < completedIndex && doneTextIndex < completedIndex && doneArgsIndex < completedIndex) {
+		t.Fatalf("expected done events before response.completed, got %s", fixedStr)
 	}
 }
 
@@ -999,9 +1568,11 @@ func TestFixCursorStreamBundleInjectsMessagesThinkingEvents(t *testing.T) {
 		"",
 	}, "\n"))
 	fixed, err := fixCursorStreamBundle(bundle, proxyRequestMeta{
-		CursorMode:   true,
-		ClientFormat: ClientFormatClaude,
-		CursorState:  &cursorCompatState{},
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatClaude,
+		},
+		CursorState: &newcursor.StreamFinalizeState{},
 	})
 	if err != nil {
 		t.Fatalf("fixCursorStreamBundle failed: %v", err)
@@ -1038,7 +1609,7 @@ func TestFixCursorToolCallsNormalizesArguments(t *testing.T) {
 		},
 	}
 	choice := map[string]interface{}{}
-	fixCursorToolCalls(message, choice)
+	newcursor.FixToolCallsCompat(message, choice)
 
 	toolCall := message["tool_calls"].([]interface{})[0].(map[string]interface{})
 	functionData := toolCall["function"].(map[string]interface{})
@@ -1058,7 +1629,7 @@ func TestFixCursorToolCallsNormalizesArguments(t *testing.T) {
 }
 
 func TestConvertCursorAssistantToolUseMessageNormalizesFilePath(t *testing.T) {
-	message := convertCursorAssistantToolUseMessage([]interface{}{
+	message := newcursor.ConvertAssistantToolUseMessageCompat([]interface{}{
 		map[string]interface{}{
 			"type": "tool_use",
 			"id":   "toolu_1",
@@ -1086,23 +1657,23 @@ func TestConvertCursorAssistantToolUseMessageNormalizesFilePath(t *testing.T) {
 
 func TestCompactCursorToolSchemaRemovesDescriptions(t *testing.T) {
 	schema := map[string]interface{}{
-		"type": "object",
+		"type":        "object",
 		"description": "root",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
-				"type": "string",
+				"type":        "string",
 				"description": "file path",
 			},
 			"mode": map[string]interface{}{
-				"type": "string",
-				"enum": []interface{}{"r", "w"},
+				"type":        "string",
+				"enum":        []interface{}{"r", "w"},
 				"description": "mode",
 			},
 		},
 		"required": []interface{}{"path"},
 	}
 
-	compact := compactCursorSchemaSignature(schema)
+	compact := compactCursorSchemaSignatureForTest(schema)
 	if compact != "{mode?: r|w, path!: string}" {
 		t.Fatalf("expected compact signature, got %s", compact)
 	}

@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -73,11 +74,9 @@ func (d *Downloader) Download(url, destPath string) error {
 	client := &http.Client{
 		Timeout: 10 * time.Minute,
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 15 * time.Second,
 			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}

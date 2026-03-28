@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 	"github.com/lich0821/ccNexus/internal/transformer"
@@ -165,9 +167,9 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 		}
 		json.Unmarshal(transformedBody, &geminiReq)
 		if geminiReq.Stream {
-			return fmt.Sprintf("/v1beta/models/%s:streamGenerateContent", endpoint.Model)
+			return fmt.Sprintf("/v1/models/%s:streamGenerateContent?alt=sse", endpoint.Model)
 		}
-		return fmt.Sprintf("/v1beta/models/%s:generateContent", endpoint.Model)
+		return fmt.Sprintf("/v1/models/%s:generateContent", endpoint.Model)
 	case "cc_cli", "cx_chat_cli", "cx_resp_cli":
 		return "/v1/messages?beta=true"
 	}
@@ -175,8 +177,14 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 }
 
 // buildProxyRequest creates an HTTP request for the target API
-func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string, transformedBody []byte, transformerName string, credential *storage.EndpointCredential) (*http.Request, error) {
-	targetPath := getTargetPath(r.URL.Path, endpoint, transformedBody, transformerName)
+func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string, transformedBody []byte, transformerName string, credential *storage.EndpointCredential, requestMeta *proxyRequestMeta) (*http.Request, error) {
+	targetPath := ""
+	if requestMeta != nil {
+		targetPath, _ = newcursor.ResolveTargetPath(requestMeta.cursorRequestMeta(), transformerName, endpoint.Model, transformedBody)
+	}
+	if targetPath == "" {
+		targetPath = getTargetPath(r.URL.Path, endpoint, transformedBody, transformerName)
+	}
 	if targetPath == "" {
 		targetPath = r.URL.Path
 	}
@@ -219,10 +227,9 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 	case "cc_openai", "cc_openai2", "cx_chat_openai", "cx_chat_openai2", "cx_resp_openai", "cx_resp_openai2":
 		proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
 	case "cc_gemini", "cx_chat_gemini", "cx_resp_gemini":
-		q := proxyReq.URL.Query()
-		q.Set("key", apiKey)
-		q.Set("alt", "sse")
-		proxyReq.URL.RawQuery = q.Encode()
+		for k, v := range buildGeminiHeaders(apiKey) {
+			proxyReq.Header.Set(k, v)
+		}
 	case "cc_cli", "cx_chat_cli", "cx_resp_cli":
 		var cliReq struct {
 			Tools []map[string]interface{} `json:"tools"`
@@ -234,9 +241,9 @@ func buildProxyRequest(r *http.Request, endpoint config.Endpoint, apiKey string,
 			proxyReq.Header.Set(k, v)
 		}
 	default:
-		// Claude endpoints
-		proxyReq.Header.Set("x-api-key", apiKey)
-		proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
+		for k, v := range convert.BuildAnthropicHeaders(apiKey) {
+			proxyReq.Header.Set(k, v)
+		}
 	}
 
 	// Set Host header
@@ -381,6 +388,18 @@ func overrideModelInPayload(payload []byte, model string) []byte {
 	return updated
 }
 
+func buildGeminiHeaders(apiKey string) map[string]string {
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+	if strings.HasPrefix(apiKey, "AIza") {
+		headers["x-goog-api-key"] = apiKey
+		return headers
+	}
+	headers["Authorization"] = "Bearer " + apiKey
+	return headers
+}
+
 // sendRequest sends the HTTP request and returns the response
 func sendRequest(ctx context.Context, proxyReq *http.Request, httpClient *http.Client, cfg *config.Config) (*http.Response, error) {
 	proxyReq = proxyReq.WithContext(ctx)
@@ -442,6 +461,7 @@ func CreateProxyTransport(proxyURL string) (*http.Transport, error) {
 	}
 
 	transport := &http.Transport{
+		TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
 		MaxIdleConns:           100,
 		MaxIdleConnsPerHost:    10,
 		IdleConnTimeout:        90 * time.Second,

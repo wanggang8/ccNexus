@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -164,6 +165,9 @@ func (p *Proxy) codexRefreshHTTPClient() *http.Client {
 	client := &http.Client{Timeout: codexRefreshTimeout}
 	if p != nil && p.httpClient != nil {
 		client.Transport = p.httpClient.Transport
+	}
+	if client.Transport == nil {
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	if p == nil || p.config == nil {
 		return client

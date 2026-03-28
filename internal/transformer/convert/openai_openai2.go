@@ -119,6 +119,17 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		"model":  model,
 		"stream": req.Stream,
 	}
+	if req.Temperature != nil {
+		openai2Req["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		openai2Req["top_p"] = *req.TopP
+	}
+	if req.MaxCompletionTokens > 0 {
+		openai2Req["max_output_tokens"] = req.MaxCompletionTokens
+	} else if req.MaxTokens > 0 {
+		openai2Req["max_output_tokens"] = req.MaxTokens
+	}
 
 	var input []map[string]interface{}
 	var instructions []string
@@ -161,8 +172,6 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 	if len(instructions) > 0 {
 		openai2Req["instructions"] = strings.Join(instructions, "\n\n")
 	}
-	// TODO: max_output_tokens is standard OpenAI Responses API param but some
-	// third-party endpoints (e.g. SiliconFlow) don't support it. Skipping for compatibility.
 
 	if len(req.Tools) > 0 {
 		var tools []map[string]interface{}
@@ -176,16 +185,12 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 				})
 			}
 		}
-		openai2Req["tools"] = tools
-
-		// Preserve explicit tool routing semantics when moving to Responses API.
-		if mapped := mapOpenAIToolChoiceToOpenAI2(req.ToolChoice); mapped != nil {
-			openai2Req["tool_choice"] = mapped
-		} else {
-			// Keep explicit default for compatibility with providers that do not
-			// treat omitted tool_choice as "auto".
-			openai2Req["tool_choice"] = "auto"
+		if len(tools) > 0 {
+			openai2Req["tools"] = tools
 		}
+	}
+	if mapped := mapOpenAIToolChoiceToOpenAI2(req.ToolChoice); mapped != nil {
+		openai2Req["tool_choice"] = mapped
 	}
 
 	return json.Marshal(openai2Req)
@@ -197,6 +202,8 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 	if err := json.Unmarshal(openai2Req, &req); err != nil {
 		return nil, err
 	}
+	rawReq := map[string]interface{}{}
+	_ = json.Unmarshal(openai2Req, &rawReq)
 
 	var messages []transformer.OpenAIMessage
 
@@ -249,13 +256,20 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 
 			case "message":
 				flushPendingToolCalls()
-				role, _ := itemMap["role"].(string)
-				msg := transformer.OpenAIMessage{Role: role, Content: buildOpenAIMessageContent(itemMap["content"], role)}
-				if role == "assistant" && pendingReasoning != "" {
-					msg.ReasoningContent = pendingReasoning
-					pendingReasoning = ""
+				converted := buildOpenAIMessagesFromOpenAI2Message(itemMap)
+				if len(converted) == 0 {
+					continue
 				}
-				messages = append(messages, msg)
+				if pendingReasoning != "" {
+					for idx := range converted {
+						if converted[idx].Role == "assistant" {
+							converted[idx].ReasoningContent = pendingReasoning
+							pendingReasoning = ""
+							break
+						}
+					}
+				}
+				messages = append(messages, converted...)
 
 			case "function_call":
 				if pendingReasoning != "" && len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
@@ -279,7 +293,7 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 			case "function_call_output":
 				flushPendingToolCalls()
 				callID, _ := itemMap["call_id"].(string)
-				output, _ := itemMap["output"].(string)
+				output := toolResultToString(itemMap["output"])
 				messages = append(messages, transformer.OpenAIMessage{Role: "tool", Content: output, ToolCallID: callID})
 			}
 		}
@@ -294,11 +308,18 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 	}
 
 	if req.MaxOutputTokens > 0 {
-		openaiReq.MaxCompletionTokens = req.MaxOutputTokens
+		openaiReq.MaxTokens = req.MaxOutputTokens
+	}
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
+	}
+	if req.TopP != nil {
+		openaiReq.TopP = req.TopP
 	}
 
-	if len(req.Tools) > 0 {
-		for _, tool := range req.Tools {
+	toolDefs := parseOpenAI2ToolDefinitions(rawReq, req.Tools)
+	if len(toolDefs) > 0 {
+		for _, tool := range toolDefs {
 			var params map[string]interface{}
 			switch tool.Type {
 			case "function":
@@ -315,6 +336,12 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 				}
 			default:
 				continue
+			}
+			if params == nil {
+				params = map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				}
 			}
 			openaiReq.Tools = append(openaiReq.Tools, transformer.OpenAITool{
 				Type: "function",
@@ -936,6 +963,197 @@ func buildOpenAIMessageContent(content interface{}, role string) interface{} {
 	default:
 		return ""
 	}
+}
+
+func buildOpenAIMessagesFromOpenAI2Message(item map[string]interface{}) []transformer.OpenAIMessage {
+	role, _ := item["role"].(string)
+	content, _ := item["content"].([]interface{})
+	if len(content) == 0 {
+		return []transformer.OpenAIMessage{{
+			Role:    role,
+			Content: buildOpenAIMessageContent(item["content"], role),
+		}}
+	}
+
+	hasToolUse := false
+	hasToolResult := false
+	for _, blockValue := range content {
+		block, ok := blockValue.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch firstNonEmptyStringLocal(stringValueLocal(block["type"]), stringValueLocal(block["kind"])) {
+		case "tool_use":
+			hasToolUse = true
+		case "tool_result":
+			hasToolResult = true
+		}
+	}
+	if !hasToolUse && !hasToolResult {
+		return []transformer.OpenAIMessage{{
+			Role:    role,
+			Content: buildOpenAIMessageContent(item["content"], role),
+		}}
+	}
+
+	if role == "assistant" && hasToolUse {
+		textContent := buildOpenAIMessageContent(filterOpenAI2MessageBlocks(content, false), role)
+		toolCalls := make([]transformer.OpenAIToolCall, 0)
+		for idx, blockValue := range content {
+			block, ok := blockValue.(map[string]interface{})
+			if !ok || firstNonEmptyStringLocal(stringValueLocal(block["type"]), stringValueLocal(block["kind"])) != "tool_use" {
+				continue
+			}
+			toolName := firstNonEmptyStringLocal(stringValueLocal(block["name"]), stringValueLocal(block["tool_name"]))
+			if toolName == "" {
+				continue
+			}
+			callID := firstNonEmptyStringLocal(stringValueLocal(block["id"]), stringValueLocal(block["call_id"]))
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", idx)
+			}
+			args := map[string]interface{}{}
+			if input, ok := block["input"].(map[string]interface{}); ok {
+				args = input
+			}
+			arguments, _ := block["arguments"].(string)
+			if arguments == "" {
+				encoded, _ := json.Marshal(args)
+				arguments = string(encoded)
+			}
+			toolCalls = append(toolCalls, transformer.OpenAIToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: toolName, Arguments: arguments},
+			})
+		}
+
+		msg := transformer.OpenAIMessage{
+			Role:      "assistant",
+			Content:   textContent,
+			ToolCalls: toolCalls,
+		}
+		if text, ok := msg.Content.(string); ok && strings.TrimSpace(text) == "" {
+			msg.Content = nil
+		}
+		return []transformer.OpenAIMessage{msg}
+	}
+
+	converted := make([]transformer.OpenAIMessage, 0, len(content))
+	otherBlocks := make([]interface{}, 0)
+	for _, blockValue := range content {
+		block, ok := blockValue.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if firstNonEmptyStringLocal(stringValueLocal(block["type"]), stringValueLocal(block["kind"])) == "tool_result" {
+			callID := firstNonEmptyStringLocal(
+				stringValueLocal(block["tool_use_id"]),
+				stringValueLocal(block["call_id"]),
+				stringValueLocal(block["id"]),
+			)
+			converted = append(converted, transformer.OpenAIMessage{
+				Role:       "tool",
+				ToolCallID: callID,
+				Content:    stringifyOpenAI2ToolResultContent(block["content"]),
+			})
+			continue
+		}
+		otherBlocks = append(otherBlocks, block)
+	}
+	if len(otherBlocks) > 0 {
+		converted = append(converted, transformer.OpenAIMessage{
+			Role:    role,
+			Content: buildOpenAIMessageContent(otherBlocks, role),
+		})
+	}
+	return converted
+}
+
+func filterOpenAI2MessageBlocks(content []interface{}, includeTools bool) []interface{} {
+	filtered := make([]interface{}, 0, len(content))
+	for _, blockValue := range content {
+		block, ok := blockValue.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		blockType := firstNonEmptyStringLocal(stringValueLocal(block["type"]), stringValueLocal(block["kind"]))
+		if blockType == "tool_use" || blockType == "tool_result" {
+			if includeTools {
+				filtered = append(filtered, block)
+			}
+			continue
+		}
+		filtered = append(filtered, block)
+	}
+	return filtered
+}
+
+func stringifyOpenAI2ToolResultContent(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []interface{}:
+		return extractOpenAIRequestText(value)
+	case nil:
+		return ""
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return string(encoded)
+	}
+}
+
+func parseOpenAI2ToolDefinitions(rawReq map[string]interface{}, typed []transformer.OpenAI2Tool) []transformer.OpenAI2Tool {
+	tools := make([]transformer.OpenAI2Tool, 0)
+	if len(typed) > 0 {
+		tools = append(tools, typed...)
+	}
+	rawTools, _ := rawReq["tools"].([]interface{})
+	if len(rawTools) == 0 {
+		return tools
+	}
+	tools = tools[:0]
+	for _, rawTool := range rawTools {
+		toolMap, ok := rawTool.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		toolType := firstNonEmptyStringLocal(stringValueLocal(toolMap["type"]), "function")
+		name := firstNonEmptyStringLocal(stringValueLocal(toolMap["name"]), stringValueLocal(toolMap["tool_name"]))
+		description := stringValueLocal(toolMap["description"])
+		parameters, _ := toolMap["parameters"].(map[string]interface{})
+		if parameters == nil {
+			parameters, _ = toolMap["input_schema"].(map[string]interface{})
+		}
+		if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+			name = firstNonEmptyStringLocal(name, stringValueLocal(fn["name"]))
+			description = firstNonEmptyStringLocal(description, stringValueLocal(fn["description"]))
+			if parameters == nil {
+				parameters, _ = fn["parameters"].(map[string]interface{})
+			}
+		}
+		if name == "" {
+			continue
+		}
+		tools = append(tools, transformer.OpenAI2Tool{
+			Type:        toolType,
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		})
+	}
+	return tools
+}
+
+func stringValueLocal(value interface{}) string {
+	str, _ := value.(string)
+	return str
 }
 
 func buildOpenAIImageURLPart(partMap map[string]interface{}) map[string]interface{} {

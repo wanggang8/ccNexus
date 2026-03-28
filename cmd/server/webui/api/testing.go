@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -169,6 +170,9 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 	}
 
 	resp, err := client.Do(req)
@@ -329,6 +333,9 @@ func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 	}
 
 	resp, err := client.Do(req)

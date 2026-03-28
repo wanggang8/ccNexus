@@ -1,6 +1,7 @@
 package webdav
 
 import (
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -68,6 +69,9 @@ func NewClient(cfg *config.WebDAVConfig) (*Client, error) {
 	// 创建独立的 HTTP 客户端用于自定义请求
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 	}
 
 	// 设置默认路径

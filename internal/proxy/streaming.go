@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/tokencount"
 	"github.com/lich0821/ccNexus/internal/transformer"
@@ -72,10 +74,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		}
 	}
 
-	scanner := bufio.NewScanner(reader)
-	// Increase buffer sizes to handle large SSE events (e.g., large file reads in tool calls)
-	buf := make([]byte, 0, 128*1024) // 128KB initial buffer (was 64KB)
-	scanner.Buffer(buf, 2*1024*1024) // 2MB max buffer (was 1MB)
+	lineReader := bufio.NewReaderSize(reader, 128*1024)
 
 	var inputTokens, outputTokens int
 	var buffer bytes.Buffer
@@ -84,10 +83,33 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	var transformedRespBuffer bytes.Buffer
 	eventCount := 0
 	streamDone := false
+	doneSeen := false
 	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
+	var readErr error
 
-	for scanner.Scan() && !streamDone {
-		line := scanner.Text()
+	if prefix := newcursor.PrefixStream(
+		requestMeta.cursorRequestMeta(),
+		requestMeta.CursorState,
+		firstNonEmptyString(modelName, requestMeta.ClientModel),
+		requestMeta.TransformerName,
+	); len(prefix) > 0 {
+		if _, writeErr := w.Write(prefix); writeErr == nil {
+			flusher.Flush()
+			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				transformedRespBuffer.Write(prefix)
+			}
+		}
+	}
+
+	for !streamDone {
+		line, err := readStreamLine(lineReader)
+		if err != nil {
+			if line == "" {
+				readErr = err
+				break
+			}
+			readErr = err
+		}
 
 		if !p.isCurrentEndpoint(endpoint.Name) {
 			logger.Warn("[%s] Endpoint switched during streaming, terminating stream gracefully", endpoint.Name)
@@ -97,9 +119,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 		if strings.Contains(line, "data: [DONE]") {
 			streamDone = true
+			doneSeen = true
 
 			// Token Usage Fallback: Inject message_delta with estimated output_tokens before [DONE]
-			if outputTokens == 0 && outputText.Len() > 0 {
+			// Non-cursor fallback only: keep legacy token estimation for generic clients.
+			if !requestMeta.CursorMode && outputTokens == 0 && outputText.Len() > 0 {
 				outputTokens = tokencount.EstimateOutputTokens(outputText.String())
 				logger.Debug("[%s] Token fallback before [DONE]: estimated output_tokens=%d", endpoint.Name, outputTokens)
 
@@ -122,9 +146,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				originalRespBuffer.Write(eventData)
 			}
 
-			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
+			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx, requestMeta, firstNonEmptyString(modelName, requestMeta.ClientModel))
 			if err == nil && len(transformedEvent) > 0 {
-				transformedEvent, err = fixCursorStreamBundle(transformedEvent, requestMeta)
+				transformedEvent, err = newcursor.FixStream(
+					requestMeta.cursorRequestMeta(),
+					transformedEvent,
+					func(bundle []byte) ([]byte, error) { return fixCursorStreamBundle(bundle, requestMeta) },
+				)
 			}
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
@@ -155,7 +183,8 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 			// Check if this is a message_stop event (Token Usage Fallback)
 			isMessageStop := p.isMessageStopEvent(eventData)
-			if isMessageStop && outputTokens == 0 && outputText.Len() > 0 {
+			// Non-cursor fallback only: avoid synthetic usage events on Cursor flows.
+			if !requestMeta.CursorMode && isMessageStop && outputTokens == 0 && outputText.Len() > 0 {
 				outputTokens = tokencount.EstimateOutputTokens(outputText.String())
 				logger.Debug("[%s] Token fallback before message_stop: estimated output_tokens=%d", endpoint.Name, outputTokens)
 
@@ -171,11 +200,15 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				}
 			}
 
-			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
+			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx, requestMeta, firstNonEmptyString(modelName, requestMeta.ClientModel))
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
 			} else {
-				transformedEvent, err = fixCursorStreamBundle(transformedEvent, requestMeta)
+				transformedEvent, err = newcursor.FixStream(
+					requestMeta.cursorRequestMeta(),
+					transformedEvent,
+					func(bundle []byte) ([]byte, error) { return fixCursorStreamBundle(bundle, requestMeta) },
+				)
 				if err != nil {
 					logger.Error("[%s] Failed to apply cursor SSE compatibility: %v", endpoint.Name, err)
 					continue
@@ -204,12 +237,65 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 			buffer.Reset()
 		}
+
+		if readErr != nil {
+			break
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if buffer.Len() > 0 && !streamDone {
+		eventCount++
+		eventData := append([]byte(nil), buffer.Bytes()...)
+		logger.DebugLog("[%s] SSE Event #%d (Original, partial): %s", endpoint.Name, eventCount, string(eventData))
+		if isRecording && originalRespBuffer.Len() < MaxBodySize {
+			originalRespBuffer.Write(eventData)
+		}
+
+		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, eventData)
+		p.extractTokensFromEvent(eventData, &inputTokens, &outputTokens)
+
+		transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx, requestMeta, firstNonEmptyString(modelName, requestMeta.ClientModel))
+		if err != nil {
+			logger.Error("[%s] Failed to transform partial SSE event: %v", endpoint.Name, err)
+		} else {
+			transformedEvent, err = newcursor.FixStream(
+				requestMeta.cursorRequestMeta(),
+				transformedEvent,
+				func(bundle []byte) ([]byte, error) { return fixCursorStreamBundle(bundle, requestMeta) },
+			)
+			if err != nil {
+				logger.Error("[%s] Failed to apply cursor partial SSE compatibility: %v", endpoint.Name, err)
+			}
+		}
+		if err == nil && len(transformedEvent) > 0 {
+			logger.DebugLog("[%s] SSE Event #%d (Transformed, partial): %s", endpoint.Name, eventCount, string(transformedEvent))
+			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				transformedRespBuffer.Write(transformedEvent)
+			}
+			p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
+			p.extractTextFromEvent(transformedEvent, &outputText)
+			if _, writeErr := w.Write(transformedEvent); writeErr != nil {
+				if strings.Contains(writeErr.Error(), "broken pipe") || strings.Contains(writeErr.Error(), "connection reset") {
+					logger.Debug("[%s] Client disconnected while writing partial event: %v", endpoint.Name, writeErr)
+				} else {
+					logger.Error("[%s] Failed to write transformed partial event: %v", endpoint.Name, writeErr)
+				}
+			} else {
+				flusher.Flush()
+			}
+		}
+		buffer.Reset()
+	}
+
+	if doneSeen {
+		readErr = nil
+	}
+	if err := readErr; err != nil {
 		errMsg := err.Error()
-		// Check if it's an HTTP/2 stream error
-		if strings.Contains(errMsg, "stream error") || strings.Contains(errMsg, "INTERNAL_ERROR") {
+		if isGracefulStreamReadError(err) {
+			logger.Warn("[%s] Upstream stream ended before clean terminator, finalizing partial response: %v", endpoint.Name, err)
+		} else if strings.Contains(errMsg, "stream error") || strings.Contains(errMsg, "INTERNAL_ERROR") {
+			// Check if it's an HTTP/2 stream error
 			requestSize := len(bodyBytes)
 			sizeStr := formatRequestSize(requestSize)
 			logger.Error("[%s] HTTP/2 stream error (Request size: %s / %d bytes): %v",
@@ -223,11 +309,38 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				logger.Warn("[%s] This error may occur due to upstream server limitations or network issues.", endpoint.Name)
 			}
 		} else {
-			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
+			logger.Error("[%s] Stream reader error: %v", endpoint.Name, err)
 		}
 	}
 
-	if requestMeta.CursorMode && outputText.Len() > 0 {
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+		if finalizeChunk := newcursor.FinalizeStream(
+			requestMeta.cursorRequestMeta(),
+			requestMeta.CursorState,
+			modelName,
+		); len(finalizeChunk) > 0 {
+			if _, err := w.Write(finalizeChunk); err == nil {
+				flusher.Flush()
+				if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+					transformedRespBuffer.Write(finalizeChunk)
+				}
+			}
+		}
+		if requestMeta.CursorState != nil {
+			requestMeta.CursorState.InThinkingTag = false
+		}
+	}
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && !doneSeen && isGracefulStreamReadError(readErr) {
+		if _, err := w.Write([]byte("data: [DONE]\n\n")); err == nil {
+			flusher.Flush()
+			if isRecording && transformedRespBuffer.Len() < MaxBodySize {
+				transformedRespBuffer.WriteString("data: [DONE]\n\n")
+			}
+		}
+	}
+
+	// Non-cursor fallback only: Cursor path aligns with api2cursor and skips auto-continue.
+	if !requestMeta.CursorMode && outputText.Len() > 0 {
 		continuation, err := p.autoContinueCursorResponseStream(outputText.String(), bodyBytes, &requestMeta)
 		if err == nil && continuation != "" {
 			w.Write([]byte(continuation))
@@ -237,6 +350,15 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 	resp.Body.Close()
 	return inputTokens, outputTokens, outputText.String(), originalRespBuffer.Bytes(), transformedRespBuffer.Bytes()
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.
@@ -254,19 +376,31 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 	}
 	defer resp.Body.Close()
 
-	scanner := bufio.NewScanner(reader)
-	buf := make([]byte, 0, 128*1024)
-	scanner.Buffer(buf, 2*1024*1024)
-
 	var completedPayload []byte
 	var lastJSONPayload []byte
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	lineReader := bufio.NewReaderSize(reader, 128*1024)
+	var readErr error
+	for {
+		line, err := readStreamLine(lineReader)
+		if err != nil {
+			if line == "" {
+				readErr = err
+				break
+			}
+			readErr = err
+		}
+		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
+			if readErr != nil {
+				break
+			}
 			continue
 		}
 		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if jsonData == "" || jsonData == "[DONE]" {
+			if readErr != nil {
+				break
+			}
 			continue
 		}
 		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, []byte("data: "+jsonData+"\n\n"))
@@ -291,11 +425,20 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 		}
 		break
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, 0, "", err
+	if readErr != nil && !isGracefulStreamReadError(readErr) {
+		return 0, 0, "", readErr
+	}
+	if readErr != nil && len(completedPayload) == 0 && len(lastJSONPayload) == 0 {
+		return 0, 0, "", readErr
+	}
+	if err := readErr; err != nil && isGracefulStreamReadError(err) && len(completedPayload) > 0 {
+		logger.Warn("[%s] Aggregated upstream stream ended early after completed payload: %v", endpoint.Name, err)
 	}
 	if len(completedPayload) == 0 {
 		if len(lastJSONPayload) == 0 {
+			if readErr != nil {
+				return 0, 0, "", fmt.Errorf("stream closed before response.completed: %w", readErr)
+			}
 			return 0, 0, "", fmt.Errorf("stream closed before response.completed")
 		}
 		// Fallback for providers that don't emit type=response.completed but still
@@ -360,10 +503,20 @@ func formatRequestSize(bytes int) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// transformStreamEvent transforms a single SSE event
-func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transformer, transformerName string, streamCtx *transformer.StreamContext) ([]byte, error) {
-	// Use the unified interface method instead of type assertion switch
-	// All transformers now implement TransformResponseWithContext
+// transformStreamEvent transforms a single SSE event.
+func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transformer, transformerName string, streamCtx *transformer.StreamContext, requestMeta proxyRequestMeta, clientModel string) ([]byte, error) {
+	if requestMeta.CursorMode {
+		return newcursor.TransformCursorUpstreamStreamEvent(
+			requestMeta.cursorRequestMeta(),
+			eventData,
+			transformerName,
+			clientModel,
+			requestMeta.CursorState,
+			func(b []byte) ([]byte, error) {
+				return trans.TransformResponseWithContext(b, true, streamCtx)
+			},
+		)
+	}
 	return trans.TransformResponseWithContext(eventData, true, streamCtx)
 }
 
@@ -519,4 +672,17 @@ func decompressGzip(body io.ReadCloser) ([]byte, error) {
 	}
 	defer gzipReader.Close()
 	return io.ReadAll(gzipReader)
+}
+
+func readStreamLine(reader *bufio.Reader) (string, error) {
+	if reader == nil {
+		return "", io.EOF
+	}
+	line, err := reader.ReadString('\n')
+	line = strings.TrimRight(line, "\r\n")
+	return line, err
+}
+
+func isGracefulStreamReadError(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

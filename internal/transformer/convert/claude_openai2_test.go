@@ -718,3 +718,50 @@ func TestClaudeReqToOpenAI2DefaultsToolChoiceAutoAfterToolResult(t *testing.T) {
 		t.Fatalf("expected tool_choice=auto after tool_result, got %#v", req["tool_choice"])
 	}
 }
+
+func TestOpenAI2ReqToClaudeMergesToolResultWithFollowingUserMessageAndPreservesTokens(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"max_output_tokens":64,
+		"top_p":0.9,
+		"input":[
+			{"type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"path\":\"README.md\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":{"ok":true}},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`
+
+	reqBytes, err := OpenAI2ReqToClaude([]byte(openai2Req), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToClaude failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if req["max_tokens"] != float64(64) {
+		t.Fatalf("expected max_tokens=64, got %#v", req["max_tokens"])
+	}
+	if req["top_p"] != 0.9 {
+		t.Fatalf("expected top_p preserved, got %#v", req["top_p"])
+	}
+
+	messages := req["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected merged assistant/user messages, got %#v", messages)
+	}
+
+	userMessage := messages[1].(map[string]interface{})
+	content := userMessage["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("expected tool_result + text in merged user message, got %#v", content)
+	}
+	if content[0].(map[string]interface{})["type"] != "tool_result" || content[0].(map[string]interface{})["content"] != "{\"ok\":true}" {
+		t.Fatalf("expected structured tool output stringified, got %#v", content[0])
+	}
+	if content[1].(map[string]interface{})["type"] != "text" || content[1].(map[string]interface{})["text"] != "continue" {
+		t.Fatalf("expected following user text merged, got %#v", content[1])
+	}
+}

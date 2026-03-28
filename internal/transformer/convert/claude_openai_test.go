@@ -616,3 +616,145 @@ func TestOpenAIReqToClaudePreservesRemoteImageURL(t *testing.T) {
 		t.Fatalf("expected remote image url preserved, got %#v", first)
 	}
 }
+
+func TestOpenAIReqToClaudePreservesStructuredSystemAndAssistantBlocksWithToolCalls(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"follow the repo rules"}]},
+			{"role":"assistant","content":[
+				{"type":"text","text":"I found this file"},
+				{"type":"image_url","image_url":{"url":"https://example.com/diagram.png"}}
+			],"tool_calls":[
+				{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"README.md\"}"}}
+			]}
+		]
+	}`
+
+	claudeReqBytes, err := OpenAIReqToClaude([]byte(openaiReq), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(claudeReqBytes, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal Claude request: %v", err)
+	}
+
+	if claudeReq["system"] != "follow the repo rules" {
+		t.Fatalf("expected structured system text preserved, got %#v", claudeReq["system"])
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 3 {
+		t.Fatalf("expected text + image + tool_use blocks, got %#v", content)
+	}
+
+	first := content[0].(map[string]interface{})
+	if first["type"] != "text" || first["text"] != "I found this file" {
+		t.Fatalf("expected assistant text block preserved, got %#v", first)
+	}
+
+	second := content[1].(map[string]interface{})
+	source := second["source"].(map[string]interface{})
+	if second["type"] != "image" || source["type"] != "url" || source["url"] != "https://example.com/diagram.png" {
+		t.Fatalf("expected assistant image block preserved, got %#v", second)
+	}
+
+	third := content[2].(map[string]interface{})
+	if third["type"] != "tool_use" || third["id"] != "call_1" || third["name"] != "Read" {
+		t.Fatalf("expected tool_use appended after existing content, got %#v", third)
+	}
+}
+
+func TestOpenAIReqToClaudeMergesToolResultWithFollowingUserMessageAndPreservesTokens(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"max_tokens":128,
+		"top_p":0.95,
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"README.md\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"ok"},
+			{"role":"user","content":"continue"}
+		]
+	}`
+
+	claudeReqBytes, err := OpenAIReqToClaude([]byte(openaiReq), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(claudeReqBytes, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal Claude request: %v", err)
+	}
+
+	if claudeReq["max_tokens"] != float64(128) {
+		t.Fatalf("expected max_tokens=128, got %#v", claudeReq["max_tokens"])
+	}
+	if claudeReq["top_p"] != 0.95 {
+		t.Fatalf("expected top_p preserved, got %#v", claudeReq["top_p"])
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected merged assistant/user messages, got %#v", messages)
+	}
+
+	userMessage := messages[1].(map[string]interface{})
+	if userMessage["role"] != "user" {
+		t.Fatalf("expected merged user message, got %#v", userMessage["role"])
+	}
+	content := userMessage["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("expected tool_result + text in merged user message, got %#v", content)
+	}
+	if content[0].(map[string]interface{})["type"] != "tool_result" || content[0].(map[string]interface{})["content"] != "ok" {
+		t.Fatalf("expected tool_result preserved first, got %#v", content[0])
+	}
+	if content[1].(map[string]interface{})["type"] != "text" || content[1].(map[string]interface{})["text"] != "continue" {
+		t.Fatalf("expected following user text merged, got %#v", content[1])
+	}
+}
+
+func TestOpenAIReqToClaudeStringifiesStructuredToolMessageContent(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"README.md\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":{"ok":true,"count":2}}
+		]
+	}`
+
+	claudeReqBytes, err := OpenAIReqToClaude([]byte(openaiReq), "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("OpenAIReqToClaude failed: %v", err)
+	}
+
+	var claudeReq map[string]interface{}
+	if err := json.Unmarshal(claudeReqBytes, &claudeReq); err != nil {
+		t.Fatalf("Failed to unmarshal Claude request: %v", err)
+	}
+
+	messages := claudeReq["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected assistant and tool_result messages, got %#v", messages)
+	}
+
+	userMessage := messages[1].(map[string]interface{})
+	content := userMessage["content"].([]interface{})
+	toolResult := content[0].(map[string]interface{})
+	raw, ok := toolResult["content"].(string)
+	if !ok {
+		t.Fatalf("expected stringified tool_result content, got %#v", toolResult["content"])
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("expected JSON string content, got %q (%v)", raw, err)
+	}
+	if decoded["ok"] != true || decoded["count"] != float64(2) {
+		t.Fatalf("expected structured tool content preserved, got %#v", decoded)
+	}
+}

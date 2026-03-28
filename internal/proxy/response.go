@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
@@ -35,21 +36,56 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 
 	logger.DebugLog("[%s] Response Body: %s", endpoint.Name, string(bodyBytes))
 
+	transformInput := bodyBytes
+	if requestMeta.CursorMode &&
+		requestMeta.ClientFormat == ClientFormatOpenAIResponses &&
+		requestMeta.TransformerName == "cx_resp_openai" {
+		transformInput, err = newcursor.FixOpenAIUpstreamChatBody(bodyBytes)
+		if err != nil {
+			logger.Error("[%s] Failed to apply cursor upstream OpenAI compat fix: %v", endpoint.Name, err)
+			return 0, 0, bodyBytes, nil, err
+		}
+	}
+
 	// Transform response back to Claude format
-	transformedResp, err := trans.TransformResponse(bodyBytes, false)
+	transformedResp, err := trans.TransformResponse(transformInput, false)
 	if err != nil {
 		logger.Error("[%s] Failed to transform response: %v", endpoint.Name, err)
 		return 0, 0, bodyBytes, nil, err
 	}
-	transformedResp, err = fixCursorResponseBody(transformedResp, requestMeta)
+	transformedResp, err = newcursor.FixRawUpstreamResponseBody(
+		requestMeta.cursorRequestMeta(),
+		requestMeta.TransformerName,
+		bodyBytes,
+		transformedResp,
+	)
+	if err != nil {
+		logger.Error("[%s] Failed to apply raw upstream compatibility: %v", endpoint.Name, err)
+		return 0, 0, bodyBytes, nil, err
+	}
+	transformedResp, err = newcursor.FixResponse(
+		requestMeta.cursorRequestMeta(),
+		transformedResp,
+		newcursor.ResponseHooks{
+			FixChat: func(body []byte, clientModel string) ([]byte, error) {
+				return newcursor.FixChatResponseBody(body, clientModel, requestMeta.CacheMessages, newcursor.DefaultThinkingCache())
+			},
+			FixResponses: func(body []byte, clientModel string) ([]byte, error) {
+				return newcursor.FixResponsesResponseBody(body, clientModel, requestMeta.CacheMessages, requestMeta.TransformerName, newcursor.DefaultThinkingCache())
+			},
+			FixMessages: newcursor.FixMessagesResponseBody,
+		},
+	)
 	if err != nil {
 		logger.Error("[%s] Failed to apply cursor response compatibility: %v", endpoint.Name, err)
 		return 0, 0, bodyBytes, nil, err
 	}
-	transformedResp, err = p.autoContinueCursorResponseFull(transformedResp, bodyBytes, &requestMeta)
-	if err != nil {
-		logger.Error("[%s] Failed to auto-continue cursor response: %v", endpoint.Name, err)
-		return 0, 0, bodyBytes, nil, err
+	if !requestMeta.CursorMode {
+		transformedResp, err = p.autoContinueCursorResponseFull(transformedResp, bodyBytes, &requestMeta)
+		if err != nil {
+			logger.Error("[%s] Failed to auto-continue cursor response: %v", endpoint.Name, err)
+			return 0, 0, bodyBytes, nil, err
+		}
 	}
 
 	logger.DebugLog("[%s] Transformed Response: %s", endpoint.Name, string(transformedResp))

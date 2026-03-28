@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ func (e *EndpointService) createHTTPClient(timeout time.Duration, targetURL stri
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: true},
 			MaxIdleConns:           100,
 			MaxIdleConnsPerHost:    10,
 			IdleConnTimeout:        90 * time.Second,

@@ -259,3 +259,47 @@ func TestGeminiStreamToOpenAI2PreservesUsageFromEarlierChunkOnBareDone(t *testin
 		t.Fatalf("expected prior usage to be preserved, got %s", output)
 	}
 }
+
+func TestOpenAI2ReqToGeminiMatchesApi2CursorBridgeShape(t *testing.T) {
+	openai2Req := []byte(`{
+		"model":"gpt-4.1",
+		"top_p":0.9,
+		"input":[
+			{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"README.md\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":{"ok":true}}
+		]
+	}`)
+
+	converted, err := OpenAI2ReqToGemini(openai2Req, "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToGemini failed: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatalf("converted request is not valid json: %v", err)
+	}
+
+	genConfig := payload["generationConfig"].(map[string]interface{})
+	if genConfig["topP"] != float64(0.9) {
+		t.Fatalf("expected topP to be preserved through chat bridge, got %#v", genConfig["topP"])
+	}
+	if _, ok := payload["toolConfig"]; ok {
+		t.Fatalf("did not expect toolConfig helper field, got %#v", payload["toolConfig"])
+	}
+
+	contents := payload["contents"].([]interface{})
+	if len(contents) != 2 {
+		t.Fatalf("expected function call and function response contents, got %#v", contents)
+	}
+	callPart := contents[0].(map[string]interface{})["parts"].([]interface{})[0].(map[string]interface{})["functionCall"].(map[string]interface{})
+	args := callPart["args"].(map[string]interface{})
+	if args["path"] != "README.md" {
+		t.Fatalf("expected functionCall args preserved, got %#v", args)
+	}
+	responsePart := contents[1].(map[string]interface{})["parts"].([]interface{})[0].(map[string]interface{})["functionResponse"].(map[string]interface{})
+	responseValue := responsePart["response"].(map[string]interface{})
+	if responseValue["ok"] != true {
+		t.Fatalf("expected functionResponse to keep raw output object, got %#v", responseValue)
+	}
+}
