@@ -457,6 +457,11 @@ func ClaudeStreamToOpenAI(event []byte, ctx *transformer.StreamContext, model st
 	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
 		return nil, nil
 	}
+	if eventType == "" {
+		if typ, ok := data["type"].(string); ok {
+			eventType = typ
+		}
+	}
 
 	switch eventType {
 	case "message_start":

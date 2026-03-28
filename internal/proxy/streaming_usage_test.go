@@ -130,6 +130,60 @@ func (r *terminalErrReadCloser) Close() error {
 	return nil
 }
 
+func TestHandleStreamingResponseCursorChatOpenAIDataOnlySSEPreservesTextUsageAndDone(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "OpenAI",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, cxchat.NewOpenAITransformer("cursor-model"), "cx_chat_openai", false, "cursor-model", []byte(`{"model":"cursor-model","messages":[{"role":"user","content":"hello"}],"stream":true}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected text chunk preserved, got %s", body)
+	}
+	if !strings.Contains(body, `"usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}`) {
+		t.Fatalf("expected final usage chunk preserved, got %s", body)
+	}
+	if !strings.Contains(body, `data: [DONE]`) {
+		t.Fatalf("expected DONE terminator preserved, got %s", body)
+	}
+}
+
 func TestHandleStreamingResponseCursorChatOpenAIInjectsUsageFallbackWhenFinalChunkMissingUsage(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
@@ -525,6 +579,62 @@ func TestHandleStreamingResponseDoesNotEmitDoneWithoutCursorChatPayload(t *testi
 	}
 	if strings.Contains(body, `"content":"hello"`) {
 		t.Fatalf("expected no partial chat chunk when transformer failed, got %s", body)
+	}
+}
+
+func TestHandleStreamingResponseCursorChatClaudeDataOnlySSEPreservesTextAndUsage(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "Claude",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "claude",
+			Model:       "claude-sonnet-4-20250514",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`,
+		``,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		``,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+		``,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "gpt-5.4",
+		},
+		TransformerName: "cx_chat_claude",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, cxchat.NewClaudeTransformer("gpt-5.4"), "cx_chat_claude", false, "gpt-5.4", []byte(`{}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected text chunk preserved for data-only Claude SSE, got %s", body)
+	}
+	if !strings.Contains(body, `"usage":{"completion_tokens":7,"prompt_tokens":10,"total_tokens":17}`) {
+		t.Fatalf("expected final usage chunk preserved, got %s", body)
+	}
+	if !strings.Contains(body, `data: [DONE]`) {
+		t.Fatalf("expected DONE terminator preserved, got %s", body)
 	}
 }
 

@@ -415,6 +415,32 @@ func TestClaudeRespToOpenAIFixesMissingToolUseIDAndFinishReason(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamToOpenAIHandlesDataOnlySSEWithoutEventHeader(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+
+	events := []string{
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":0}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+		`data: {"type":"message_stop"}`,
+	}
+
+	var out strings.Builder
+	for _, event := range events {
+		chunk, err := ClaudeStreamToOpenAI([]byte(event+"\n\n"), ctx, "gpt-5.4")
+		if err != nil {
+			t.Fatalf("ClaudeStreamToOpenAI failed: %v", err)
+		}
+		out.Write(chunk)
+	}
+
+	got := out.String()
+	assertContains(t, got, `"role":"assistant"`, "expected assistant role start chunk")
+	assertContains(t, got, `"content":"hello"`, "expected text delta to survive data-only SSE")
+	assertContains(t, got, `"usage":{"completion_tokens":7,"prompt_tokens":12,"total_tokens":19}`, "expected usage on final chunk")
+	assertContains(t, got, `data: [DONE]`, "expected message_stop to map to DONE")
+}
+
 func TestClaudeStreamToOpenAIEmitsIncrementalToolCallDeltasWithoutBlockStop(t *testing.T) {
 	ctx := transformer.NewStreamContext()
 
