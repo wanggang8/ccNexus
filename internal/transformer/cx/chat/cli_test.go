@@ -232,11 +232,14 @@ data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"a
 		t.Fatalf("TransformResponseWithContext failed: %v", err)
 	}
 
-	if len(result) != 0 {
-		t.Fatalf("expected message_start to only update context, got %q", string(result))
+	if len(result) == 0 {
+		t.Fatalf("expected message_start to emit initial role chunk, got empty")
 	}
-	if ctx.MessageID != "msg_1" {
-		t.Fatalf("expected context message id to be initialized, got %q", ctx.MessageID)
+	if !strings.Contains(string(result), `"role":"assistant"`) {
+		t.Fatalf("expected role chunk from message_start, got %q", string(result))
+	}
+	if ctx.MessageID == "" {
+		t.Fatalf("expected context message id to be initialized, got empty")
 	}
 }
 

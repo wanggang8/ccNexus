@@ -191,3 +191,71 @@ func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
 		t.Fatalf("expected ndjson content type, got %q", rr.Header().Get("Content-Type"))
 	}
 }
+
+func TestSelectFallbackPayload_ExhaustiveWhenNoMatch(t *testing.T) {
+	payloads := []augment.RequestFallbackPayload{
+		{Name: "drop_stream_include_usage", Body: []byte(`{"a":1}`)},
+		{Name: "drop_tool_choice", Body: []byte(`{"a":2}`)},
+		{Name: "drop_tools", Body: []byte(`{"a":3}`)},
+	}
+	body := []byte(`{"error":{"message":"some unknown error"}}`)
+
+	idx, payload := selectFallbackPayload("openai", body, payloads, -1)
+	if payload == nil {
+		t.Fatal("expected exhaustive fallback to return next payload")
+	}
+	if idx != 0 {
+		t.Errorf("expected index 0, got %d", idx)
+	}
+	if payload.Name != "drop_stream_include_usage" {
+		t.Errorf("expected drop_stream_include_usage, got %s", payload.Name)
+	}
+
+	idx2, payload2 := selectFallbackPayload("openai", body, payloads, idx)
+	if payload2 == nil {
+		t.Fatal("expected next exhaustive fallback")
+	}
+	if idx2 != 1 {
+		t.Errorf("expected index 1, got %d", idx2)
+	}
+}
+
+func TestSelectFallbackPayload_ErrorDrivenPicksSpecific(t *testing.T) {
+	payloads := []augment.RequestFallbackPayload{
+		{Name: "drop_stream_include_usage", Body: []byte(`{"a":1}`)},
+		{Name: "drop_tool_choice", Body: []byte(`{"a":2}`)},
+		{Name: "drop_tools", Body: []byte(`{"a":3}`)},
+	}
+	body := []byte(`{"error":{"message":"Unsupported parameter: tool_choice"}}`)
+
+	idx, payload := selectFallbackPayload("openai", body, payloads, -1)
+	if payload == nil {
+		t.Fatal("expected error-driven fallback")
+	}
+	if payload.Name != "drop_tool_choice" {
+		t.Errorf("expected drop_tool_choice, got %s", payload.Name)
+	}
+	if idx != 1 {
+		t.Errorf("expected index 1, got %d", idx)
+	}
+}
+
+func TestShouldRetryWithFallback(t *testing.T) {
+	tests := []struct {
+		target string
+		status int
+		want   bool
+	}{
+		{"openai", 400, true},
+		{"claude", 422, true},
+		{"openai", 500, false},
+		{"unknown", 400, false},
+	}
+	for _, tt := range tests {
+		resp := &http.Response{StatusCode: tt.status}
+		got := shouldRetryWithFallback(tt.target, resp)
+		if got != tt.want {
+			t.Errorf("shouldRetryWithFallback(%q, %d) = %v, want %v", tt.target, tt.status, got, tt.want)
+		}
+	}
+}

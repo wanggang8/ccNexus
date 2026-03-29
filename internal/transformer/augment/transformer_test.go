@@ -260,12 +260,17 @@ func TestToClaudeRequest_ChatHistoryResponseNodeOrder(t *testing.T) {
 	}
 
 	msgs := req["messages"].([]interface{})
-	if len(msgs) != 2 {
-		t.Fatalf("expected assistant message plus repaired tool_result message, got %d", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("expected dummy-user + assistant + repaired tool_result message, got %d", len(msgs))
 	}
-	msg := msgs[0].(map[string]interface{})
+	// First message is dummy user (ensureClaudeFirstMessageIsUser)
+	dummy := msgs[0].(map[string]interface{})
+	if dummy["role"] != "user" {
+		t.Fatalf("expected dummy first message role user, got %v", dummy["role"])
+	}
+	msg := msgs[1].(map[string]interface{})
 	if msg["role"] != "assistant" {
-		t.Fatalf("expected first message role assistant, got %v", msg["role"])
+		t.Fatalf("expected second message role assistant, got %v", msg["role"])
 	}
 	content := msg["content"].([]interface{})
 	if len(content) != 3 {
@@ -281,7 +286,7 @@ func TestToClaudeRequest_ChatHistoryResponseNodeOrder(t *testing.T) {
 	if content[2].(map[string]interface{})["type"] != "tool_use" {
 		t.Fatalf("expected third block to be tool_use, got %v", content[2])
 	}
-	repaired := msgs[1].(map[string]interface{})
+	repaired := msgs[2].(map[string]interface{})
 	if repaired["role"] != "user" {
 		t.Fatalf("expected repaired tool_result message role user, got %v", repaired["role"])
 	}
@@ -1195,4 +1200,342 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildOpenAIRequestFallbackPayloads_Independent(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "gpt-4",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hello"},
+		},
+		"stream": true,
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
+		"tools": []interface{}{
+			map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":       "get_weather",
+					"parameters": map[string]interface{}{"type": "object"},
+				},
+			},
+		},
+		"tool_choice":         "auto",
+		"parallel_tool_calls": true,
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("openai", body)
+
+	if len(payloads) == 0 {
+		t.Fatal("expected at least one fallback payload")
+	}
+
+	// Each payload should be independently constructed from original.
+	// Verify that drop_stream_include_usage still has tool_choice (not stripped cumulatively)
+	var dropUsage map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "drop_stream_include_usage" {
+			if err := json.Unmarshal(p.Body, &dropUsage); err != nil {
+				t.Fatalf("failed to unmarshal drop_stream_include_usage: %v", err)
+			}
+			break
+		}
+	}
+	if dropUsage == nil {
+		t.Fatal("expected drop_stream_include_usage payload")
+	}
+	if _, ok := dropUsage["tool_choice"]; !ok {
+		t.Error("drop_stream_include_usage should still have tool_choice (independent build)")
+	}
+	if _, ok := dropUsage["parallel_tool_calls"]; !ok {
+		t.Error("drop_stream_include_usage should still have parallel_tool_calls (independent build)")
+	}
+	if _, ok := dropUsage["tools"]; !ok {
+		t.Error("drop_stream_include_usage should still have tools (independent build)")
+	}
+}
+
+func TestBuildOpenAIRequestFallbackPayloads_ConvertToolsToFunctions(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "gpt-3.5-turbo",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role": "assistant",
+				"tool_calls": []interface{}{
+					map[string]interface{}{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      "search",
+							"arguments": `{"q":"test"}`,
+						},
+					},
+				},
+			},
+			map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": "call_1",
+				"content":      "result",
+			},
+		},
+		"tools": []interface{}{
+			map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":       "search",
+					"parameters": map[string]interface{}{"type": "object"},
+				},
+			},
+		},
+		"tool_choice": "auto",
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("openai", body)
+
+	var funcPayload map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "convert_tools_to_functions" {
+			if err := json.Unmarshal(p.Body, &funcPayload); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if funcPayload == nil {
+		t.Fatal("expected convert_tools_to_functions payload")
+	}
+
+	// Should have functions instead of tools
+	if _, ok := funcPayload["functions"]; !ok {
+		t.Error("expected functions key")
+	}
+	if _, ok := funcPayload["tools"]; ok {
+		t.Error("should not have tools key")
+	}
+
+	// Messages should be converted: role:tool -> role:function
+	msgs, _ := funcPayload["messages"].([]interface{})
+	foundFunction := false
+	for _, raw := range msgs {
+		msg, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if msg["role"] == "function" {
+			foundFunction = true
+			if msg["name"] != "search" {
+				t.Errorf("expected function name 'search', got %v", msg["name"])
+			}
+		}
+		if msg["role"] == "tool" {
+			t.Error("should not have role:tool messages after conversion")
+		}
+		if msg["role"] == "assistant" {
+			if _, ok := msg["function_call"]; !ok {
+				t.Error("expected assistant to have function_call")
+			}
+			if _, ok := msg["tool_calls"]; ok {
+				t.Error("should not have tool_calls after conversion")
+			}
+		}
+	}
+	if !foundFunction {
+		t.Error("expected at least one role:function message")
+	}
+}
+
+func TestBuildOpenAIRequestFallbackPayloads_StripVision(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "gpt-4",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{"type": "text", "text": "What is this?"},
+					map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "https://example.com/img.png"}},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("openai", body)
+
+	var visionPayload map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "strip_vision" {
+			if err := json.Unmarshal(p.Body, &visionPayload); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if visionPayload == nil {
+		t.Fatal("expected strip_vision payload")
+	}
+
+	msgs, _ := visionPayload["messages"].([]interface{})
+	if len(msgs) == 0 {
+		t.Fatal("expected messages")
+	}
+	msg, _ := msgs[0].(map[string]interface{})
+	content, ok := msg["content"].(string)
+	if !ok {
+		t.Fatalf("expected content to be string after vision strip, got %T", msg["content"])
+	}
+	if !strings.Contains(content, "What is this?") {
+		t.Error("expected text to be preserved")
+	}
+	if !strings.Contains(content, "[non-text content omitted]") {
+		t.Error("expected non-text omission marker")
+	}
+}
+
+func TestBuildClaudeRequestFallbackPayloads_Independent(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "claude-3-5-sonnet",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hello"},
+		},
+		"system":      "be helpful",
+		"tool_choice": map[string]interface{}{"type": "auto"},
+		"tools": []interface{}{
+			map[string]interface{}{"name": "search"},
+		},
+		"max_tokens": 1024,
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("claude", body)
+
+	if len(payloads) == 0 {
+		t.Fatal("expected at least one fallback payload")
+	}
+
+	// Verify independence: drop_tool_choice should still have system as string
+	var dropToolChoice map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "drop_tool_choice" {
+			if err := json.Unmarshal(p.Body, &dropToolChoice); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if dropToolChoice == nil {
+		t.Fatal("expected drop_tool_choice payload")
+	}
+	if _, ok := dropToolChoice["system"].(string); !ok {
+		t.Error("drop_tool_choice should still have system as string (independent build)")
+	}
+}
+
+func TestBuildClaudeRequestFallbackPayloads_NormalizeAllBlocks(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "claude-3-5-sonnet",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hello"},
+		},
+		"system":     "be helpful",
+		"max_tokens": 1024,
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("claude", body)
+
+	var allBlocks map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "normalize_all_blocks" {
+			if err := json.Unmarshal(p.Body, &allBlocks); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if allBlocks == nil {
+		t.Fatal("expected normalize_all_blocks payload")
+	}
+
+	// System should be blocks
+	systemArr, ok := allBlocks["system"].([]interface{})
+	if !ok {
+		t.Fatalf("expected system as array, got %T", allBlocks["system"])
+	}
+	if len(systemArr) == 0 {
+		t.Fatal("expected non-empty system blocks")
+	}
+	block, _ := systemArr[0].(map[string]interface{})
+	if block["type"] != "text" {
+		t.Errorf("expected type=text, got %v", block["type"])
+	}
+}
+
+func TestEnsureClaudeFirstMessageIsUser(t *testing.T) {
+	payload := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "assistant", "content": "hello"},
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	changed := ensureClaudeFirstMessageIsUser(payload)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	msgs, _ := payload["messages"].([]interface{})
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	first, _ := msgs[0].(map[string]interface{})
+	if first["role"] != "user" {
+		t.Errorf("expected first message to be user, got %v", first["role"])
+	}
+}
+
+func TestRepairClaudeToolUsePairs(t *testing.T) {
+	payload := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "hi"},
+			}},
+			map[string]interface{}{"role": "assistant", "content": []interface{}{
+				map[string]interface{}{"type": "tool_use", "id": "tu_1", "name": "search", "input": map[string]interface{}{"q": "test"}},
+			}},
+			// Missing tool_result for tu_1, next is user without tool_result
+			map[string]interface{}{"role": "user", "content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "thanks"},
+			}},
+		},
+	}
+	changed := repairClaudeToolUsePairs(payload)
+	if !changed {
+		t.Fatal("expected repair to make changes")
+	}
+
+	msgs, _ := payload["messages"].([]interface{})
+	// Should inject a user message with tool_result between assistant and next user
+	foundInjected := false
+	for _, raw := range msgs {
+		msg, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := msg["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, blockRaw := range content {
+			block, ok := blockRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if block["type"] == "tool_result" && block["tool_use_id"] == "tu_1" {
+				foundInjected = true
+				if block["is_error"] != true {
+					t.Error("expected injected tool_result to be is_error=true")
+				}
+			}
+		}
+	}
+	if !foundInjected {
+		t.Error("expected injected tool_result for tu_1")
+	}
 }

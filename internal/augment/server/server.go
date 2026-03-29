@@ -533,75 +533,103 @@ func (s *Server) proxyToUpstream(
 	path := augment.TargetPath(targetType)
 	upstreamURL := strings.TrimSuffix(endpoint.APIUrl, "/") + path
 
-	// Create upstream request with proper headers
-	req, err := s.createUpstreamRequest(r.Context(), http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
-	if err != nil {
-		logger.Error("Augment: failed to create upstream request: %v", err)
-		s.writeErrorResponse(w, "Failed to create upstream request", isStreaming)
-		if s.trafficRecorder != nil {
-			statusCode := http.StatusInternalServerError
-			if isStreaming {
-				statusCode = http.StatusOK
-			}
-			s.trafficRecorder.Record(&proxy.TrafficLog{
-				Timestamp:          startTime,
-				EndpointName:       endpoint.Name,
-				ClientFormat:       clientFormat,
-				TransformerName:    transformerName,
-				Method:             r.Method,
-				Path:               r.URL.Path,
-				StatusCode:         statusCode,
-				Duration:           time.Since(startTime),
-				IsStreaming:        isStreaming,
-				Error:              err.Error(),
-				OriginalRequest:    originalRequest,
-				TransformedRequest: transformedRequest,
-			})
-		}
-		return
-	}
+	// Build fallback payloads up front (independent from original, per BYOK)
+	fallbackPayloads := augment.BuildRequestFallbackPayloads(targetType, transformedRequest)
+	currentRequestBody := transformedRequest
+	currentFallbackName := "original"
+	fallbackIndex := -1
 
 	// Log request details for debugging
-	logger.Debug("Augment: sending request to %s (%.1f KB)", upstreamURL, float64(len(transformedRequest))/1024)
+	logger.Debug("Augment: sending request to %s (%.1f KB, fallbacks=%d)", upstreamURL, float64(len(currentRequestBody))/1024, len(fallbackPayloads))
 
-	// Execute request with retry logic
 	maxRetries := 2
 	var lastErr error
 	var resp *http.Response
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			logger.Warn("Augment: retrying request to %s (attempt %d/%d)", upstreamURL, attempt, maxRetries)
-			time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff: 1s, 2s
+	for {
+		lastErr = nil
+		resp = nil
 
-			// Create new context for retry to avoid original request timeout
-			retryCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			var attemptReq *http.Request
+			var reqErr error
+			if attempt == 0 {
+				attemptReq, reqErr = s.createUpstreamRequest(r.Context(), http.MethodPost, upstreamURL, currentRequestBody, targetType, endpoint)
+			} else {
+				logger.Warn("Augment: retrying request to %s (attempt %d/%d)", upstreamURL, attempt, maxRetries)
+				time.Sleep(time.Duration(attempt) * time.Second)
+				retryCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				attemptReq, reqErr = s.createUpstreamRequest(retryCtx, http.MethodPost, upstreamURL, currentRequestBody, targetType, endpoint)
+				if reqErr != nil {
+					cancel()
+					lastErr = reqErr
+					logger.Error("Augment: failed to create upstream request: %v", reqErr)
+					break
+				}
+				requestStart := time.Now()
+				resp, lastErr = s.httpClient.Do(attemptReq)
+				cancel()
+				requestDuration := time.Since(requestStart)
 
-			// Recreate request for retry (http.Request cannot be reused)
-			req, lastErr = s.createUpstreamRequest(retryCtx, http.MethodPost, upstreamURL, transformedRequest, targetType, endpoint)
-			if lastErr != nil {
-				logger.Error("Augment: failed to create retry request: %v", lastErr)
+				if lastErr == nil {
+					logger.Debug("Augment: request succeeded in %v (fallback=%s)", requestDuration, currentFallbackName)
+					break
+				}
+
+				if !isRetryableError(lastErr) {
+					logger.Error("Augment: non-retryable error to %s: %v", upstreamURL, lastErr)
+					break
+				}
+				logger.Warn("Augment: retryable error to %s (attempt %d/%d): %v", upstreamURL, attempt, maxRetries, lastErr)
+				continue
+			}
+			if reqErr != nil {
+				lastErr = reqErr
+				logger.Error("Augment: failed to create upstream request: %v", reqErr)
 				break
 			}
+
+			requestStart := time.Now()
+			resp, lastErr = s.httpClient.Do(attemptReq)
+			requestDuration := time.Since(requestStart)
+
+			if lastErr == nil {
+				logger.Debug("Augment: request succeeded in %v (fallback=%s)", requestDuration, currentFallbackName)
+				break
+			}
+
+			if !isRetryableError(lastErr) {
+				logger.Error("Augment: non-retryable error to %s: %v", upstreamURL, lastErr)
+				break
+			}
+			logger.Warn("Augment: retryable error to %s (attempt %d/%d): %v", upstreamURL, attempt, maxRetries, lastErr)
 		}
 
-		requestStart := time.Now()
-		resp, lastErr = s.httpClient.Do(req)
-		requestDuration := time.Since(requestStart)
-
-		if lastErr == nil {
-			logger.Debug("Augment: request succeeded in %v", requestDuration)
-			break // Success
-		}
-
-		// Check if error is retryable
-		if !isRetryableError(lastErr) {
-			logger.Error("Augment: non-retryable error to %s: %v", upstreamURL, lastErr)
+		if lastErr != nil {
 			break
 		}
 
-		logger.Warn("Augment: retryable error to %s (attempt %d/%d): %v", upstreamURL, attempt, maxRetries, lastErr)
+		if !shouldRetryWithFallback(targetType, resp) || fallbackIndex+1 >= len(fallbackPayloads) {
+			break
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			break
+		}
+
+		nextFallbackIndex, nextFallback := selectFallbackPayload(targetType, body, fallbackPayloads, fallbackIndex)
+		if nextFallback == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			break
+		}
+
+		fallbackIndex = nextFallbackIndex
+		currentRequestBody = nextFallback.Body
+		currentFallbackName = nextFallback.Name
+		logger.Warn("Augment: retrying with request fallback=%s target=%s status=%d", currentFallbackName, targetType, resp.StatusCode)
 	}
 
 	if lastErr != nil {
@@ -1490,4 +1518,160 @@ func claudeThinkingEnabled(body []byte) bool {
 	default:
 		return false
 	}
+}
+
+func shouldRetryWithFallback(targetType string, resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	switch targetType {
+	case "openai", "openai2", "claude", "cli":
+		return true
+	default:
+		return false
+	}
+}
+
+func selectFallbackPayload(targetType string, body []byte, payloads []augment.RequestFallbackPayload, lastFallbackIndex int) (int, *augment.RequestFallbackPayload) {
+	if len(body) == 0 || len(payloads) == 0 || lastFallbackIndex >= len(payloads)-1 {
+		return -1, nil
+	}
+
+	message := fallbackMessageFromBody(body)
+	orderedNames := fallbackNamesForError(targetType, message)
+
+	// If we have matching error-driven fallback names, select the first matching one
+	if len(orderedNames) > 0 {
+		for _, name := range orderedNames {
+			for idx := lastFallbackIndex + 1; idx < len(payloads); idx++ {
+				if payloads[idx].Name == name {
+					payload := payloads[idx]
+					return idx, &payload
+				}
+			}
+		}
+	}
+
+	// BYOK-style exhaustive fallback: if no specific match, try next in sequence
+	nextIndex := lastFallbackIndex + 1
+	if nextIndex < len(payloads) {
+		payload := payloads[nextIndex]
+		return nextIndex, &payload
+	}
+
+	return -1, nil
+}
+
+func fallbackNamesForError(targetType string, message string) []string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "" {
+		return nil
+	}
+
+	switch targetType {
+	case "openai", "openai2":
+		return openAIFallbackNamesForError(message)
+	case "claude", "cli":
+		return claudeFallbackNamesForError(message)
+	default:
+		return nil
+	}
+}
+
+func fallbackMessageFromBody(body []byte) string {
+	message := strings.ToLower(extractJSONErrorMessage(body))
+	if strings.TrimSpace(message) != "" && message != strings.ToLower("Upstream request failed") {
+		return message
+	}
+	return strings.ToLower(string(body))
+}
+
+func openAIFallbackNamesForError(message string) []string {
+	hasIncludeUsage := containsAny(message, "include_usage", "stream_options", "stream options")
+	hasToolChoice := containsAny(message, "tool_choice", "tool choice")
+	hasParallelToolCalls := containsAny(message, "parallel_tool_calls", "parallel tool calls")
+	hasFunctions := containsAny(message, "functions", "function calling")
+	hasToolsParam := containsAny(message, "unsupported parameter: tools", "unknown parameter: tools", "parameter \"tools\"", "field required: tools")
+	hasToolCalls := containsAny(message, "tool calls") || (strings.Contains(message, "tool_calls") && !hasParallelToolCalls)
+	hasUnsupported := containsAny(message, "unsupported parameter", "unknown parameter", "unrecognized request argument", "extra inputs are not permitted")
+	hasInvalidValue := containsAny(message, "invalid_value", "invalid value", "is not of type", "invalid type")
+	hasVision := containsAny(message, "image", "vision", "multimodal", "content type")
+
+	var names []string
+	if hasIncludeUsage {
+		names = append(names, "drop_stream_include_usage")
+	}
+	if hasToolChoice {
+		names = append(names, "drop_tool_choice")
+	}
+	if hasParallelToolCalls {
+		names = append(names, "drop_parallel_tool_calls")
+	}
+	if hasFunctions || hasToolsParam || hasToolCalls {
+		names = append(names, "convert_tools_to_functions", "drop_tools")
+	} else if (hasUnsupported || hasInvalidValue) && !hasToolChoice && !hasParallelToolCalls && containsAny(message, "tools") {
+		names = append(names, "drop_tools")
+	}
+	if hasVision {
+		names = append(names, "strip_vision", "strip_vision_drop_tools")
+	}
+	if (hasUnsupported || hasInvalidValue) && !hasToolChoice && !hasParallelToolCalls && !hasFunctions && !hasToolsParam && !hasToolCalls && containsAny(message, "tool") {
+		names = append(names, "drop_tool_choice", "drop_tools")
+	}
+	return dedupeFallbackNames(names)
+}
+
+func claudeFallbackNamesForError(message string) []string {
+	var names []string
+	invalidType := containsAny(message, "invalid type", "expected type", "must be an array", "must be an object")
+	if containsAny(message, "tool_choice", "tool choice") {
+		names = append(names, "drop_tool_choice")
+	}
+	if containsAny(message, "system") && invalidType {
+		names = append(names, "normalize_system_blocks")
+	}
+	if containsAny(message, "messages", "content") && invalidType {
+		names = append(names, "normalize_message_blocks", "normalize_all_blocks")
+	}
+	if containsAny(message, "tool_result", "tool_use") && (invalidType || containsAny(message, "missing", "orphan", "pair")) {
+		names = append(names, "repair_tool_pairs")
+	}
+	if containsAny(message, "messages[0]", "first message") && containsAny(message, "user", "role") {
+		names = append(names, "ensure_first_user")
+	}
+	if containsAny(message, "tools") || (containsAny(message, "tool_use", "tool use") && !containsAny(message, "tool_choice", "tool choice")) {
+		names = append(names, "drop_tools")
+	}
+	return dedupeFallbackNames(names)
+}
+
+func containsAny(message string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(message, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeFallbackNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }

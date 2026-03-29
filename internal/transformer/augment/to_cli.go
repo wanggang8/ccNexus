@@ -129,6 +129,7 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 	}
 
 	req = sanitizeProviderRequest("cli", req)
+	ensureClaudeFirstMessageIsUser(req)
 	return json.Marshal(req)
 }
 

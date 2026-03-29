@@ -46,6 +46,7 @@ func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 	}
 
 	req = sanitizeProviderRequest("claude", req)
+	ensureClaudeFirstMessageIsUser(req)
 	return json.Marshal(req)
 }
 
