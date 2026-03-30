@@ -535,6 +535,50 @@ func TestHandleStreamingResponseGracefullyEndsCursorChatOnUnexpectedEOF(t *testi
 	}
 }
 
+func TestHandleStreamingResponseCursorChatEmptyUpstreamEmitsDoneAfterUsageFallback(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "OpenAI",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+	rec := httptest.NewRecorder()
+	reqBody := []byte(`{"model":"cursor-model","messages":[{"role":"user","content":"hello from cursor"}],"stream":true}`)
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &passthroughStreamTransformer{}, "cx_chat_openai", false, "cursor-model", reqBody, 0, meta)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("expected post-loop usage fallback final chunk, got %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("expected [DONE] after empty upstream (api2cursor parity), got %s", out)
+	}
+}
+
 func TestHandleStreamingResponseDoesNotEmitDoneWithoutCursorChatPayload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
@@ -571,7 +615,8 @@ func TestHandleStreamingResponseDoesNotEmitDoneWithoutCursorChatPayload(t *testi
 		CursorState:     &newcursor.StreamFinalizeState{},
 	}
 
-	p.handleStreamingResponse(rec, resp, endpoint, &errorStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`{}`), 0, meta)
+	// Invalid JSON so estimateInputTokens returns 0; otherwise post-loop usage fallback + [DONE] would still run.
+	p.handleStreamingResponse(rec, resp, endpoint, &errorStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`not-json`), 0, meta)
 
 	body := rec.Body.String()
 	if strings.Contains(body, "data: [DONE]") {
@@ -638,7 +683,7 @@ func TestHandleStreamingResponseCursorChatClaudeDataOnlySSEPreservesTextAndUsage
 	}
 }
 
-func TestHandleStreamingResponseClaudeEmptyStartEOFDoesNotEmitSyntheticDone(t *testing.T) {
+func TestHandleStreamingResponseClaudeEmptyStartEOFEmitsDoneLikeAPI2Cursor(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
 		{
@@ -690,8 +735,9 @@ func TestHandleStreamingResponseClaudeEmptyStartEOFDoesNotEmitSyntheticDone(t *t
 	if strings.Contains(body, `"tool_calls":[`) {
 		t.Fatalf("did not expect synthesized tool calls, got %s", body)
 	}
-	if strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected no synthetic [DONE] for empty Claude start before EOF, got %s", body)
+	// Align with api2cursor: chat streams always end with data: [DONE] after upstream closes.
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected trailing [DONE] after partial Claude stream (api2cursor parity), got %s", body)
 	}
 }
 

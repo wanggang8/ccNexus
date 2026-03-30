@@ -85,7 +85,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	eventCount := 0
 	streamDone := false
 	doneSeen := false
-	cursorChatMeaningfulEventWritten := false
+	// Tracks any SSE bytes successfully written to the client on Cursor chat paths.
+	// Used to emit a trailing data: [DONE] on graceful upstream EOF (api2cursor always ends chat streams with [DONE]).
+	cursorChatClientEventWritten := false
 	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
 	var readErr error
 
@@ -99,6 +101,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			flusher.Flush()
 			if isRecording {
 				transformedRespBuffer.Write(prefix)
+			}
+			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+				cursorChatClientEventWritten = true
 			}
 		}
 	}
@@ -159,6 +164,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
 					if _, err := w.Write(usageChunk); err == nil {
 						flusher.Flush()
+						cursorChatClientEventWritten = true
 						if isRecording {
 							transformedRespBuffer.Write(usageChunk)
 						}
@@ -188,8 +194,8 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
 						doneSeen = true
 					}
-					if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
-						cursorChatMeaningfulEventWritten = true
+					if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+						cursorChatClientEventWritten = true
 					}
 				}
 			}
@@ -271,8 +277,8 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
 					doneSeen = true
 				}
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
-					cursorChatMeaningfulEventWritten = true
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					cursorChatClientEventWritten = true
 				}
 			}
 			buffer.Reset()
@@ -328,8 +334,8 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if bytes.Contains(transformedEvent, []byte("data: [DONE]")) {
 					doneSeen = true
 				}
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasMeaningfulPayload(transformedEvent) {
-					cursorChatMeaningfulEventWritten = true
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					cursorChatClientEventWritten = true
 				}
 			}
 		}
@@ -375,6 +381,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
 			if _, err := w.Write(usageChunk); err == nil {
 				flusher.Flush()
+				cursorChatClientEventWritten = true
 				if isRecording {
 					transformedRespBuffer.Write(usageChunk)
 				}
@@ -390,6 +397,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		); len(finalizeChunk) > 0 {
 			if _, err := w.Write(finalizeChunk); err == nil {
 				flusher.Flush()
+				cursorChatClientEventWritten = true
 				if isRecording {
 					transformedRespBuffer.Write(finalizeChunk)
 				}
@@ -399,7 +407,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			requestMeta.CursorState.InThinkingTag = false
 		}
 	}
-	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatMeaningfulEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatClientEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
 		if _, err := w.Write([]byte("data: [DONE]\n\n")); err == nil {
 			flusher.Flush()
 			if isRecording {
