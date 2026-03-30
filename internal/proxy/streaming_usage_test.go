@@ -851,3 +851,49 @@ func TestHandleStreamingAsNonStreamingRejectsUnexpectedEOFWithOnlyDeltaEvent(t *
 		t.Fatalf("expected no response body on delta-only EOF failure, got %s", rec.Body.String())
 	}
 }
+
+func TestHandleStreamingAsNonStreamingFallsBackToTerminalResponseObjectWithoutCompletedEvent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+		`data: {"object":"response","id":"resp_fallback","status":"completed","usage":{"input_tokens":4,"output_tokens":6,"total_tokens":10},"output":[{"type":"message","content":[{"type":"output_text","text":"hello world"}]}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(originalSSE)),
+	}
+	rec := httptest.NewRecorder()
+
+	in, out, outputText, err := p.handleStreamingAsNonStreaming(rec, resp, endpoint, &passthroughStreamTransformer{}, 0, proxyRequestMeta{})
+	if err != nil {
+		t.Fatalf("expected aggregate non-stream fallback to accept terminal response object, got %v", err)
+	}
+	if in != 4 || out != 6 {
+		t.Fatalf("expected usage from terminal response object, got in=%d out=%d", in, out)
+	}
+	if outputText != "hello world" {
+		t.Fatalf("expected extracted output text hello world, got %q", outputText)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_fallback"`) {
+		t.Fatalf("expected terminal response object written to client, got %s", rec.Body.String())
+	}
+}

@@ -359,3 +359,30 @@ func TestShouldCloseUpstreamConnectionOnlyForPlainHTTPStreaming(t *testing.T) {
 		t.Fatal("expected HTTPS streaming request to keep upstream connection reusable")
 	}
 }
+
+func TestGetOrCreateProxyClientReusesClientByProxyURL(t *testing.T) {
+	cfg := &config.Config{}
+	p := New(cfg, nil, nil, "test-device")
+
+	client1, err := p.getOrCreateProxyClient("http://127.0.0.1:8080", p.httpClient)
+	if err != nil {
+		t.Fatalf("getOrCreateProxyClient first call failed: %v", err)
+	}
+	client2, err := p.getOrCreateProxyClient("http://127.0.0.1:8080", p.httpClient)
+	if err != nil {
+		t.Fatalf("getOrCreateProxyClient second call failed: %v", err)
+	}
+	if client1 != client2 {
+		t.Fatal("expected proxy client to be reused for same proxy URL")
+	}
+}
+
+func TestCreateProxyTransportSupportsSocks5WithDialContext(t *testing.T) {
+	transport, err := CreateProxyTransport("socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("CreateProxyTransport failed: %v", err)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("expected SOCKS5 transport to configure DialContext")
+	}
+}

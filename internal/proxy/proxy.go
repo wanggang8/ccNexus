@@ -45,6 +45,8 @@ type Proxy struct {
 	mu                sync.RWMutex
 	server            *http.Server
 	httpClient        *http.Client // Reusable HTTP client with connection pool
+	proxyClients      map[string]*http.Client
+	proxyClientsMu    sync.RWMutex
 	trafficRecorder   *TrafficRecorder
 	activeRequests    map[string]bool               // tracks active requests by endpoint name
 	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
@@ -83,6 +85,7 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		stats:           stats,
 		currentIndex:    0,
 		httpClient:      httpClient,
+		proxyClients:    make(map[string]*http.Client),
 		trafficRecorder: NewTrafficRecorder(),
 		activeRequests:  make(map[string]bool),
 		endpointCtx:     make(map[string]context.Context),
@@ -93,6 +96,8 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 
 // SetOnEndpointSuccess sets the callback for successful endpoint requests
 func (p *Proxy) SetOnEndpointSuccess(callback func(endpointName string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.onEndpointSuccess = callback
 }
 
@@ -122,6 +127,37 @@ func (p *Proxy) closeIdleUpstreamConnections() {
 	if transport, ok := p.httpClient.Transport.(idleCloser); ok {
 		transport.CloseIdleConnections()
 	}
+}
+
+func (p *Proxy) getOrCreateProxyClient(proxyURL string, baseClient *http.Client) (*http.Client, error) {
+	if strings.TrimSpace(proxyURL) == "" {
+		return baseClient, nil
+	}
+
+	p.proxyClientsMu.RLock()
+	cached := p.proxyClients[proxyURL]
+	p.proxyClientsMu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	transport, err := CreateProxyTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{
+		Timeout:   baseClient.Timeout,
+		Transport: transport,
+	}
+
+	p.proxyClientsMu.Lock()
+	defer p.proxyClientsMu.Unlock()
+	if existing := p.proxyClients[proxyURL]; existing != nil {
+		return existing, nil
+	}
+	p.proxyClients[proxyURL] = client
+	return client, nil
 }
 
 // Start starts the proxy server.
@@ -243,6 +279,17 @@ func (p *Proxy) getCurrentEndpointForRequest(meta proxyRequestMeta) config.Endpo
 	}
 
 	return config.Endpoint{}
+}
+
+func (p *Proxy) getEndpointByCurrentIndex() config.Endpoint {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	endpoints := p.config.GetEndpoints()
+	if len(endpoints) == 0 {
+		return config.Endpoint{}
+	}
+	return endpoints[p.currentIndex%len(endpoints)]
 }
 
 // markRequestActive marks an endpoint as having active requests
@@ -400,12 +447,12 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
+	r.Body.Close()
 	if err != nil {
 		logger.Error("Failed to read request body: %v", err)
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
 
 	trimmedBody := bytes.TrimSpace(bodyBytes)
 	if len(trimmedBody) == 0 {
@@ -455,6 +502,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	endpointAttempts := 0
 	lastEndpointName := ""
 	refreshedCredentialAttempts := make(map[int64]bool)
+	transientBackoff := 300 * time.Millisecond
 
 	for retry := 0; retry < maxRetries; retry++ {
 		endpoint := p.getCurrentEndpointForRequest(requestMeta)
@@ -680,14 +728,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ctx := p.getEndpointContext(endpoint.Name)
-		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config)
+		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config, p.getOrCreateProxyClient)
 		if err != nil {
 			logger.Error("[%s] Request failed: %v", endpoint.Name, err)
 			if isTransientNetworkError(err) {
 				p.closeIdleUpstreamConnections()
-				logger.Warn("[%s] Transient network error, retrying same endpoint: %v", endpoint.Name, err)
+				logger.Warn("[%s] Transient network error, retrying same endpoint (backoff=%v): %v", endpoint.Name, transientBackoff, err)
 				p.markRequestInactive(endpoint.Name)
-				time.Sleep(300 * time.Millisecond)
+				time.Sleep(transientBackoff)
+				if transientBackoff < 5*time.Second {
+					transientBackoff *= 2
+				}
 				endpointAttempts = 0
 				continue
 			}
@@ -799,7 +850,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans, requestMeta)
+			inputTokens, outputTokens, originalResp, transformedResp, err := p.handleNonStreamingResponse(w, resp, endpoint, trans, requestMeta, effectiveRequest.Context())
 			if err == nil {
 				p.stats.RecordRequest(endpoint.Name)
 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)

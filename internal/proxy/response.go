@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 
 // handleNonStreamingResponse processes non-streaming responses.
 // Returns: inputTokens, outputTokens, originalResponse, transformedResponse, error.
-func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, requestMeta proxyRequestMeta) (int, int, []byte, []byte, error) {
+func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, requestMeta proxyRequestMeta, reqCtx context.Context) (int, int, []byte, []byte, error) {
 	var bodyBytes []byte
 	var err error
 
@@ -81,7 +82,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 		return 0, 0, bodyBytes, nil, err
 	}
 	if !requestMeta.CursorMode {
-		transformedResp, err = p.autoContinueCursorResponseFull(transformedResp, bodyBytes, &requestMeta)
+		transformedResp, err = p.autoContinueCursorResponseFull(reqCtx, transformedResp, bodyBytes, &requestMeta)
 		if err != nil {
 			logger.Error("[%s] Failed to auto-continue cursor response: %v", endpoint.Name, err)
 			return 0, 0, bodyBytes, nil, err

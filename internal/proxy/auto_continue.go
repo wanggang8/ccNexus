@@ -13,35 +13,53 @@ import (
 	newcursor "github.com/lich0821/ccNexus/internal/cursorbridge"
 )
 
+// Pre-compiled regular expressions for performance
+var (
+	reJsonAction       = regexp.MustCompile("```json\\s+action")
+	reJsonActionBlock  = regexp.MustCompile("```json\\s+action[\\s\\S]*?```")
+	reLineCodeBlock    = regexp.MustCompile("(?m)^```")
+	reOpenTag          = regexp.MustCompile("(?m)^<[^/][a-zA-Z]")
+	reCloseTag         = regexp.MustCompile("(?m)^</[a-zA-Z]")
+	reTrailingPunct    = regexp.MustCompile(`[,;:\[{(]\s*$`)
+	reTrailingEscape   = regexp.MustCompile(`\\n?\s*$`)
+	reTrailingLower    = regexp.MustCompile(`[a-z]$`)
+	reToolCallOpen       = regexp.MustCompile("```json(?:\\s+action)?")
+	reFence              = regexp.MustCompile("(?m)^```")
+	reListOrNumber       = regexp.MustCompile(`^([-*+]|\d+\.)\s*$`)
+	reLikelyDangling     = regexp.MustCompile("^[\\p{L}\\p{N}_./`-]{1,16}$")
+	reEndPunct           = regexp.MustCompile("[.!?;:。！？`\"'\"')\\]\\}]$")
+	reTrailingCommaClose = regexp.MustCompile(`,\s*([}\]])`)
+)
+
 func isCursorResponseTruncated(text string) bool {
 	trimmed := strings.TrimRightFunc(text, unicode.IsSpace)
 	if trimmed == "" {
 		return false
 	}
-	jsonActionOpens := len(regexp.MustCompile("```json\\s+action").FindAllStringIndex(trimmed, -1))
+	jsonActionOpens := len(reJsonAction.FindAllStringIndex(trimmed, -1))
 	if jsonActionOpens > 0 {
-		jsonActionBlocks := regexp.MustCompile("```json\\s+action[\\s\\S]*?```").FindAllStringIndex(trimmed, -1)
+		jsonActionBlocks := reJsonActionBlock.FindAllStringIndex(trimmed, -1)
 		if jsonActionOpens > len(jsonActionBlocks) {
 			return true
 		}
 		return false
 	}
-	lineStartCodeBlocks := len(regexp.MustCompile("(?m)^```").FindAllStringIndex(trimmed, -1))
+	lineStartCodeBlocks := len(reLineCodeBlock.FindAllStringIndex(trimmed, -1))
 	if lineStartCodeBlocks%2 != 0 {
 		return true
 	}
-	openTags := len(regexp.MustCompile("(?m)^<[^/][a-zA-Z]").FindAllStringIndex(trimmed, -1))
-	closeTags := len(regexp.MustCompile("(?m)^</[a-zA-Z]").FindAllStringIndex(trimmed, -1))
+	openTags := len(reOpenTag.FindAllStringIndex(trimmed, -1))
+	closeTags := len(reCloseTag.FindAllStringIndex(trimmed, -1))
 	if openTags > closeTags+1 {
 		return true
 	}
-	if regexp.MustCompile(`[,;:\[{(]\s*$`).MatchString(trimmed) {
+	if reTrailingPunct.MatchString(trimmed) {
 		return true
 	}
-	if len(trimmed) > 2000 && regexp.MustCompile(`\\n?\s*$`).MatchString(trimmed) && !strings.HasSuffix(trimmed, "```") {
+	if len(trimmed) > 2000 && reTrailingEscape.MatchString(trimmed) && !strings.HasSuffix(trimmed, "```") {
 		return true
 	}
-	if len(trimmed) < 500 && regexp.MustCompile(`[a-z]$`).MatchString(trimmed) {
+	if len(trimmed) < 500 && reTrailingLower.MatchString(trimmed) {
 		return false
 	}
 	return false
@@ -71,8 +89,7 @@ func stringValue(value interface{}) string {
 
 func parseCursorToolCalls(responseText string) []cursorParsedToolCall {
 	toolCalls := make([]cursorParsedToolCall, 0)
-	openPattern := regexp.MustCompile("```json(?:\\s+action)?")
-	indices := openPattern.FindAllStringIndex(responseText, -1)
+	indices := reToolCallOpen.FindAllStringIndex(responseText, -1)
 	for _, match := range indices {
 		contentStart := match[1]
 		pos := contentStart
@@ -213,7 +230,7 @@ func cursorPayloadLooksSemanticallyIncomplete(payload string) bool {
 	if len(trimmed) < 1200 {
 		return false
 	}
-	fenceCount := len(regexp.MustCompile("(?m)^```").FindAllStringIndex(trimmed, -1))
+	fenceCount := len(reFence.FindAllStringIndex(trimmed, -1))
 	if fenceCount%2 != 0 {
 		return true
 	}
@@ -236,14 +253,14 @@ func cursorPayloadLooksSemanticallyIncomplete(payload string) bool {
 			return true
 		}
 	}
-	if regexp.MustCompile(`^([-*+]|\d+\.)\s*$`).MatchString(lastNonEmpty) {
+	if reListOrNumber.MatchString(lastNonEmpty) {
 		return true
 	}
-	if regexp.MustCompile(`[,;:\[{(]\s*$`).MatchString(lastNonEmpty) {
+	if reTrailingPunct.MatchString(lastNonEmpty) {
 		return true
 	}
-	likelyDangling := regexp.MustCompile("^[\\p{L}\\p{N}_./`-]{1,16}$").MatchString(lastNonEmpty)
-	if likelyDangling && !regexp.MustCompile("[.!?;:。！？`\"'”’\\)\\]\\}]$").MatchString(lastNonEmpty) {
+	likelyDangling := reLikelyDangling.MatchString(lastNonEmpty)
+	if likelyDangling && !reEndPunct.MatchString(lastNonEmpty) {
 		return true
 	}
 	return false
@@ -314,7 +331,7 @@ func cursorFixJSON(jsonStr string) (string, bool) {
 		builder.WriteRune(last)
 	}
 	fixed := strings.TrimSpace(builder.String())
-	fixed = regexp.MustCompile(`,\s*([}\]])`).ReplaceAllString(fixed, "$1")
+	fixed = reTrailingCommaClose.ReplaceAllString(fixed, "$1")
 	return fixed, fixed != ""
 }
 
@@ -381,7 +398,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (p *Proxy) autoContinueCursorResponseFull(transformedResp []byte, originalBody []byte, meta *proxyRequestMeta) ([]byte, error) {
+func (p *Proxy) autoContinueCursorResponseFull(ctx context.Context, transformedResp []byte, originalBody []byte, meta *proxyRequestMeta) ([]byte, error) {
 	if meta == nil || !meta.CursorMode {
 		return transformedResp, nil
 	}
@@ -416,7 +433,7 @@ func (p *Proxy) autoContinueCursorResponseFull(transformedResp []byte, originalB
 		return transformedResp, nil
 	}
 
-	fullText := p.autoContinueCursorText(text, originalBody, len(toolCalls) > 0)
+	fullText := p.autoContinueCursorText(ctx, text, originalBody, len(toolCalls) > 0)
 	if fullText == "" {
 		meta.Degraded = true
 		meta.DegradedReason = append(meta.DegradedReason, "auto_continue_failed")
@@ -435,7 +452,7 @@ func (p *Proxy) autoContinueCursorResponseFull(transformedResp []byte, originalB
 	return updated, nil
 }
 
-func (p *Proxy) autoContinueCursorResponseStream(outputText string, originalBody []byte, meta *proxyRequestMeta) (string, error) {
+func (p *Proxy) autoContinueCursorResponseStream(ctx context.Context, outputText string, originalBody []byte, meta *proxyRequestMeta) (string, error) {
 	if meta == nil || !meta.CursorMode {
 		return "", nil
 	}
@@ -445,7 +462,7 @@ func (p *Proxy) autoContinueCursorResponseStream(outputText string, originalBody
 	if !shouldAutoContinueTruncatedToolResponse(outputText, true) {
 		return "", nil
 	}
-	fullText := p.autoContinueCursorText(outputText, originalBody, true)
+	fullText := p.autoContinueCursorText(ctx, outputText, originalBody, true)
 	if fullText == "" {
 		meta.Degraded = true
 		meta.DegradedReason = append(meta.DegradedReason, "auto_continue_failed")
@@ -459,7 +476,7 @@ func (p *Proxy) autoContinueCursorResponseStream(outputText string, originalBody
 	return "", nil
 }
 
-func (p *Proxy) autoContinueCursorText(text string, originalBody []byte, hasTools bool) string {
+func (p *Proxy) autoContinueCursorText(ctx context.Context, text string, originalBody []byte, hasTools bool) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return ""
@@ -480,10 +497,7 @@ func (p *Proxy) autoContinueCursorText(text string, originalBody []byte, hasTool
 	delete(basePayload, "function_call")
 
 	fullText := trimmed
-	maxAutoContinue := 1
-	if maxAutoContinue < 1 {
-		maxAutoContinue = 1
-	}
+	const maxAutoContinue = 1
 	continueCount := 0
 	consecutiveSmallAdds := 0
 
@@ -509,11 +523,10 @@ func (p *Proxy) autoContinueCursorText(text string, originalBody []byte, hasTool
 			return ""
 		}
 
-		endpoints := p.config.GetEndpoints()
-		if len(endpoints) == 0 {
+		endpoint := p.getEndpointByCurrentIndex()
+		if endpoint.Name == "" {
 			return ""
 		}
-		endpoint := endpoints[p.currentIndex%len(endpoints)]
 		proxyReq, err := buildProxyRequest(&http.Request{Method: http.MethodPost, URL: &url.URL{Path: "/v1/chat/completions"}},
 			endpoint,
 			endpoint.APIKey,
@@ -526,7 +539,7 @@ func (p *Proxy) autoContinueCursorText(text string, originalBody []byte, hasTool
 			return ""
 		}
 
-		resp, err := sendRequest(context.Background(), proxyReq, p.httpClient, p.config)
+		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config, p.getOrCreateProxyClient)
 		if err != nil {
 			return ""
 		}

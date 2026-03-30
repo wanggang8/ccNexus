@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -431,17 +432,23 @@ func buildGeminiHeaders(apiKey string) map[string]string {
 }
 
 // sendRequest sends the HTTP request and returns the response
-func sendRequest(ctx context.Context, proxyReq *http.Request, httpClient *http.Client, cfg *config.Config) (*http.Response, error) {
+func sendRequest(ctx context.Context, proxyReq *http.Request, httpClient *http.Client, cfg *config.Config, proxyClientFactory func(string, *http.Client) (*http.Client, error)) (*http.Response, error) {
 	proxyReq = proxyReq.WithContext(ctx)
 
 	proxyURL := resolveProxyURLForRequest(cfg, proxyReq.URL)
-	// Apply proxy if configured
 	if strings.TrimSpace(proxyURL) != "" {
-		// Clone the client and replace transport for this request
+		if proxyClientFactory != nil {
+			clientWithProxy, err := proxyClientFactory(proxyURL, httpClient)
+			if err != nil {
+				logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
+				return httpClient.Do(proxyReq)
+			}
+			return clientWithProxy.Do(proxyReq)
+		}
+
 		clientWithProxy := &http.Client{
 			Timeout: httpClient.Timeout,
 		}
-
 		transport, err := CreateProxyTransport(proxyURL)
 		if err != nil {
 			logger.Warn("Failed to create proxy transport: %v, using direct connection", err)
@@ -449,7 +456,6 @@ func sendRequest(ctx context.Context, proxyReq *http.Request, httpClient *http.C
 		} else {
 			clientWithProxy.Transport = transport
 		}
-
 		return clientWithProxy.Do(proxyReq)
 	}
 
@@ -516,7 +522,9 @@ func CreateProxyTransport(proxyURL string) (*http.Transport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
 		}
-		transport.Dial = dialer.Dial
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		}
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(parsed)
 	default:

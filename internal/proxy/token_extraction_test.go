@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,24 @@ func TestExtractTokensFromEventSupportsResponsesAndOpenAIChunk(t *testing.T) {
 	}
 }
 
+func TestExtractTokensFromEventSkipsInvalidLinesAndPreservesLatestUsage(t *testing.T) {
+	p := &Proxy{}
+	in, out := 0, 0
+	mixed := []byte(strings.Join([]string{
+		"event: keep-alive",
+		"data: not-json",
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}`,
+		"",
+		`data: {"type":"message_delta","usage":{"output_tokens":8}}`,
+		"",
+	}, "\n"))
+
+	p.extractTokensFromEvent(mixed, &in, &out)
+	if in != 5 || out != 8 {
+		t.Fatalf("expected latest valid usage in=5 out=8, got in=%d out=%d", in, out)
+	}
+}
+
 func TestExtractTextFromEventSupportsResponsesAndOpenAIFormats(t *testing.T) {
 	p := &Proxy{}
 	var output strings.Builder
@@ -78,6 +97,22 @@ func TestExtractTextFromEventSupportsResponsesAndOpenAIFormats(t *testing.T) {
 
 	if got := output.String(); got != "hello world!" {
 		t.Fatalf("unexpected extracted text: %q", got)
+	}
+}
+
+func TestIsMessageStopEventSkipsNoiseAndInvalidJSON(t *testing.T) {
+	p := &Proxy{}
+	eventData := []byte(strings.Join([]string{
+		"event: ping",
+		"data: not-json",
+		`data: {"type":"content_block_delta","delta":{"text":"hello"}}`,
+		"",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n"))
+
+	if !p.isMessageStopEvent(eventData) {
+		t.Fatal("expected message_stop to be detected despite preceding noise")
 	}
 }
 
@@ -117,11 +152,29 @@ func TestHandleNonStreamingResponseExtractsUsageFromSSEPayloadFallback(t *testin
 	rec := httptest.NewRecorder()
 	p := &Proxy{}
 
-	in, out, _, _, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{}, proxyRequestMeta{})
+	in, out, _, _, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{}, proxyRequestMeta{}, context.Background())
 	if err != nil {
 		t.Fatalf("handleNonStreamingResponse failed: %v", err)
 	}
 	if in != 13 || out != 8 {
 		t.Fatalf("expected usage from SSE fallback in=13 out=8, got in=%d out=%d", in, out)
+	}
+}
+
+func TestCursorChatBundleHelpersDistinguishUsageFromMeaningfulPayload(t *testing.T) {
+	usageOnly := []byte("data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n")
+	if !cursorChatBundleHasUsage(usageOnly) {
+		t.Fatal("expected usage-only chunk to report usage")
+	}
+	if cursorChatBundleHasMeaningfulPayload(usageOnly) {
+		t.Fatal("expected usage-only chunk not to count as meaningful payload")
+	}
+
+	contentChunk := []byte("data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n")
+	if cursorChatBundleHasUsage(contentChunk) {
+		t.Fatal("expected content-only chunk not to report usage")
+	}
+	if !cursorChatBundleHasMeaningfulPayload(contentChunk) {
+		t.Fatal("expected content chunk to count as meaningful payload")
 	}
 }

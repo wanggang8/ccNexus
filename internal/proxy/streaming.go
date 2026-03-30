@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ import (
 // handleStreamingResponse processes streaming SSE responses.
 // Returns: inputTokens, outputTokens, outputText, originalResponse, transformedResponse.
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64, requestMeta proxyRequestMeta) (int, int, string, []byte, []byte) {
+	defer resp.Body.Close()
+
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -42,7 +45,6 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		logger.Error("[%s] ResponseWriter does not support flushing", endpoint.Name)
-		resp.Body.Close()
 		return 0, 0, "", nil, nil
 	}
 
@@ -52,7 +54,6 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		gzipReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
 			logger.Error("[%s] Failed to create gzip reader: %v", endpoint.Name, err)
-			resp.Body.Close()
 			return 0, 0, "", nil, nil
 		}
 		defer gzipReader.Close()
@@ -149,11 +150,20 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx, requestMeta, firstNonEmptyString(modelName, requestMeta.ClientModel))
 			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+				if inputTokens == 0 {
+					inputTokens = p.estimateInputTokens(bodyBytes)
+				}
+				if outputTokens == 0 && outputText.Len() > 0 {
+					outputTokens = tokencount.EstimateOutputTokens(outputText.String())
+				}
 				if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
 					if _, err := w.Write(usageChunk); err == nil {
 						flusher.Flush()
 						if isRecording {
 							transformedRespBuffer.Write(usageChunk)
+						}
+						if requestMeta.CursorState != nil {
+							requestMeta.CursorState.ChatUsageSeen = true
 						}
 					}
 				}
@@ -356,11 +366,20 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+		if inputTokens == 0 {
+			inputTokens = p.estimateInputTokens(bodyBytes)
+		}
+		if outputTokens == 0 && outputText.Len() > 0 {
+			outputTokens = tokencount.EstimateOutputTokens(outputText.String())
+		}
 		if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
 			if _, err := w.Write(usageChunk); err == nil {
 				flusher.Flush()
 				if isRecording {
 					transformedRespBuffer.Write(usageChunk)
+				}
+				if requestMeta.CursorState != nil {
+					requestMeta.CursorState.ChatUsageSeen = true
 				}
 			}
 		}
@@ -391,14 +410,17 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 	// Non-cursor fallback only: Cursor path aligns with api2cursor and skips auto-continue.
 	if !requestMeta.CursorMode && outputText.Len() > 0 {
-		continuation, err := p.autoContinueCursorResponseStream(outputText.String(), bodyBytes, &requestMeta)
+		reqCtx := context.Background()
+		if resp.Request != nil {
+			reqCtx = resp.Request.Context()
+		}
+		continuation, err := p.autoContinueCursorResponseStream(reqCtx, outputText.String(), bodyBytes, &requestMeta)
 		if err == nil && continuation != "" {
 			w.Write([]byte(continuation))
 			flusher.Flush()
 		}
 	}
 
-	resp.Body.Close()
 	return inputTokens, outputTokens, outputText.String(), originalRespBuffer.Bytes(), transformedRespBuffer.Bytes()
 }
 
@@ -518,9 +540,8 @@ func buildCursorChatUsageFallbackChunk(modelName string, state *newcursor.Stream
 	if err != nil {
 		return nil
 	}
-	if state != nil {
-		state.ChatUsageSeen = true
-	}
+	// NOTE: Do not set state.ChatUsageSeen here.
+	// Caller must set it after successful write to avoid skipping retry on write failure.
 	return []byte("data: " + string(encoded) + "\n\n")
 }
 
@@ -683,22 +704,29 @@ func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transfo
 	return trans.TransformResponseWithContext(eventData, true, streamCtx)
 }
 
-// extractTokensFromEvent extracts token counts from SSE event
-func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputTokens *int) {
-	scanner := bufio.NewScanner(bytes.NewReader(eventData))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
+func forEachSSEDataLine(eventData []byte, fn func(jsonData []byte) bool) {
+	for _, line := range bytes.Split(eventData, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
 
-		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if jsonData == "" || jsonData == "[DONE]" {
+		jsonData := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(jsonData) == 0 || bytes.Equal(jsonData, []byte("[DONE]")) {
 			continue
 		}
+		if !fn(jsonData) {
+			return
+		}
+	}
+}
+
+// extractTokensFromEvent extracts token counts from SSE event
+func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputTokens *int) {
+	forEachSSEDataLine(eventData, func(jsonData []byte) bool {
 		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-			continue
+		if err := json.Unmarshal(jsonData, &event); err != nil {
+			return true
 		}
 
 		applyUsage := func(usage map[string]interface{}) {
@@ -743,23 +771,17 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 				applyUsage(usage)
 			}
 		}
-	}
+		return true
+	})
 }
 
 // extractTextFromEvent extracts text content from transformed event
 // Enhanced to support both delta.text and content_block_delta formats
 func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *strings.Builder) {
-	scanner := bufio.NewScanner(bytes.NewReader(transformedEvent))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	forEachSSEDataLine(transformedEvent, func(jsonData []byte) bool {
 		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-			continue
+		if err := json.Unmarshal(jsonData, &event); err != nil {
+			return true
 		}
 
 		eventType, _ := event["type"].(string)
@@ -801,30 +823,27 @@ func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *string
 				}
 			}
 		}
-	}
+		return true
+	})
 }
 
 // isMessageStopEvent checks if the event is a message_stop event
 func (p *Proxy) isMessageStopEvent(eventData []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(eventData))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	isStop := false
+	forEachSSEDataLine(eventData, func(jsonData []byte) bool {
 		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-			continue
+		if err := json.Unmarshal(jsonData, &event); err != nil {
+			return true
 		}
 
 		eventType, _ := event["type"].(string)
 		if eventType == "message_stop" {
-			return true
+			isStop = true
+			return false
 		}
-	}
-	return false
+		return true
+	})
+	return isStop
 }
 
 // decompressGzip decompresses gzip-encoded response body
@@ -855,7 +874,8 @@ func extractAggregateTerminalPayload(rawJSON []byte, event map[string]interface{
 		return nil, false, nil
 	}
 
-	eventType := strings.TrimSpace(fmt.Sprint(event["type"]))
+	eventType, _ := event["type"].(string)
+	eventType = strings.TrimSpace(eventType)
 	if eventType != "" {
 		if eventType != "response.completed" {
 			return nil, false, nil
@@ -870,11 +890,13 @@ func extractAggregateTerminalPayload(rawJSON []byte, event map[string]interface{
 		return append([]byte(nil), rawJSON...), true, nil
 	}
 
-	if strings.TrimSpace(fmt.Sprint(event["object"])) != "response" {
+	objectType, _ := event["object"].(string)
+	if strings.TrimSpace(objectType) != "response" {
 		return nil, false, nil
 	}
 
-	status := strings.TrimSpace(fmt.Sprint(event["status"]))
+	status, _ := event["status"].(string)
+	status = strings.TrimSpace(status)
 	switch status {
 	case "", "completed", "failed", "cancelled", "canceled", "incomplete":
 	default:
