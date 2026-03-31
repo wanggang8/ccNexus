@@ -194,8 +194,8 @@ func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
 
 func TestSelectFallbackPayload_ExhaustiveWhenNoMatch(t *testing.T) {
 	payloads := []augment.RequestFallbackPayload{
-		{Name: "drop_stream_include_usage", Body: []byte(`{"a":1}`)},
-		{Name: "drop_tool_choice", Body: []byte(`{"a":2}`)},
+		{Name: "drop_tool_choice", Body: []byte(`{"a":1}`)},
+		{Name: "drop_parallel_tool_calls", Body: []byte(`{"a":2}`)},
 		{Name: "drop_tools", Body: []byte(`{"a":3}`)},
 	}
 	body := []byte(`{"error":{"message":"some unknown error"}}`)
@@ -207,8 +207,8 @@ func TestSelectFallbackPayload_ExhaustiveWhenNoMatch(t *testing.T) {
 	if idx != 0 {
 		t.Errorf("expected index 0, got %d", idx)
 	}
-	if payload.Name != "drop_stream_include_usage" {
-		t.Errorf("expected drop_stream_include_usage, got %s", payload.Name)
+	if payload.Name != "drop_tool_choice" {
+		t.Errorf("expected drop_tool_choice, got %s", payload.Name)
 	}
 
 	idx2, payload2 := selectFallbackPayload("openai", body, payloads, idx)
@@ -218,12 +218,15 @@ func TestSelectFallbackPayload_ExhaustiveWhenNoMatch(t *testing.T) {
 	if idx2 != 1 {
 		t.Errorf("expected index 1, got %d", idx2)
 	}
+	if payload2.Name != "drop_parallel_tool_calls" {
+		t.Errorf("expected drop_parallel_tool_calls, got %s", payload2.Name)
+	}
 }
 
 func TestSelectFallbackPayload_ErrorDrivenPicksSpecific(t *testing.T) {
 	payloads := []augment.RequestFallbackPayload{
-		{Name: "drop_stream_include_usage", Body: []byte(`{"a":1}`)},
-		{Name: "drop_tool_choice", Body: []byte(`{"a":2}`)},
+		{Name: "drop_tool_choice", Body: []byte(`{"a":1}`)},
+		{Name: "drop_parallel_tool_calls", Body: []byte(`{"a":2}`)},
 		{Name: "drop_tools", Body: []byte(`{"a":3}`)},
 	}
 	body := []byte(`{"error":{"message":"Unsupported parameter: tool_choice"}}`)
@@ -235,8 +238,8 @@ func TestSelectFallbackPayload_ErrorDrivenPicksSpecific(t *testing.T) {
 	if payload.Name != "drop_tool_choice" {
 		t.Errorf("expected drop_tool_choice, got %s", payload.Name)
 	}
-	if idx != 1 {
-		t.Errorf("expected index 1, got %d", idx)
+	if idx != 0 {
+		t.Errorf("expected index 0, got %d", idx)
 	}
 }
 

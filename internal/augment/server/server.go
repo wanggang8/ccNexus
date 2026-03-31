@@ -58,8 +58,9 @@ func (rw *responseWriter) Flush() {
 
 // limitedBuffer captures at most limit bytes (best-effort) to avoid unbounded memory usage.
 type limitedBuffer struct {
-	data  []byte
-	limit int
+	data      []byte
+	limit     int
+	truncated bool
 }
 
 func newLimitedBuffer(limit int) *limitedBuffer {
@@ -80,7 +81,10 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 			b.data = append(b.data, p...)
 		} else {
 			b.data = append(b.data, p[:remaining]...)
+			b.truncated = true
 		}
+	} else {
+		b.truncated = true
 	}
 	// Pretend we consumed the whole input to keep streaming conversion flowing.
 	return len(p), nil
@@ -810,20 +814,33 @@ func (s *Server) handleStreamingResponse(
 		return 0, 0, nil, fmt.Errorf("augment: response writer does not support flushing")
 	}
 
-	var capture *limitedBuffer
 	writer := io.Writer(w)
+	var capture *limitedBuffer
+	var tee *teeCapture
 	if captureNDJSON {
 		capture = newLimitedBuffer(proxy.MaxBodySize + 1)
-		writer = &teeCapture{w: w, cap: capture}
+		tee = &teeCapture{w: w, cap: capture}
+		writer = tee
 	}
 
-	// Convert SSE to NDJSON on the fly.
 	inputTokens, outputTokens, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
 	flusher.Flush()
 	if capture != nil {
 		outBytes = capture.Bytes()
 	}
-	return inputTokens, outputTokens, outBytes, err
+	if err == nil {
+		return inputTokens, outputTokens, outBytes, nil
+	}
+
+	if capture == nil || capture.truncated {
+		return inputTokens, outputTokens, outBytes, err
+	}
+	inputTokens, outputTokens, converted, convErr := augment.ConvertJSONToNDJSON(capture.Bytes(), targetType, toolContext)
+	if convErr != nil {
+		return inputTokens, outputTokens, outBytes, err
+	}
+	outBytes = converted
+	return inputTokens, outputTokens, outBytes, nil
 }
 
 // handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.

@@ -1209,9 +1209,6 @@ func TestBuildOpenAIRequestFallbackPayloads_Independent(t *testing.T) {
 			map[string]interface{}{"role": "user", "content": "hello"},
 		},
 		"stream": true,
-		"stream_options": map[string]interface{}{
-			"include_usage": true,
-		},
 		"tools": []interface{}{
 			map[string]interface{}{
 				"type": "function",
@@ -1229,30 +1226,6 @@ func TestBuildOpenAIRequestFallbackPayloads_Independent(t *testing.T) {
 
 	if len(payloads) == 0 {
 		t.Fatal("expected at least one fallback payload")
-	}
-
-	// Each payload should be independently constructed from original.
-	// Verify that drop_stream_include_usage still has tool_choice (not stripped cumulatively)
-	var dropUsage map[string]interface{}
-	for _, p := range payloads {
-		if p.Name == "drop_stream_include_usage" {
-			if err := json.Unmarshal(p.Body, &dropUsage); err != nil {
-				t.Fatalf("failed to unmarshal drop_stream_include_usage: %v", err)
-			}
-			break
-		}
-	}
-	if dropUsage == nil {
-		t.Fatal("expected drop_stream_include_usage payload")
-	}
-	if _, ok := dropUsage["tool_choice"]; !ok {
-		t.Error("drop_stream_include_usage should still have tool_choice (independent build)")
-	}
-	if _, ok := dropUsage["parallel_tool_calls"]; !ok {
-		t.Error("drop_stream_include_usage should still have parallel_tool_calls (independent build)")
-	}
-	if _, ok := dropUsage["tools"]; !ok {
-		t.Error("drop_stream_include_usage should still have tools (independent build)")
 	}
 }
 

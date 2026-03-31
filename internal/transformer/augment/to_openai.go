@@ -22,9 +22,6 @@ func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 		req["tools"] = tools
 		req["tool_choice"] = "auto"
 	}
-	if ar.IsStreaming() {
-		req["stream_options"] = map[string]interface{}{"include_usage": true}
-	}
 
 	req = sanitizeProviderRequest("openai", req)
 	return json.Marshal(req)

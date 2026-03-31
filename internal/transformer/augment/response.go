@@ -256,6 +256,29 @@ func emitFinalStopChunk(w io.Writer, stopReasonSeen bool, stopReason int, sawToo
 	writeChunkLine(w, chunk)
 }
 
+func extractUpstreamErrorMessage(obj map[string]interface{}) string {
+	if obj == nil {
+		return ""
+	}
+	if errObj := firstMap(obj, "error"); errObj != nil {
+		if msg := firstString(errObj, "message"); msg != "" {
+			return msg
+		}
+	}
+	if resp := firstMap(obj, "response"); resp != nil {
+		if errObj := firstMap(resp, "error"); errObj != nil {
+			if msg := firstString(errObj, "message"); msg != "" {
+				return msg
+			}
+		}
+	}
+	if msg := firstString(obj, "message"); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+
 func emitTokenUsageChunk(w io.Writer, tokenUsage map[string]interface{}, nextNodeID *int) bool {
 	tokenUsage = normalizePluginFacingTokenUsage(tokenUsage)
 	if len(tokenUsage) == 0 {
@@ -285,6 +308,9 @@ func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 		msg = nested
 	}
 	if firstString(msg, "type") == "error" || firstMap(msg, "error") != nil {
+		if msgText := extractUpstreamErrorMessage(msg); msgText != "" {
+			return 0, 0, fmt.Errorf("augment response: claude upstream error: %s", msgText)
+		}
 		return 0, 0, fmt.Errorf("augment response: claude upstream error")
 	}
 
@@ -361,6 +387,9 @@ func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 		return 0, 0, err
 	}
 	if firstMap(obj, "error") != nil {
+		if msgText := extractUpstreamErrorMessage(obj); msgText != "" {
+			return 0, 0, fmt.Errorf("augment response: openai upstream error: %s", msgText)
+		}
 		return 0, 0, fmt.Errorf("augment response: openai upstream error")
 	}
 
@@ -428,6 +457,12 @@ func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[st
 		resp = nested
 	}
 	if firstMap(resp, "error") != nil || firstMap(obj, "error") != nil {
+		if msgText := extractUpstreamErrorMessage(resp); msgText != "" {
+			return 0, 0, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
+		}
+		if msgText := extractUpstreamErrorMessage(obj); msgText != "" {
+			return 0, 0, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
+		}
 		return 0, 0, fmt.Errorf("augment response: openai responses upstream error")
 	}
 
@@ -1043,6 +1078,9 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			return nil
 		}
 		parsedChunks++
+		if msgText := extractUpstreamErrorMessage(ev); msgText != "" {
+			return fmt.Errorf("augment response: openai upstream error: %s", msgText)
+		}
 		if usage, ok := ev["usage"].(map[string]interface{}); ok {
 			usageAcc.merge(usage)
 		}
@@ -1369,6 +1407,9 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			}
 
 		case "response.failed", "response.error", "error":
+			if msgText := extractUpstreamErrorMessage(ev); msgText != "" {
+				return fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
+			}
 			return fmt.Errorf("augment response: openai responses upstream error")
 		}
 		return nil

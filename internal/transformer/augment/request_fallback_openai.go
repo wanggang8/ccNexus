@@ -33,22 +33,17 @@ func buildOpenAIRequestFallbackPayloads(targetType string, body []byte) []Reques
 	// Each fallback is built independently from original, not cumulatively.
 	// This matches BYOK's approach where each attempt is a fresh modification.
 
-	// 1. drop stream_options.include_usage
-	if p := deepCloneRequestMap(original); dropNestedKey(p, "stream_options", "include_usage") {
-		appendFallbackPayload(&attempts, seen, targetType, "drop_stream_include_usage", p)
-	}
-
-	// 2. drop tool_choice
+	// 1. drop tool_choice
 	if p := deepCloneRequestMap(original); dropKey(p, "tool_choice") {
 		appendFallbackPayload(&attempts, seen, targetType, "drop_tool_choice", p)
 	}
 
-	// 3. drop parallel_tool_calls
+	// 2. drop parallel_tool_calls
 	if p := deepCloneRequestMap(original); dropKey(p, "parallel_tool_calls") {
 		appendFallbackPayload(&attempts, seen, targetType, "drop_parallel_tool_calls", p)
 	}
 
-	// 4. convert tools to functions (openai chat/completions only, not responses API)
+	// 3. convert tools to functions (openai chat/completions only, not responses API)
 	// Also converts messages: tool_calls -> function_call, role:tool -> role:function
 	if targetType == "openai" {
 		if p := deepCloneRequestMap(original); convertOpenAIToolsToFunctions(p) {
@@ -57,17 +52,17 @@ func buildOpenAIRequestFallbackPayloads(targetType string, body []byte) []Reques
 		}
 	}
 
-	// 5. strip vision content from messages (for gateways that don't support multimodal)
+	// 4. strip vision content from messages (for gateways that don't support multimodal)
 	if p := deepCloneRequestMap(original); stripOpenAIVisionFromMessages(p) {
 		appendFallbackPayload(&attempts, seen, targetType, "strip_vision", p)
 	}
 
-	// 6. drop all tool-related fields
+	// 5. drop all tool-related fields
 	if p := deepCloneRequestMap(original); dropOpenAITools(p) {
 		appendFallbackPayload(&attempts, seen, targetType, "drop_tools", p)
 	}
 
-	// 7. strip vision + drop tools (combined)
+	// 6. strip vision + drop tools (combined)
 	if p := deepCloneRequestMap(original); stripOpenAIVisionFromMessages(p) || dropOpenAITools(p) {
 		// Re-apply both to ensure combined effect
 		p2 := deepCloneRequestMap(original)
