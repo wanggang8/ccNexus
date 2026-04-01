@@ -488,7 +488,7 @@ func TestHandleStreamingResponseFinalizesUnclosedCursorThinkTag(t *testing.T) {
 	}
 }
 
-func TestHandleStreamingResponseGracefullyEndsCursorChatOnUnexpectedEOF(t *testing.T) {
+func TestHandleStreamingResponseDoesNotGracefullyEndCursorChatOnUnexpectedEOFWithoutTerminalChunk(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
 		{
@@ -530,8 +530,128 @@ func TestHandleStreamingResponseGracefullyEndsCursorChatOnUnexpectedEOF(t *testi
 	if !strings.Contains(body, `"content":"hello"`) {
 		t.Fatalf("expected partial chat chunk preserved on unexpected EOF, got %s", body)
 	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected no synthetic [DONE] without terminal chat chunk, got %s", body)
+	}
+}
+
+func TestHandleStreamingResponseCursorChatUnexpectedEOFAfterTerminalChunkEmitsDone(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "TokenPool",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+
+	p.handleStreamingResponse(rec, resp, endpoint, &passthroughStreamTransformer{}, "cx_chat_openai", false, "cursor-model", []byte(`{}`), 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("expected terminal chat chunk preserved, got %s", body)
+	}
 	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected graceful [DONE] termination on unexpected EOF, got %s", body)
+		t.Fatalf("expected synthetic [DONE] after terminal chunk on unexpected EOF, got %s", body)
+	}
+}
+
+func TestHandleStreamingResponseCursorChatOpenAIInterruptedPlanToolCallDoesNotLookCompleted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "OpenAI",
+			APIUrl:      "https://example.com",
+			APIKey:      "x",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai",
+			Model:       "gpt-4.1",
+		},
+	})
+	p := &Proxy{config: cfg}
+	endpoint := cfg.GetEndpoints()[0]
+
+	originalSSE := strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_plan_1","type":"function","function":{"name":"switch_mode","arguments":""}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"target_mode_id\":\"plan\""}}]},"finish_reason":null}]}`,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &terminalErrReadCloser{
+			remaining:   originalSSE,
+			terminalErr: io.ErrUnexpectedEOF,
+		},
+	}
+	rec := httptest.NewRecorder()
+	meta := proxyRequestMeta{
+		RequestMeta: newcursor.RequestMeta{
+			CursorMode:   true,
+			ClientFormat: ClientFormatOpenAIChat,
+			ClientModel:  "cursor-model",
+		},
+		TransformerName: "cx_chat_openai",
+		CursorState:     &newcursor.StreamFinalizeState{},
+	}
+	requestBody := []byte(`{
+		"model":"cursor-model",
+		"messages":[{"role":"user","content":"switch to plan"}],
+		"tools":[{"type":"function","function":{"name":"switch_mode","description":"Switch interaction mode","parameters":{"type":"object","properties":{"target_mode_id":{"type":"string"}},"required":["target_mode_id"]}}}],
+		"stream":true
+	}`)
+
+	p.handleStreamingResponse(rec, resp, endpoint, cxchat.NewOpenAITransformer("cursor-model"), "cx_chat_openai", false, "cursor-model", requestBody, 0, meta)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"tool_calls":[`) {
+		t.Fatalf("expected interrupted tool call chunks preserved, got %s", body)
+	}
+	if !strings.Contains(body, `"id":"call_plan_1"`) {
+		t.Fatalf("expected original tool call id preserved, got %s", body)
+	}
+	if !strings.Contains(body, `"name":"switch_mode"`) {
+		t.Fatalf("expected switch_mode tool call preserved, got %s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"tool_calls"`) || strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("expected interrupted plan tool call to stay non-terminal, got %s", body)
+	}
+	if strings.Contains(body, `"usage":`) {
+		t.Fatalf("expected no synthetic usage/completion metadata for interrupted plan tool call, got %s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected interrupted plan tool call to avoid synthetic [DONE], got %s", body)
 	}
 }
 

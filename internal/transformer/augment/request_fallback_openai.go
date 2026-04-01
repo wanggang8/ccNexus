@@ -62,13 +62,26 @@ func buildOpenAIRequestFallbackPayloads(targetType string, body []byte) []Reques
 		appendFallbackPayload(&attempts, seen, targetType, "drop_tools", p)
 	}
 
-	// 6. strip vision + drop tools (combined)
+	// 6. tool-related payloads to text-only historical context
+	if p := deepCloneRequestMap(original); degradeOpenAIToolsToText(p) {
+		appendFallbackPayload(&attempts, seen, targetType, "tool_to_text", p)
+	}
+
+	// 7. strip vision + drop tools (combined)
 	if p := deepCloneRequestMap(original); stripOpenAIVisionFromMessages(p) || dropOpenAITools(p) {
 		// Re-apply both to ensure combined effect
 		p2 := deepCloneRequestMap(original)
 		stripOpenAIVisionFromMessages(p2)
 		dropOpenAITools(p2)
 		appendFallbackPayload(&attempts, seen, targetType, "strip_vision_drop_tools", p2)
+	}
+
+	// 8. strip thinking + drop tools (combined)
+	if p := deepCloneRequestMap(original); dropKey(p, "thinking") || dropOpenAITools(p) {
+		p2 := deepCloneRequestMap(original)
+		dropKey(p2, "thinking")
+		dropOpenAITools(p2)
+		appendFallbackPayload(&attempts, seen, targetType, "strip_thinking_drop_tools", p2)
 	}
 
 	return attempts
@@ -307,6 +320,54 @@ func convertOpenAIMessagesToFunctionCalling(payload map[string]interface{}) bool
 
 func buildOrphanToolResultUserContent(toolCallID, content string) string {
 	return buildOrphanToolResultAsUserContent(toolCallID, content)
+}
+
+func degradeOpenAIToolsToText(payload map[string]interface{}) bool {
+	if payload == nil {
+		return false
+	}
+	messages, ok := payload["messages"].([]interface{})
+	if !ok || len(messages) == 0 {
+		return false
+	}
+	changed := false
+	newMessages := make([]interface{}, 0, len(messages))
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]interface{})
+		if !ok {
+			newMessages = append(newMessages, raw)
+			continue
+		}
+		role := firstString(msg, "role")
+		if role == "assistant" {
+			toolCalls, _ := msg["tool_calls"].([]interface{})
+			if len(toolCalls) > 0 {
+				newMessages = append(newMessages, msg)
+				for _, tc := range normalizeOpenAIToolCalls(toolCalls) {
+					newMessages = append(newMessages, map[string]interface{}{
+						"role":    "user",
+						"content": buildOrphanToolUseAsText("orphan_tool_call", "tool_call_id", tc.ID, tc.Name, tc.Args),
+					})
+				}
+				changed = true
+				continue
+			}
+		}
+		if role == "tool" {
+			newMessages = append(newMessages, map[string]interface{}{
+				"role":    "user",
+				"content": buildOrphanToolResultAsUserContent(msg["tool_call_id"], msg["content"]),
+			})
+			changed = true
+			continue
+		}
+		newMessages = append(newMessages, msg)
+	}
+	if changed {
+		payload["messages"] = newMessages
+		dropOpenAITools(payload)
+	}
+	return changed
 }
 
 // stripOpenAIVisionFromMessages removes non-text content from messages,

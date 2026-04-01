@@ -54,6 +54,11 @@ func buildClaudeRequestFallbackPayloads(targetType string, body []byte) []Reques
 		appendFallbackPayload(&attempts, seen, targetType, "drop_tools", p)
 	}
 
+	// 8. convert historical tool traffic to text-only context
+	if p := deepCloneRequestMap(original); degradeClaudeToolsToText(p) {
+		appendFallbackPayload(&attempts, seen, targetType, "tool_to_text", p)
+	}
+
 	return attempts
 }
 
@@ -345,23 +350,72 @@ func repairClaudeToolUsePairs(payload map[string]interface{}) bool {
 }
 
 func buildOrphanClaudeToolResultAsText(block map[string]interface{}) string {
-	id := firstString(block, "tool_use_id")
-	content := ""
-	if c, ok := block["content"].(string); ok {
-		content = strings.TrimSpace(c)
+	return buildHistoricalToolResultText("orphan_tool_result", "tool_use_id", block["tool_use_id"], block["content"])
+}
+
+func degradeClaudeToolsToText(payload map[string]interface{}) bool {
+	if payload == nil {
+		return false
 	}
-	const maxLen = 8000
-	if len(content) > maxLen {
-		content = content[:maxLen/2] + "\n...[truncated]...\n" + content[len(content)-maxLen/2:]
+	messages, ok := payload["messages"].([]interface{})
+	if !ok || len(messages) == 0 {
+		return false
 	}
-	header := "[orphan_tool_result]"
-	if id != "" {
-		header = "[orphan_tool_result tool_use_id=" + id + "]"
+	changed := false
+	out := make([]interface{}, 0, len(messages))
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]interface{})
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		role := firstString(msg, "role")
+		if role == "assistant" {
+			content, _ := msg["content"].([]interface{})
+			out = append(out, msg)
+			for _, blockRaw := range content {
+				block, ok := blockRaw.(map[string]interface{})
+				if !ok || firstString(block, "type") != "tool_use" {
+					continue
+				}
+				out = append(out, map[string]interface{}{
+					"role": "user",
+					"content": []interface{}{
+						map[string]interface{}{"type": "text", "text": buildOrphanToolUseAsText("orphan_tool_use", "tool_use_id", block["id"], firstString(block, "name"), firstValue(block, "input"))},
+					},
+				})
+				changed = true
+			}
+			continue
+		}
+		if role == "user" {
+			content, _ := msg["content"].([]interface{})
+			newBlocks := make([]interface{}, 0, len(content))
+			localChanged := false
+			for _, blockRaw := range content {
+				block, ok := blockRaw.(map[string]interface{})
+				if ok && firstString(block, "type") == "tool_result" {
+					newBlocks = append(newBlocks, map[string]interface{}{"type": "text", "text": buildOrphanClaudeToolResultAsText(block)})
+					localChanged = true
+					continue
+				}
+				newBlocks = append(newBlocks, blockRaw)
+			}
+			if localChanged {
+				newMsg := cloneJSONValue(msg).(map[string]interface{})
+				newMsg["content"] = newBlocks
+				out = append(out, newMsg)
+				changed = true
+				continue
+			}
+		}
+		out = append(out, msg)
 	}
-	if content != "" {
-		return header + "\n" + content
+	if changed {
+		payload["messages"] = out
+		dropClaudeTools(payload)
 	}
-	return header
+	return changed
 }
 
 // ensureClaudeFirstMessageIsUser prepends a dummy user message if the first

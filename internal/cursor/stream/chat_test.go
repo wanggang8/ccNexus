@@ -105,6 +105,57 @@ func TestFixChatBundleAddsNewlineBeforeFirstToolCall(t *testing.T) {
 	}
 }
 
+func TestFixChatBundleDoesNotSynthesizeToolCallIDBeforeTerminalChunk(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 1 {
+		t.Fatalf("expected one tool_call chunk, got %d in %s", len(payloads), string(fixed))
+	}
+	toolCalls := payloadChoiceDelta(t, payloads[0])["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	if _, exists := toolCall["id"]; exists {
+		t.Fatalf("did not expect synthesized tool call id before terminal chunk, got %#v", toolCall)
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected function type preserved, got %#v", toolCall)
+	}
+}
+
+func TestFixChatBundleSynthesizesToolCallIDAtTerminalChunk(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 1 {
+		t.Fatalf("expected one tool_call chunk, got %d in %s", len(payloads), string(fixed))
+	}
+	toolCalls := payloadChoiceDelta(t, payloads[0])["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	id, _ := toolCall["id"].(string)
+	if !strings.HasPrefix(id, "call_") {
+		t.Fatalf("expected synthesized tool call id at terminal chunk, got %#v", toolCall)
+	}
+	if toolCall["type"] != "function" {
+		t.Fatalf("expected function type preserved, got %#v", toolCall)
+	}
+}
+
 func TestFixChatBundleClosesThinkingBeforeDone(t *testing.T) {
 	state := &FinalizeState{}
 	bundle := []byte(strings.Join([]string{

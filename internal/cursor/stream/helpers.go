@@ -76,6 +76,17 @@ func writeSSEChunk(buffer *bytes.Buffer, eventName string, payload interface{}) 
 	buffer.WriteString("\n\n")
 }
 
+func toolCallHasResolvableIdentity(toolCall map[string]interface{}) bool {
+	if toolCall == nil {
+		return false
+	}
+	if strings.TrimSpace(stringValue(toolCall["id"])) != "" {
+		return true
+	}
+	functionData, _ := toolCall["function"].(map[string]interface{})
+	return functionData != nil && strings.TrimSpace(stringValue(functionData["name"])) != ""
+}
+
 func decodeJSONObject(body []byte) (map[string]interface{}, bool) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {

@@ -838,13 +838,13 @@ func TestToOpenAI2Request_SanitizesResponsesOnlyFields(t *testing.T) {
 	}
 
 	input := map[string]interface{}{
-		"model": "gpt-5-codex",
-		"message": "继续",
+		"model":                "gpt-5-codex",
+		"message":              "继续",
 		"previous_response_id": "resp_from_log",
-		"store": true,
+		"store":                true,
 		"tool_definitions": []map[string]interface{}{
 			{
-				"name": "search",
+				"name":        "search",
 				"description": "Search docs",
 				"input_schema": map[string]interface{}{
 					"type": "object",
@@ -886,11 +886,11 @@ func TestToOpenAI2Request_RealAugmentLogCase(t *testing.T) {
 	}
 
 	input := map[string]interface{}{
-		"model":   "gpt-5.4",
-		"message": "继续",
-		"path":    "docs/augmet.log",
-		"lang":    "plaintext",
-		"mode":    "agent",
+		"model":                "gpt-5.4",
+		"message":              "继续",
+		"path":                 "docs/augmet.log",
+		"lang":                 "plaintext",
+		"mode":                 "agent",
 		"previous_response_id": "resp_real_log_case",
 		"store":                true,
 		"selected_code":        strings.Repeat("x", 16000),
@@ -1005,6 +1005,7 @@ func TestToOpenAI2Request_UsesResponsesAPIShape(t *testing.T) {
 		Model:          "gpt-5-codex",
 		Message:        "请继续",
 		UserGuidelines: "回复简洁。",
+		Mode:           "agent",
 		ToolDefinitions: []ToolDefinition{
 			{
 				Name:        "search",
@@ -1026,6 +1027,7 @@ func TestToOpenAI2Request_UsesResponsesAPIShape(t *testing.T) {
 			{
 				RequestMessage: "先查一下",
 				ResponseNodes: []Node{
+					{Type: 8, Thinking: &ThinkingNode{Summary: "先读取上下文", OpenAIID: "rs_hist_1", EncryptedContent: "enc_hist_1", ProviderMetadata: map[string]interface{}{"effort": "medium"}}},
 					{Type: 5, ToolUse: &ToolUseNode{ToolName: "search", ToolUseID: "call_1", InputJSON: "{\"q\":\"augment\"}"}},
 				},
 			},
@@ -1050,20 +1052,30 @@ func TestToOpenAI2Request_UsesResponsesAPIShape(t *testing.T) {
 	if req["model"] != "gpt-5-codex" {
 		t.Fatalf("expected gpt-5-codex model, got %v", req["model"])
 	}
-	if req["instructions"] == "" {
-		t.Fatalf("expected instructions for responses api")
+	instructions, _ := req["instructions"].(string)
+	if instructions == "" || !strings.Contains(instructions, "[context-history]") {
+		t.Fatalf("expected instructions with context-history rule for responses api, got %q", instructions)
 	}
 	if req["tool_choice"] != "auto" {
 		t.Fatalf("expected tool_choice auto, got %v", req["tool_choice"])
 	}
 
 	inputItems := req["input"].([]interface{})
+	foundReasoning := false
 	foundCall := false
 	foundOutput := false
 	foundUser := false
 	for _, raw := range inputItems {
 		item := raw.(map[string]interface{})
 		switch item["type"] {
+		case "reasoning":
+			if item["id"] == "rs_hist_1" && item["encrypted_content"] == "enc_hist_1" {
+				summary := item["summary"].([]interface{})
+				providerEffort := item["effort"]
+				if summary[0].(map[string]interface{})["text"] == "先读取上下文" && providerEffort == "medium" {
+					foundReasoning = true
+				}
+			}
 		case "function_call":
 			if item["call_id"] == "call_1" && item["name"] == "search" && item["arguments"] == "{\"q\":\"augment\"}" {
 				foundCall = true
@@ -1077,6 +1089,9 @@ func TestToOpenAI2Request_UsesResponsesAPIShape(t *testing.T) {
 				foundUser = true
 			}
 		}
+	}
+	if !foundReasoning {
+		t.Fatalf("expected reasoning item in responses input")
 	}
 	if !foundCall {
 		t.Fatalf("expected function_call item in responses input")
@@ -1365,6 +1380,51 @@ func TestBuildOpenAIRequestFallbackPayloads_StripVision(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIRequestFallbackPayloads_ToolToText(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "gpt-4.1",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role": "assistant",
+				"tool_calls": []interface{}{
+					map[string]interface{}{
+						"id":       "call_1",
+						"type":     "function",
+						"function": map[string]interface{}{"name": "search", "arguments": `{"q":"test"}`},
+					},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+		},
+		"tools":       []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "search", "parameters": map[string]interface{}{"type": "object"}}}},
+		"tool_choice": "auto",
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("openai", body)
+
+	var toolToText map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "tool_to_text" {
+			if err := json.Unmarshal(p.Body, &toolToText); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if toolToText == nil {
+		t.Fatal("expected tool_to_text payload")
+	}
+	if _, ok := toolToText["tools"]; ok {
+		t.Fatal("expected tools to be dropped in tool_to_text payload")
+	}
+	msgs := toolToText["messages"].([]interface{})
+	raw, _ := json.Marshal(msgs)
+	if !strings.Contains(string(raw), "Historical tool call.") || !strings.Contains(string(raw), "Historical tool result.") {
+		t.Fatalf("expected tool history degraded to text, got %s", raw)
+	}
+}
+
 func TestBuildClaudeRequestFallbackPayloads_Independent(t *testing.T) {
 	original := map[string]interface{}{
 		"model": "claude-3-5-sonnet",
@@ -1439,6 +1499,42 @@ func TestBuildClaudeRequestFallbackPayloads_NormalizeAllBlocks(t *testing.T) {
 	block, _ := systemArr[0].(map[string]interface{})
 	if block["type"] != "text" {
 		t.Errorf("expected type=text, got %v", block["type"])
+	}
+}
+
+func TestBuildClaudeRequestFallbackPayloads_ToolToText(t *testing.T) {
+	original := map[string]interface{}{
+		"model": "claude-3-5-sonnet",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{"type": "text", "text": "hi"}}},
+			map[string]interface{}{"role": "assistant", "content": []interface{}{map[string]interface{}{"type": "tool_use", "id": "tu_1", "name": "search", "input": map[string]interface{}{"q": "test"}}}},
+			map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{"type": "tool_result", "tool_use_id": "tu_1", "content": "result"}}},
+		},
+		"tools":       []interface{}{map[string]interface{}{"name": "search"}},
+		"tool_choice": map[string]interface{}{"type": "auto"},
+		"max_tokens":  1024,
+	}
+	body, _ := json.Marshal(original)
+	payloads := BuildRequestFallbackPayloads("claude", body)
+
+	var toolToText map[string]interface{}
+	for _, p := range payloads {
+		if p.Name == "tool_to_text" {
+			if err := json.Unmarshal(p.Body, &toolToText); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+			break
+		}
+	}
+	if toolToText == nil {
+		t.Fatal("expected tool_to_text payload")
+	}
+	if _, ok := toolToText["tools"]; ok {
+		t.Fatal("expected tools to be dropped in tool_to_text payload")
+	}
+	raw, _ := json.Marshal(toolToText["messages"])
+	if !strings.Contains(string(raw), "Historical tool call.") || !strings.Contains(string(raw), "Historical tool result.") {
+		t.Fatalf("expected claude tool history degraded to text, got %s", raw)
 	}
 }
 

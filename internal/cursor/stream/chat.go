@@ -217,7 +217,7 @@ func fixChatStreamChoice(choice map[string]interface{}) {
 	promoteReasoningField(delta)
 	convertLegacyStreamFunctionCall(delta, choice)
 	sanitizeToolCallDeltas(delta)
-	ensureStreamToolCalls(delta)
+	ensureStreamToolCalls(delta, choice)
 	rewriteFinishReason(choice)
 }
 
@@ -275,11 +275,16 @@ func sanitizeToolCallDeltas(delta map[string]interface{}) {
 	}
 }
 
-func ensureStreamToolCalls(delta map[string]interface{}) {
+func ensureStreamToolCalls(delta map[string]interface{}, choice map[string]interface{}) {
 	toolCalls, ok := delta["tool_calls"].([]interface{})
 	if !ok {
 		return
 	}
+
+	finishReason := strings.TrimSpace(firstNonEmptyString(
+		stringValue(choice["finish_reason"]),
+		stringValue(choice["finishReason"]),
+	))
 
 	for _, toolCallValue := range toolCalls {
 		toolCall, ok := toolCallValue.(map[string]interface{})
@@ -290,13 +295,13 @@ func ensureStreamToolCalls(delta map[string]interface{}) {
 			toolCall["index"] = 0
 		}
 
-		functionData, _ := toolCall["function"].(map[string]interface{})
-		hasName := functionData != nil && strings.TrimSpace(stringValue(functionData["name"])) != ""
+		hasIdentity := toolCallHasResolvableIdentity(toolCall)
 		hasID := strings.TrimSpace(stringValue(toolCall["id"])) != ""
-		if hasID || hasName {
-			if !hasID {
-				toolCall["id"] = newToolCallID()
-			}
+		if !hasID && finishReason == "tool_calls" && hasIdentity {
+			toolCall["id"] = newToolCallID()
+			hasID = true
+		}
+		if hasID || hasIdentity {
 			if strings.TrimSpace(stringValue(toolCall["type"])) == "" {
 				toolCall["type"] = "function"
 			}

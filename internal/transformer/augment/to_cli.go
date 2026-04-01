@@ -91,7 +91,11 @@ func toCliRequest(ar *AugmentRequest) ([]byte, error) {
 	initCLIMetadata()
 
 	messages, currentMessageCount := buildClaudeMessagesWithCurrentCount(ar)
-	tools := buildClaudeTools(ar.EffectiveTools())
+	toolDefs := ar.EffectiveTools()
+	if ar.Silent {
+		toolDefs = nil
+	}
+	tools := buildClaudeTools(toolDefs)
 	system := buildCliSystem(ar)
 	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
@@ -143,7 +147,7 @@ func buildCliSystem(ar *AugmentRequest) []map[string]interface{} {
 		},
 	}
 
-	if commonText := buildCommonSystemText(ar); commonText != "" {
+	if commonText := buildCommonSystemText(ar, "cli"); commonText != "" {
 		system = append(system, map[string]interface{}{
 			"type": "text",
 			"text": commonText,

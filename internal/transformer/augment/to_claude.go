@@ -13,7 +13,11 @@ import (
 // layer adds the extra anthropic-beta headers required by the CLI variant.
 func toClaudeRequest(ar *AugmentRequest) ([]byte, error) {
 	messages, currentMessageCount := buildClaudeMessagesWithCurrentCount(ar)
-	tools := buildClaudeTools(ar.EffectiveTools())
+	toolDefs := ar.EffectiveTools()
+	if ar.Silent {
+		toolDefs = nil
+	}
+	tools := buildClaudeTools(toolDefs)
 	system := buildClaudeSystem(ar)
 	maxTokens := effectiveMaxTokens(ar.MaxTokens)
 
@@ -59,15 +63,19 @@ func buildClaudeMessages(ar *AugmentRequest) []map[string]interface{} {
 func buildClaudeMessagesWithCurrentCount(ar *AugmentRequest) ([]map[string]interface{}, int) {
 	var messages []map[string]interface{}
 	history, currentNodes := preprocessHistoryForAPI(ar)
+	allowedToolUseIDs := make(map[string]bool)
 	for i := range history {
 		entry := &history[i]
 		appendClaudeHistoryEntry(&messages, entry)
+		mergeToolUseIDsFromResponseNodes(allowedToolUseIDs, entry.EffectiveResponseNodes())
 		if i+1 < len(history) {
-			appendClaudeToolResultNodes(&messages, history[i+1].EffectiveRequestNodes())
+			filtered := filterRequestNodesToolResultsByAllowedIDs(history[i+1].EffectiveRequestNodes(), allowedToolUseIDs)
+			appendClaudeToolResultNodes(&messages, filtered)
+			appendClaudeHistoricalToolResultTextNodes(&messages, filtered)
 		}
 	}
 	currentStart := len(messages)
-	appendClaudeCurrentTurn(&messages, currentNodes, ar.Message, ar.MessageSource, ar.DisableSelectedCodeDetails, ar.Images, ar.EffectiveContext())
+	appendClaudeCurrentTurn(&messages, currentNodes, ar.Message, ar.MessageSource, ar.DisableSelectedCodeDetails, ar.Images, ar.EffectiveContext(), allowedToolUseIDs)
 	messages = repairClaudeToolUseMessages(messages)
 
 	return messages, len(messages) - currentStart
@@ -79,6 +87,7 @@ func appendClaudeHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	// User side
 	if len(requestNodes) > 0 {
 		appendClaudeNodesAsUser(msgs, requestNodes, entry.RequestMessage, "", false, nil, nil, false)
+		appendClaudeHistoricalToolResultTextNodes(msgs, requestNodes)
 	} else if entry.RequestMessage != "" {
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": entry.RequestMessage})
 	}
@@ -87,9 +96,11 @@ func appendClaudeHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	appendClaudeResponseNodes(msgs, entry.ResponseText, entry.EffectiveResponseNodes())
 }
 
-func appendClaudeCurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, messageSource string, disableSelectedCodeDetails bool, images []string, ctx *ContextBlock) {
-	appendClaudeToolResultNodes(msgs, nodes)
-	appendClaudeNodesAsUser(msgs, nodes, message, messageSource, disableSelectedCodeDetails, images, ctx, true)
+func appendClaudeCurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, messageSource string, disableSelectedCodeDetails bool, images []string, ctx *ContextBlock, allowedToolUseIDs map[string]bool) {
+	filtered := filterRequestNodesToolResultsByAllowedIDs(nodes, allowedToolUseIDs)
+	appendClaudeToolResultNodes(msgs, filtered)
+	appendClaudeNodesAsUser(msgs, filtered, message, messageSource, disableSelectedCodeDetails, images, ctx, true)
+	appendClaudeHistoricalToolResultTextNodes(msgs, filtered)
 }
 
 func appendClaudeNodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, messageSource string, disableSelectedCodeDetails bool, topImages []string, ctx *ContextBlock, includeContext bool) {
@@ -136,6 +147,23 @@ func appendClaudeToolResultNodes(msgs *[]map[string]interface{}, nodes []Node) {
 		content = append(content, block)
 	}
 	*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": content})
+}
+
+func appendClaudeHistoricalToolResultTextNodes(msgs *[]map[string]interface{}, nodes []Node) {
+	textBlocks := make([]map[string]interface{}, 0)
+	for _, n := range nodes {
+		if n.Type != 0 || n.TextNode == nil {
+			continue
+		}
+		text := strings.TrimSpace(n.TextNode.EffectiveContent())
+		if text == "" || !strings.Contains(text, "Historical tool result.") {
+			continue
+		}
+		textBlocks = append(textBlocks, map[string]interface{}{"type": "text", "text": text})
+	}
+	if len(textBlocks) > 0 {
+		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": textBlocks})
+	}
 }
 
 func appendTopLevelImages(msg map[string]interface{}, images []string) {
@@ -218,10 +246,17 @@ func buildClaudeTools(defs []ToolDefinition) []map[string]interface{} {
 	}
 	tools := make([]map[string]interface{}, 0, len(defs))
 	for _, d := range defs {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		schema, ok := d.effectiveInputSchemaOrSkip()
+		if !ok {
+			continue
+		}
 		tools = append(tools, map[string]interface{}{
 			"name":         d.Name,
 			"description":  d.Description,
-			"input_schema": d.EffectiveInputSchema(),
+			"input_schema": schema,
 		})
 	}
 	return tools
@@ -229,7 +264,7 @@ func buildClaudeTools(defs []ToolDefinition) []map[string]interface{} {
 
 // buildClaudeSystem builds the system content array.
 func buildClaudeSystem(ar *AugmentRequest) []map[string]interface{} {
-	systemText := buildCommonSystemText(ar)
+	systemText := buildCommonSystemText(ar, "claude")
 	if systemText == "" {
 		return nil
 	}
@@ -286,7 +321,7 @@ func countCurrentMessages(ar *AugmentRequest) int {
 // We use 2048 bytes (~1024 tokens) as the threshold for economic caching.
 const minCacheSizeBytes = 2048
 
-func buildCommonSystemText(ar *AugmentRequest) string {
+func buildCommonSystemText(ar *AugmentRequest, targetType string) string {
 	if ar == nil {
 		return ""
 	}
@@ -303,6 +338,9 @@ func buildCommonSystemText(ar *AugmentRequest) string {
 	if text := strings.TrimSpace(coerceRulesText(ar.Rules)); text != "" {
 		sections = append(sections, text)
 	}
+	if text := strings.TrimSpace(buildContextHistoryRuleText(ar, targetType)); text != "" {
+		sections = append(sections, text)
+	}
 	if text := strings.TrimSpace(ar.AgentMemories); text != "" {
 		sections = append(sections, text)
 	}
@@ -316,6 +354,20 @@ func buildCommonSystemText(ar *AugmentRequest) string {
 		sections = append(sections, contextText)
 	}
 	return joinPromptSections(sections...)
+}
+
+func buildContextHistoryRuleText(ar *AugmentRequest, targetType string) string {
+	if ar == nil {
+		return ""
+	}
+	caps := capabilitiesForTarget(strings.TrimSpace(targetType))
+	if !caps.SupportsContextHistoryRule {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(ar.Mode), "agent") {
+		return ""
+	}
+	return "[context-history]\nTreat historical tool blocks as prior context only. When a historical tool call or tool result is incomplete or orphaned, preserve it as plain text instead of assuming the tool can still be resumed."
 }
 
 func buildSystemContextText(ctx *ContextBlock) string {
@@ -579,7 +631,7 @@ func buildClaudeToolResultContent(tr *ToolResultNode) interface{} {
 	for _, node := range tr.ContentNodes {
 		switch node.EffectiveType() {
 		case "text":
-			if text := strings.TrimSpace(node.EffectiveText()); text != "" {
+			if text := strings.TrimSpace(stripToolResultTrainingSuffix(node.EffectiveText())); text != "" {
 				content = append(content, map[string]interface{}{"type": "text", "text": text})
 			}
 		case "image":
@@ -591,7 +643,7 @@ func buildClaudeToolResultContent(tr *ToolResultNode) interface{} {
 	if len(content) > 0 {
 		return content
 	}
-	return tr.EffectiveContent()
+	return stripToolResultTrainingSuffix(tr.EffectiveContent())
 }
 
 func extractText(nodes []Node) string {

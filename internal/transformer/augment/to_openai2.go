@@ -7,9 +7,13 @@ import (
 )
 
 func toOpenAI2Request(ar *AugmentRequest) ([]byte, error) {
-	instructions := buildCommonSystemText(ar)
+	instructions := buildCommonSystemText(ar, "openai2")
 	input := buildOpenAI2Input(ar)
-	tools := buildOpenAI2Tools(ar.EffectiveTools())
+	toolDefs := ar.EffectiveTools()
+	if ar.Silent {
+		toolDefs = nil
+	}
+	tools := buildOpenAI2Tools(toolDefs)
 
 	req := map[string]interface{}{
 		"model":  ar.Model,
@@ -34,6 +38,7 @@ func toOpenAI2Request(ar *AugmentRequest) ([]byte, error) {
 func buildOpenAI2Input(ar *AugmentRequest) []map[string]interface{} {
 	var input []map[string]interface{}
 	history, currentNodes := preprocessHistoryForAPI(ar)
+	allowedToolUseIDs := make(map[string]bool)
 	for i := range history {
 		entry := &history[i]
 		reqNodes := entry.EffectiveRequestNodes()
@@ -45,6 +50,7 @@ func buildOpenAI2Input(ar *AugmentRequest) []map[string]interface{} {
 		if text := assistantResponseText(entry.ResponseText, respNodes); text != "" {
 			input = append(input, map[string]interface{}{"type": "message", "role": "assistant", "content": text})
 		}
+		input = append(input, buildOpenAI2ReasoningItems(respNodes)...)
 
 		for _, toolCall := range extractResponseToolCalls(respNodes) {
 			input = append(input, map[string]interface{}{
@@ -55,12 +61,14 @@ func buildOpenAI2Input(ar *AugmentRequest) []map[string]interface{} {
 			})
 		}
 
+		mergeToolUseIDsFromResponseNodes(allowedToolUseIDs, respNodes)
 		if i+1 < len(history) {
-			input = append(input, buildOpenAI2FunctionCallOutputs(history[i+1].EffectiveRequestNodes())...)
+			filtered := filterRequestNodesToolResultsByAllowedIDs(history[i+1].EffectiveRequestNodes(), allowedToolUseIDs)
+			input = append(input, buildOpenAI2FunctionCallOutputs(filtered)...)
 		}
 	}
 
-	input = append(input, buildOpenAI2FunctionCallOutputs(currentNodes)...)
+	input = append(input, buildOpenAI2FunctionCallOutputs(filterRequestNodesToolResultsByAllowedIDs(currentNodes, allowedToolUseIDs))...)
 	if content := buildOpenAI2UserContent(currentNodes, ar.Message, ar.EffectiveContext(), true, ar.MessageSource, ar.DisableSelectedCodeDetails); content != nil {
 		input = append(input, map[string]interface{}{"type": "message", "role": "user", "content": content})
 	}
@@ -125,6 +133,51 @@ func buildOpenAI2FunctionCallOutputs(nodes []Node) []map[string]interface{} {
 	return out
 }
 
+func buildOpenAI2ReasoningItems(nodes []Node) []map[string]interface{} {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Type != 8 || n.Thinking == nil {
+			continue
+		}
+		if item := buildOpenAI2ReasoningItem(n.Thinking); item != nil {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func buildOpenAI2ReasoningItem(node *ThinkingNode) map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+	summary := strings.TrimSpace(node.Summary)
+	openaiID := strings.TrimSpace(node.OpenAIID)
+	encrypted := strings.TrimSpace(node.EncryptedContent)
+	if summary == "" && openaiID == "" && encrypted == "" && len(node.ProviderMetadata) == 0 {
+		return nil
+	}
+	item := map[string]interface{}{"type": "reasoning"}
+	if openaiID != "" {
+		item["id"] = openaiID
+	}
+	if summary != "" {
+		item["summary"] = []interface{}{map[string]interface{}{"type": "summary_text", "text": summary}}
+	}
+	if encrypted != "" {
+		item["encrypted_content"] = encrypted
+	}
+	for key, value := range node.ProviderMetadata {
+		if _, exists := item[key]; exists || strings.TrimSpace(key) == "" {
+			continue
+		}
+		item[key] = cloneJSONValue(value)
+	}
+	return item
+}
+
 func stringifyOpenAI2ToolResult(tr *ToolResultNode) string {
 	if tr == nil {
 		return ""
@@ -141,10 +194,14 @@ func buildOpenAI2Tools(defs []ToolDefinition) []map[string]interface{} {
 		if strings.TrimSpace(def.Name) == "" {
 			continue
 		}
+		schema, ok := def.effectiveInputSchemaOrSkip()
+		if !ok {
+			continue
+		}
 		tool := map[string]interface{}{
 			"type":       "function",
 			"name":       def.Name,
-			"parameters": coerceOpenAI2StrictSchema(def.EffectiveInputSchema(), 0),
+			"parameters": coerceOpenAI2StrictSchema(schema, 0),
 			"strict":     true,
 		}
 		if strings.TrimSpace(def.Description) != "" {
@@ -264,14 +321,36 @@ func repairOpenAI2Input(input []map[string]interface{}) []map[string]interface{}
 			out = append(out, map[string]interface{}{
 				"type":    "message",
 				"role":    "user",
-				"content": buildTaggedOrphanContent("orphan_function_call_output", "call_id", item["call_id"], item["output"]),
+				"content": buildOrphanFunctionCallOutputAsUserContent(item["call_id"], item["output"]),
 			})
 		}
 		bufferedOrphans = nil
 	}
 
+	flushPendingAsHistoricalUser := func() {
+		if len(pending) == 0 {
+			pending = nil
+			return
+		}
+		keys := make([]string, 0, len(pending))
+		for id := range pending {
+			keys = append(keys, id)
+		}
+		sort.Strings(keys)
+		for _, id := range keys {
+			call := pending[id]
+			out = append(out, map[string]interface{}{
+				"type":    "message",
+				"role":    "user",
+				"content": buildOrphanToolUseAsText("orphan_function_call", "call_id", call.CallID, call.Name, call.Arguments),
+			})
+		}
+		pending = nil
+	}
+
 	closePending := func() {
 		injectMissing()
+		flushPendingAsHistoricalUser()
 		flushOrphans()
 	}
 
@@ -324,7 +403,7 @@ func repairOpenAI2Input(input []map[string]interface{}) []map[string]interface{}
 			out = append(out, map[string]interface{}{
 				"type":    "message",
 				"role":    "user",
-				"content": buildTaggedOrphanContent("orphan_function_call_output", "call_id", item["call_id"], item["output"]),
+				"content": buildOrphanFunctionCallOutputAsUserContent(item["call_id"], item["output"]),
 			})
 		default:
 			out = append(out, item)

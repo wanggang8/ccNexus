@@ -8,7 +8,11 @@ import (
 // toOpenAIRequest converts an AugmentRequest to an OpenAI Chat Completions API request body.
 func toOpenAIRequest(ar *AugmentRequest) ([]byte, error) {
 	messages := buildOpenAIMessages(ar)
-	tools := buildOpenAITools(ar.EffectiveTools())
+	toolDefs := ar.EffectiveTools()
+	if ar.Silent {
+		toolDefs = nil
+	}
+	tools := buildOpenAITools(toolDefs)
 
 	req := map[string]interface{}{
 		"model":    ar.Model,
@@ -33,7 +37,7 @@ func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	history, currentNodes := preprocessHistoryForAPI(ar)
 
 	// System message from workspace_guidelines -> user_guidelines -> context(lang/path).
-	if systemText := buildCommonSystemText(ar); systemText != "" {
+	if systemText := buildCommonSystemText(ar, "openai"); systemText != "" {
 		messages = append(messages, map[string]interface{}{
 			"role":    "system",
 			"content": systemText,
@@ -41,16 +45,20 @@ func buildOpenAIMessages(ar *AugmentRequest) []map[string]interface{} {
 	}
 
 	// Chat history.
+	allowedToolUseIDs := make(map[string]bool)
 	for i := range history {
 		entry := &history[i]
 		appendOpenAIHistoryEntry(&messages, entry)
+		mergeToolUseIDsFromResponseNodes(allowedToolUseIDs, entry.EffectiveResponseNodes())
 		if i+1 < len(history) {
-			appendOpenAIToolResultNodes(&messages, history[i+1].EffectiveRequestNodes())
+			filtered := filterRequestNodesToolResultsByAllowedIDs(history[i+1].EffectiveRequestNodes(), allowedToolUseIDs)
+			appendOpenAIToolResultNodes(&messages, filtered)
+			appendOpenAIHistoricalToolResultTextNodes(&messages, filtered)
 		}
 	}
 
 	// Current turn.
-	appendOpenAICurrentTurn(&messages, currentNodes, ar.Message, ar.MessageSource, ar.DisableSelectedCodeDetails, ar.Images, ar.EffectiveContext())
+	appendOpenAICurrentTurn(&messages, currentNodes, ar.Message, ar.MessageSource, ar.DisableSelectedCodeDetails, ar.Images, ar.EffectiveContext(), allowedToolUseIDs)
 	return repairOpenAIToolCallMessages(messages)
 }
 
@@ -60,6 +68,7 @@ func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	// User side.
 	if len(requestNodes) > 0 {
 		appendOpenAINodesAsUser(msgs, requestNodes, entry.RequestMessage, "", false, nil, nil, false)
+		appendOpenAIHistoricalToolResultTextNodes(msgs, requestNodes)
 	} else if entry.RequestMessage != "" {
 		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": entry.RequestMessage})
 	}
@@ -68,9 +77,11 @@ func appendOpenAIHistoryEntry(msgs *[]map[string]interface{}, entry *ChatHistory
 	appendOpenAIResponseNodes(msgs, entry.ResponseText, entry.EffectiveResponseNodes())
 }
 
-func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, messageSource string, disableSelectedCodeDetails bool, images []string, ctx *ContextBlock) {
-	appendOpenAIToolResultNodes(msgs, nodes)
-	appendOpenAINodesAsUser(msgs, nodes, message, messageSource, disableSelectedCodeDetails, images, ctx, true)
+func appendOpenAICurrentTurn(msgs *[]map[string]interface{}, nodes []Node, message string, messageSource string, disableSelectedCodeDetails bool, images []string, ctx *ContextBlock, allowedToolUseIDs map[string]bool) {
+	filtered := filterRequestNodesToolResultsByAllowedIDs(nodes, allowedToolUseIDs)
+	appendOpenAIToolResultNodes(msgs, filtered)
+	appendOpenAINodesAsUser(msgs, filtered, message, messageSource, disableSelectedCodeDetails, images, ctx, true)
+	appendOpenAIHistoricalToolResultTextNodes(msgs, filtered)
 }
 
 func appendOpenAINodesAsUser(msgs *[]map[string]interface{}, nodes []Node, fallbackText string, messageSource string, disableSelectedCodeDetails bool, topImages []string, ctx *ContextBlock, includeContext bool) {
@@ -104,6 +115,19 @@ func appendOpenAIToolResultNodes(msgs *[]map[string]interface{}, nodes []Node) {
 			"tool_call_id": tr.EffectiveToolUseID(),
 			"content":      buildOpenAIToolResultContent(tr),
 		})
+	}
+}
+
+func appendOpenAIHistoricalToolResultTextNodes(msgs *[]map[string]interface{}, nodes []Node) {
+	for _, n := range nodes {
+		if n.Type != 0 || n.TextNode == nil {
+			continue
+		}
+		text := strings.TrimSpace(n.TextNode.EffectiveContent())
+		if text == "" || !strings.Contains(text, "Historical tool result.") {
+			continue
+		}
+		*msgs = append(*msgs, map[string]interface{}{"role": "user", "content": text})
 	}
 }
 
@@ -185,12 +209,19 @@ func buildOpenAITools(defs []ToolDefinition) []map[string]interface{} {
 	}
 	tools := make([]map[string]interface{}, 0, len(defs))
 	for _, d := range defs {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		schema, ok := d.effectiveInputSchemaOrSkip()
+		if !ok {
+			continue
+		}
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        d.Name,
 				"description": d.Description,
-				"parameters":  d.EffectiveInputSchema(),
+				"parameters":  schema,
 			},
 		})
 	}
@@ -205,7 +236,7 @@ func buildOpenAIToolResultContent(tr *ToolResultNode) interface{} {
 	for _, node := range tr.ContentNodes {
 		switch node.EffectiveType() {
 		case "text":
-			if text := strings.TrimSpace(node.EffectiveText()); text != "" {
+			if text := strings.TrimSpace(stripToolResultTrainingSuffix(node.EffectiveText())); text != "" {
 				parts = append(parts, text)
 			}
 		case "image":
@@ -213,9 +244,9 @@ func buildOpenAIToolResultContent(tr *ToolResultNode) interface{} {
 		}
 	}
 	if len(parts) > 0 {
-		return strings.Join(parts, "\n\n")
+		return stripToolResultTrainingSuffix(strings.Join(parts, "\n\n"))
 	}
-	return tr.EffectiveContent()
+	return stripToolResultTrainingSuffix(tr.EffectiveContent())
 }
 
 func hasCompletedToolUse(nodes []Node) bool {

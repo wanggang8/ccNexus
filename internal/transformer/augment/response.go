@@ -178,19 +178,43 @@ func emitThinkingChunk(w io.Writer, text, signature string, nextNodeID *int) {
 	if text == "" && signature == "" {
 		return
 	}
+	emitThinkingNodeChunk(w, buildThinkingNodePayload(text, signature, "", "", nil), nextNodeID)
+}
+
+func emitThinkingNodeChunk(w io.Writer, thinking map[string]interface{}, nextNodeID *int) {
+	if len(thinking) == 0 {
+		return
+	}
 	node := map[string]interface{}{
 		"id":       *nextNodeID,
 		"type":     augmentNodeTypeThinking,
 		"content":  "",
-		"thinking": map[string]interface{}{"summary": text},
-	}
-	if signature != "" {
-		node["thinking"].(map[string]interface{})["signature"] = signature
+		"thinking": thinking,
 	}
 	*nextNodeID++
 	chunk := newBaseChunk("")
 	chunk["nodes"] = []interface{}{node}
 	writeChunkLine(w, chunk)
+}
+
+func buildThinkingNodePayload(text, signature, openaiID, encryptedContent string, providerMetadata map[string]interface{}) map[string]interface{} {
+	thinking := map[string]interface{}{}
+	if strings.TrimSpace(text) != "" {
+		thinking["summary"] = text
+	}
+	if strings.TrimSpace(signature) != "" {
+		thinking["signature"] = signature
+	}
+	if strings.TrimSpace(openaiID) != "" {
+		thinking["openai_id"] = openaiID
+	}
+	if strings.TrimSpace(encryptedContent) != "" {
+		thinking["encrypted_content"] = encryptedContent
+	}
+	if len(providerMetadata) > 0 {
+		thinking["provider_metadata"] = cloneJSONValue(providerMetadata)
+	}
+	return thinking
 }
 
 func emitToolUseChunks(w io.Writer, toolUseID, toolName, inputJSON string, toolCtx map[string]*ToolContext, nextNodeID *int) bool {
@@ -277,7 +301,6 @@ func extractUpstreamErrorMessage(obj map[string]interface{}) string {
 	}
 	return ""
 }
-
 
 func emitTokenUsageChunk(w io.Writer, tokenUsage map[string]interface{}, nextNodeID *int) bool {
 	tokenUsage = normalizePluginFacingTokenUsage(tokenUsage)
@@ -478,7 +501,8 @@ func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[st
 	}
 
 	if summary := extractResponsesReasoningSummaryFromOutput(resp["output"]); summary != "" {
-		emitThinkingChunk(w, summary, "", &nextNodeID)
+		reasoningItem := extractResponsesReasoningItemFromOutput(resp["output"])
+		emitThinkingNodeChunk(w, buildThinkingNodePayload(summary, "", firstString(reasoningItem, "id"), firstString(reasoningItem, "encrypted_content", "encryptedContent"), cloneResponsesReasoningMetadata(reasoningItem)), &nextNodeID)
 	}
 
 	for _, tc := range extractResponsesToolCalls(resp["output"]) {
@@ -1240,11 +1264,18 @@ type openAIResponsesToolCallAccum struct {
 	arguments strings.Builder
 }
 
+type openAIResponsesReasoningAccum struct {
+	summary          strings.Builder
+	openaiID         string
+	encryptedContent string
+	metadata         map[string]interface{}
+}
+
 func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
 	nextNodeID := 1
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
-	var thinking strings.Builder
+	var reasoning openAIResponsesReasoningAccum
 	textByIndex := make(map[int]string)
 	toolCallsByIndex := make(map[int]*openAIResponsesToolCallAccum)
 	var finalResponse map[string]interface{}
@@ -1325,10 +1356,11 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 					acc.arguments.WriteString(args)
 				}
 			}
-			if itemType, _ := item["type"].(string); itemType == "reasoning" && thinking.Len() == 0 {
+			if itemType, _ := item["type"].(string); itemType == "reasoning" && reasoning.summary.Len() == 0 {
+				mergeResponsesReasoningMeta(&reasoning, item)
 				if summary := extractResponsesReasoningSummary(item); summary != "" {
 					sawThinking = true
-					thinking.WriteString(summary)
+					reasoning.summary.WriteString(summary)
 				}
 			}
 
@@ -1374,16 +1406,18 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 			if delta, _ := ev["delta"].(string); delta != "" {
 				sawThinking = true
-				thinking.WriteString(delta)
+				reasoning.summary.WriteString(delta)
 			}
+			mergeResponsesReasoningMeta(&reasoning, ev)
 
 		case "response.reasoning_summary_text.done":
+			mergeResponsesReasoningMeta(&reasoning, ev)
 			if full := firstString(ev, "text"); full != "" {
 				sawThinking = true
-				if thinking.Len() == 0 {
-					thinking.WriteString(full)
-				} else if !strings.Contains(thinking.String(), full) {
-					thinking.WriteString(full)
+				if reasoning.summary.Len() == 0 {
+					reasoning.summary.WriteString(full)
+				} else if !strings.Contains(reasoning.summary.String(), full) {
+					reasoning.summary.WriteString(full)
 				}
 			}
 
@@ -1421,8 +1455,9 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			finalText = extractResponsesTextFromOutput(finalResponse["output"])
 		}
 		appendRemainingText(0, finalText)
-		if summary := extractResponsesReasoningSummaryFromOutput(finalResponse["output"]); summary != "" && thinking.Len() == 0 {
-			thinking.WriteString(summary)
+		mergeResponsesReasoningMeta(&reasoning, extractResponsesReasoningItemFromOutput(finalResponse["output"]))
+		if summary := extractResponsesReasoningSummaryFromOutput(finalResponse["output"]); summary != "" && reasoning.summary.Len() == 0 {
+			reasoning.summary.WriteString(summary)
 		}
 		for idx, tc := range extractResponsesToolCalls(finalResponse["output"]) {
 			acc := ensureToolCall(idx)
@@ -1439,8 +1474,8 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		}
 	}
 
-	if thinking.Len() > 0 {
-		emitThinkingChunk(w, thinking.String(), "", &nextNodeID)
+	if reasoning.summary.Len() > 0 || reasoning.openaiID != "" || reasoning.encryptedContent != "" || len(reasoning.metadata) > 0 {
+		emitThinkingNodeChunk(w, buildThinkingNodePayload(reasoning.summary.String(), "", reasoning.openaiID, reasoning.encryptedContent, reasoning.metadata), &nextNodeID)
 	}
 
 	indexes := make([]int, 0, len(toolCallsByIndex))
@@ -1538,6 +1573,62 @@ func extractResponsesReasoningSummaryFromOutput(output interface{}) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func extractResponsesReasoningItemFromOutput(output interface{}) map[string]interface{} {
+	items, _ := output.([]interface{})
+	for _, raw := range items {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if firstString(item, "type") == "reasoning" {
+			return item
+		}
+	}
+	return nil
+}
+
+func mergeResponsesReasoningMeta(acc *openAIResponsesReasoningAccum, item map[string]interface{}) {
+	if acc == nil || item == nil {
+		return
+	}
+	if id := firstString(item, "id", "item_id", "itemId"); id != "" && acc.openaiID == "" {
+		acc.openaiID = id
+	}
+	if encrypted := firstString(item, "encrypted_content", "encryptedContent"); encrypted != "" && acc.encryptedContent == "" {
+		acc.encryptedContent = encrypted
+	}
+	if meta := cloneResponsesReasoningMetadata(item); len(meta) > 0 {
+		if acc.metadata == nil {
+			acc.metadata = meta
+			return
+		}
+		for key, value := range meta {
+			if _, exists := acc.metadata[key]; !exists {
+				acc.metadata[key] = value
+			}
+		}
+	}
+}
+
+func cloneResponsesReasoningMetadata(item map[string]interface{}) map[string]interface{} {
+	if len(item) == 0 {
+		return nil
+	}
+	meta := make(map[string]interface{})
+	for key, value := range item {
+		switch key {
+		case "type", "summary", "id", "encrypted_content", "encryptedContent":
+			continue
+		default:
+			meta[key] = cloneJSONValue(value)
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 func extractResponsesTextFromOutput(output interface{}) string {

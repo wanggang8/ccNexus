@@ -179,8 +179,8 @@ func normalizeNodes(items []interface{}) []Node {
 				payload = raw
 			}
 			node.ToolResultNode = &ToolResultNode{
-				ToolUseID:    firstString(payload, "tool_use_id", "toolUseId"),
-				ToolCallID:   firstString(payload, "tool_call_id", "toolCallId"),
+				ToolUseID:    sanitizeToolUseIDString(firstString(payload, "tool_use_id", "toolUseId")),
+				ToolCallID:   sanitizeToolUseIDString(firstString(payload, "tool_call_id", "toolCallId")),
 				Content:      firstString(payload, "content"),
 				ToolResult:   firstString(payload, "tool_result", "toolResult"),
 				ContentNodes: normalizeToolResultContentNodes(firstArray(payload, "content_nodes", "contentNodes")),
@@ -231,7 +231,7 @@ func normalizeNodes(items []interface{}) []Node {
 				}
 				node.ToolUse = &ToolUseNode{
 					ToolName:      firstString(payload, "tool_name", "toolName"),
-					ToolUseID:     firstString(payload, "tool_use_id", "toolUseId"),
+					ToolUseID:     sanitizeToolUseIDString(firstString(payload, "tool_use_id", "toolUseId")),
 					InputJSON:     firstString(payload, "input_json", "inputJson"),
 					McpServerName: firstString(payload, "mcp_server_name", "mcpServerName"),
 					McpToolName:   firstString(payload, "mcp_tool_name", "mcpToolName"),
@@ -256,7 +256,7 @@ func normalizeNodes(items []interface{}) []Node {
 				}
 				node.ToolUse = &ToolUseNode{
 					ToolName:      firstString(payload, "tool_name", "toolName"),
-					ToolUseID:     firstString(payload, "tool_use_id", "toolUseId"),
+					ToolUseID:     sanitizeToolUseIDString(firstString(payload, "tool_use_id", "toolUseId")),
 					InputJSON:     firstString(payload, "input_json", "inputJson"),
 					McpServerName: firstString(payload, "mcp_server_name", "mcpServerName"),
 					McpToolName:   firstString(payload, "mcp_tool_name", "mcpToolName"),
@@ -274,8 +274,11 @@ func normalizeNodes(items []interface{}) []Node {
 					payload = raw
 				}
 				node.Thinking = &ThinkingNode{
-					Summary:   firstString(payload, "summary", "thinking"),
-					Signature: firstString(payload, "signature"),
+					Summary:          firstString(payload, "summary", "thinking"),
+					Signature:        firstString(payload, "signature"),
+					OpenAIID:         firstString(payload, "openai_id", "openaiId", "id"),
+					EncryptedContent: firstString(payload, "encrypted_content", "encryptedContent"),
+					ProviderMetadata: cloneNormalizedMap(firstMap(payload, "provider_metadata", "providerMetadata", "metadata")),
 				}
 				break
 			}
@@ -544,6 +547,23 @@ func normalizeStringMap(raw map[string]interface{}) map[string]string {
 			continue
 		}
 		out[key] = toString(value)
+	}
+	return out
+}
+
+func cloneNormalizedMap(raw map[string]interface{}) map[string]interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[key] = cloneJSONValue(value)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

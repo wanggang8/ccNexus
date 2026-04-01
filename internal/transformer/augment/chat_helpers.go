@@ -83,6 +83,26 @@ func repairOpenAIToolCallMessages(messages []map[string]interface{}) []map[strin
 		bufferedOrphans = nil
 	}
 
+	flushPendingAsHistoricalUser := func() {
+		if len(pending) == 0 {
+			pending = nil
+			return
+		}
+		keys := make([]string, 0, len(pending))
+		for id := range pending {
+			keys = append(keys, id)
+		}
+		sort.Strings(keys)
+		for _, id := range keys {
+			tc := pending[id]
+			out = append(out, map[string]interface{}{
+				"role":    "user",
+				"content": buildOrphanToolUseAsText("orphan_tool_call", "tool_call_id", tc.ID, tc.Name, tc.Args),
+			})
+		}
+		pending = nil
+	}
+
 	injectMissing := func() {
 		if len(pending) == 0 {
 			pending = nil
@@ -106,6 +126,7 @@ func repairOpenAIToolCallMessages(messages []map[string]interface{}) []map[strin
 
 	closePending := func() {
 		injectMissing()
+		flushPendingAsHistoricalUser()
 		flushBufferedOrphans()
 	}
 
@@ -245,6 +266,28 @@ func repairClaudeToolUseMessages(messages []map[string]interface{}) []map[string
 		pending = nil
 	}
 
+	flushPendingAsHistoricalText := func() {
+		if len(pending) == 0 {
+			pending = nil
+			return
+		}
+		keys := make([]string, 0, len(pending))
+		for id := range pending {
+			keys = append(keys, id)
+		}
+		sort.Strings(keys)
+		blocks := make([]map[string]interface{}, 0, len(keys))
+		for _, id := range keys {
+			tc := pending[id]
+			blocks = append(blocks, map[string]interface{}{
+				"type": "text",
+				"text": buildOrphanToolUseAsText("orphan_tool_use", "tool_use_id", tc.ID, tc.Name, tc.Input),
+			})
+		}
+		out = append(out, map[string]interface{}{"role": "user", "content": blocks})
+		pending = nil
+	}
+
 	for _, msg := range messages {
 		role, _ := msg["role"].(string)
 		if pending != nil {
@@ -305,7 +348,7 @@ func repairClaudeToolUseMessages(messages []map[string]interface{}) []map[string
 				continue
 			}
 
-			injectMissing()
+			flushPendingAsHistoricalText()
 		}
 
 		if role == "assistant" {
@@ -383,27 +426,105 @@ func buildMissingToolResultContent(idKey, id, toolName, args string) string {
 }
 
 func buildOrphanToolResultAsUserContent(id interface{}, content interface{}) string {
-	return buildTaggedOrphanContent("orphan_tool_result", "id", id, content)
+	return buildHistoricalToolResultText("orphan_tool_result", "id", id, content)
 }
 
-func buildTaggedOrphanContent(kind string, idLabel string, id interface{}, content interface{}) string {
+func buildOrphanFunctionCallOutputAsUserContent(id interface{}, content interface{}) string {
+	return buildHistoricalToolResultText("orphan_function_call_output", "call_id", id, content)
+}
+
+func buildOrphanToolUseAsText(kind string, idLabel string, id interface{}, toolName string, arguments interface{}) string {
+	fields := make([]string, 0, 2)
+	if toolID := strings.TrimSpace(toString(id)); toolID != "" {
+		if strings.TrimSpace(idLabel) == "" {
+			idLabel = "id"
+		}
+		fields = append(fields, fmt.Sprintf("%s=%s", idLabel, toolID))
+	}
+	if name := strings.TrimSpace(toolName); name != "" {
+		fields = append(fields, fmt.Sprintf("tool_name=%s", name))
+	}
+	bodyParts := make([]string, 0, 1)
+	if args := strings.TrimSpace(stableToolCallArguments(arguments)); args != "" {
+		bodyParts = append(bodyParts, "arguments="+truncateString(args, 4000))
+	}
+	return buildTaggedHistoricalContent(kind, fields, "Historical tool call.", strings.Join(bodyParts, "\n"))
+}
+
+func buildHistoricalToolResultNodeText(tr *ToolResultNode) string {
+	if tr == nil {
+		return ""
+	}
+	return buildHistoricalToolResultText("orphan_tool_result", "tool_use_id", tr.EffectiveToolUseID(), buildHistoricalToolResultContentText(tr))
+}
+
+func buildHistoricalToolResultContentText(tr *ToolResultNode) string {
+	if tr == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(tr.ContentNodes))
+	for _, node := range tr.ContentNodes {
+		switch node.EffectiveType() {
+		case "text":
+			if text := strings.TrimSpace(stripToolResultTrainingSuffix(node.EffectiveText())); text != "" {
+				parts = append(parts, text)
+			}
+		case "image":
+			parts = append(parts, buildOpenAIToolResultImageFallbackText(&node))
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
+	}
+	return stripToolResultTrainingSuffix(tr.EffectiveContent())
+}
+
+func buildHistoricalToolResultText(kind string, idLabel string, id interface{}, content interface{}) string {
+	fields := make([]string, 0, 1)
+	if toolID := strings.TrimSpace(toString(id)); toolID != "" {
+		if strings.TrimSpace(idLabel) == "" {
+			idLabel = "id"
+		}
+		fields = append(fields, fmt.Sprintf("%s=%s", idLabel, toolID))
+	}
+	body := strings.TrimSpace(stringifyToolResultContent(content))
+	return buildTaggedHistoricalContent(kind, fields, "Historical tool result.", body)
+}
+
+func buildTaggedHistoricalContent(kind string, fields []string, title string, body string) string {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
 		kind = "orphan_tool_result"
 	}
-	idLabel = strings.TrimSpace(idLabel)
-	if idLabel == "" {
-		idLabel = "id"
-	}
 	header := "[" + kind + "]"
-	if toolID := strings.TrimSpace(toString(id)); toolID != "" {
-		header = fmt.Sprintf("[%s %s=%s]", kind, idLabel, toolID)
+	if len(fields) > 0 {
+		header = fmt.Sprintf("[%s %s]", kind, strings.Join(fields, " "))
 	}
-	body := strings.TrimSpace(stringifyToolResultContent(content))
-	if body == "" {
-		return header
+	lines := []string{header}
+	if text := strings.TrimSpace(title); text != "" {
+		lines = append(lines, text)
 	}
-	return header + "\n" + truncateString(body, 8000)
+	if text := strings.TrimSpace(body); text != "" {
+		lines = append(lines, truncateString(text, 8000))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func stableToolCallArguments(arguments interface{}) string {
+	switch v := arguments.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]interface{}, []interface{}:
+		return stableJSON(v)
+	default:
+		return strings.TrimSpace(toString(v))
+	}
+}
+
+func buildTaggedOrphanContent(kind string, idLabel string, id interface{}, content interface{}) string {
+	return buildHistoricalToolResultText(kind, idLabel, id, content)
 }
 
 func stringifyToolResultContent(content interface{}) string {

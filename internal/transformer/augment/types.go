@@ -368,8 +368,11 @@ type ToolUseNode struct {
 
 // ThinkingNode describes extended thinking output (type=8).
 type ThinkingNode struct {
-	Summary   string `json:"summary,omitempty"`
-	Signature string `json:"signature,omitempty"`
+	Summary          string                 `json:"summary,omitempty"`
+	Signature        string                 `json:"signature,omitempty"`
+	OpenAIID         string                 `json:"openai_id,omitempty"`
+	EncryptedContent string                 `json:"encrypted_content,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"provider_metadata,omitempty"`
 }
 
 // ChatHistoryEntry is one turn in the conversation history.
@@ -464,7 +467,7 @@ func nodeFingerprint(n Node) string {
 			return "8|" + stableJSONString(n.FileNode)
 		}
 		if n.Thinking != nil {
-			return "8|" + n.Thinking.Summary + "|" + n.Thinking.Signature
+			return "8|" + n.Thinking.Summary + "|" + n.Thinking.Signature + "|" + n.Thinking.OpenAIID + "|" + n.Thinking.EncryptedContent + "|" + stableJSONString(n.Thinking.ProviderMetadata)
 		}
 	case 9:
 		if n.FileIDNode != nil {
@@ -534,27 +537,44 @@ type ToolDefinition struct {
 
 // EffectiveInputSchema returns the parsed input schema, preferring the
 // already-decoded InputSchema over InputSchemaJSON over Parameters.
+// Invalid non-empty JSON schema strings fall back to an empty object schema.
 func (t *ToolDefinition) EffectiveInputSchema() map[string]interface{} {
+	schema, ok := t.effectiveInputSchemaOrSkip()
+	if !ok {
+		return normalizeToolSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{}})
+	}
+	return schema
+}
+
+// effectiveInputSchemaOrSkip returns the normalized schema for API tool registration.
+// If ok is false, the tool must be omitted: a non-empty input_schema_json /
+// inputSchemaJson field failed to parse (bad explicit schema).
+func (t *ToolDefinition) effectiveInputSchemaOrSkip() (map[string]interface{}, bool) {
+	if t == nil {
+		return nil, false
+	}
 	if len(t.InputSchema) > 0 {
-		return normalizeToolSchema(t.InputSchema)
+		return normalizeToolSchema(t.InputSchema), true
 	}
 	if len(t.InputSchemaAlt) > 0 {
-		return normalizeToolSchema(t.InputSchemaAlt)
+		return normalizeToolSchema(t.InputSchemaAlt), true
 	}
-	if t.InputSchemaJSON != "" {
+	if s := strings.TrimSpace(t.InputSchemaJSON); s != "" {
 		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(t.InputSchemaJSON), &parsed); err == nil && len(parsed) > 0 {
-			return normalizeToolSchema(parsed)
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, false
 		}
+		return normalizeToolSchema(parsed), true
 	}
-	if t.InputSchemaJSONAlt != "" {
+	if s := strings.TrimSpace(t.InputSchemaJSONAlt); s != "" {
 		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(t.InputSchemaJSONAlt), &parsed); err == nil && len(parsed) > 0 {
-			return normalizeToolSchema(parsed)
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, false
 		}
+		return normalizeToolSchema(parsed), true
 	}
 	if len(t.Parameters) > 0 {
-		return normalizeToolSchema(t.Parameters)
+		return normalizeToolSchema(t.Parameters), true
 	}
-	return normalizeToolSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{}})
+	return normalizeToolSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}), true
 }

@@ -86,8 +86,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	streamDone := false
 	doneSeen := false
 	// Tracks any SSE bytes successfully written to the client on Cursor chat paths.
-	// Used to emit a trailing data: [DONE] on graceful upstream EOF (api2cursor always ends chat streams with [DONE]).
+	// Used to emit a trailing data: [DONE] when the upstream has reached a terminal
+	// chat state but closed before the clean terminator arrived.
 	cursorChatClientEventWritten := false
+	cursorChatTerminalChunkSeen := false
+	strictCursorChatEOFHandling := requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && requestMeta.TransformerName == "cx_chat_openai"
 	isRecording := p.trafficRecorder != nil && p.trafficRecorder.IsRecording()
 	var readErr error
 
@@ -165,6 +168,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					if _, err := w.Write(usageChunk); err == nil {
 						flusher.Flush()
 						cursorChatClientEventWritten = true
+						cursorChatTerminalChunkSeen = true
 						if isRecording {
 							transformedRespBuffer.Write(usageChunk)
 						}
@@ -186,8 +190,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				if isRecording {
 					transformedRespBuffer.Write(transformedEvent)
 				}
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
-					requestMeta.CursorState.ChatUsageSeen = true
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					if cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+						requestMeta.CursorState.ChatUsageSeen = true
+					}
+					if cursorChatBundleHasTerminalChunk(transformedEvent) {
+						cursorChatTerminalChunkSeen = true
+					}
 				}
 				if _, writeErr := w.Write(transformedEvent); writeErr == nil {
 					flusher.Flush()
@@ -259,8 +268,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
-				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
-					requestMeta.CursorState.ChatUsageSeen = true
+				if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+					if cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+						requestMeta.CursorState.ChatUsageSeen = true
+					}
+					if cursorChatBundleHasTerminalChunk(transformedEvent) {
+						cursorChatTerminalChunkSeen = true
+					}
 				}
 
 				if _, writeErr := w.Write(transformedEvent); writeErr != nil {
@@ -320,8 +334,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			}
 			p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 			p.extractTextFromEvent(transformedEvent, &outputText)
-			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
-				requestMeta.CursorState.ChatUsageSeen = true
+			if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+				if cursorChatBundleHasUsage(transformedEvent) && requestMeta.CursorState != nil {
+					requestMeta.CursorState.ChatUsageSeen = true
+				}
+				if cursorChatBundleHasTerminalChunk(transformedEvent) {
+					cursorChatTerminalChunkSeen = true
+				}
 			}
 			if _, writeErr := w.Write(transformedEvent); writeErr != nil {
 				if strings.Contains(writeErr.Error(), "broken pipe") || strings.Contains(writeErr.Error(), "connection reset") {
@@ -372,21 +391,28 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat {
+		if doneSeen {
+			cursorChatTerminalChunkSeen = true
+		}
+		cursorChatCanFinalize := doneSeen || cursorChatTerminalChunkSeen || !strictCursorChatEOFHandling || errors.Is(readErr, io.EOF)
 		if inputTokens == 0 {
 			inputTokens = p.estimateInputTokens(bodyBytes)
 		}
 		if outputTokens == 0 && outputText.Len() > 0 {
 			outputTokens = tokencount.EstimateOutputTokens(outputText.String())
 		}
-		if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
-			if _, err := w.Write(usageChunk); err == nil {
-				flusher.Flush()
-				cursorChatClientEventWritten = true
-				if isRecording {
-					transformedRespBuffer.Write(usageChunk)
-				}
-				if requestMeta.CursorState != nil {
-					requestMeta.CursorState.ChatUsageSeen = true
+		if cursorChatCanFinalize {
+			if usageChunk := buildCursorChatUsageFallbackChunk(modelName, requestMeta.CursorState, inputTokens, outputTokens); len(usageChunk) > 0 {
+				if _, err := w.Write(usageChunk); err == nil {
+					flusher.Flush()
+					cursorChatClientEventWritten = true
+					cursorChatTerminalChunkSeen = true
+					if isRecording {
+						transformedRespBuffer.Write(usageChunk)
+					}
+					if requestMeta.CursorState != nil {
+						requestMeta.CursorState.ChatUsageSeen = true
+					}
 				}
 			}
 		}
@@ -407,7 +433,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			requestMeta.CursorState.InThinkingTag = false
 		}
 	}
-	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatClientEventWritten && !doneSeen && isGracefulStreamReadError(readErr) {
+	if requestMeta.CursorMode && requestMeta.ClientFormat == ClientFormatOpenAIChat && cursorChatClientEventWritten && (cursorChatTerminalChunkSeen || !strictCursorChatEOFHandling || errors.Is(readErr, io.EOF)) && !doneSeen && isGracefulStreamReadError(readErr) {
 		if _, err := w.Write([]byte("data: [DONE]\n\n")); err == nil {
 			flusher.Flush()
 			if isRecording {
@@ -479,6 +505,44 @@ func cursorChatBundleHasUsage(bundle []byte) bool {
 			}
 			if _, ok := chunk["usage"].(map[string]interface{}); ok {
 				return true
+			}
+		}
+	}
+	return false
+}
+
+func cursorChatBundleHasTerminalChunk(bundle []byte) bool {
+	blocks := bytes.Split(bundle, []byte("\n\n"))
+	for _, block := range blocks {
+		for _, line := range bytes.Split(block, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if !bytes.HasPrefix(line, []byte("data: ")) {
+				continue
+			}
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: ")))
+			if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+				continue
+			}
+			var chunk map[string]interface{}
+			if err := json.Unmarshal(payload, &chunk); err != nil {
+				continue
+			}
+			choices, ok := chunk["choices"].([]interface{})
+			if !ok {
+				continue
+			}
+			for _, rawChoice := range choices {
+				choice, ok := rawChoice.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				finishReason := strings.TrimSpace(firstNonEmptyString(
+					stringValue(choice["finish_reason"]),
+					stringValue(choice["finishReason"]),
+				))
+				if finishReason != "" {
+					return true
+				}
 			}
 		}
 	}

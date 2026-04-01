@@ -679,11 +679,11 @@ func TestStreamConvertOpenAIResponses_MCPFieldsInToolUse(t *testing.T) {
 
 func TestStreamConvertOpenAIResponses_TextToolAndStop(t *testing.T) {
 	sse := "" +
-		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先检查上下文\"}\n\n" +
+		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先检查上下文\",\"item_id\":\"rs_1\",\"encrypted_content\":\"enc_1\",\"effort\":\"medium\"}\n\n" +
 		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"你好\"}\n\n" +
 		"data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\"}}\n\n" +
 		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"call_id\":\"call_1\",\"delta\":\"{\\\"q\\\":\\\"augment\\\"}\"}\n\n" +
-		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"你好\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"先检查上下文\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"augment\\\"}\"}]}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"你好\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"enc_1\",\"effort\":\"medium\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"先检查上下文\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"augment\\\"}\"}]}}\n\n" +
 		"data: [DONE]\n\n"
 
 	var b strings.Builder
@@ -709,8 +709,11 @@ func TestStreamConvertOpenAIResponses_TextToolAndStop(t *testing.T) {
 			switch int(node["type"].(float64)) {
 			case augmentNodeTypeThinking:
 				thinking, _ := node["thinking"].(map[string]interface{})
-				if thinking["summary"] == "先检查上下文" {
-					foundThinking = true
+				if thinking["summary"] == "先检查上下文" && thinking["openai_id"] == "rs_1" && thinking["encrypted_content"] == "enc_1" {
+					providerMetadata, _ := thinking["provider_metadata"].(map[string]interface{})
+					if providerMetadata["effort"] == "medium" {
+						foundThinking = true
+					}
 				}
 			case augmentNodeTypeToolUse:
 				tu, _ := node["tool_use"].(map[string]interface{})
@@ -730,7 +733,7 @@ func TestStreamConvertOpenAIResponses_TextToolAndStop(t *testing.T) {
 		t.Fatalf("expected output text chunk")
 	}
 	if !foundThinking {
-		t.Fatalf("expected thinking node")
+		t.Fatalf("expected thinking node with metadata")
 	}
 	if !foundTool {
 		t.Fatalf("expected tool use node")
@@ -810,7 +813,7 @@ func TestConvertJSONToNDJSON_SmokeMainTargets(t *testing.T) {
 		{
 			name:         "openai2",
 			target:       "openai2",
-			body:         `{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"reason"}]},{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"a\"}"}],"usage":{"input_tokens":12,"output_tokens":6}}`,
+			body:         `{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},{"type":"reasoning","id":"rs_1","encrypted_content":"enc_1","effort":"medium","summary":[{"type":"summary_text","text":"reason"}]},{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"a\"}"}],"usage":{"input_tokens":12,"output_tokens":6}}`,
 			wantStop:     augmentStopReasonToolUseRequested,
 			wantText:     "hello",
 			wantThinking: "reason",
