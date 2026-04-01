@@ -255,6 +255,7 @@ func sanitizeToolCallDeltas(delta map[string]interface{}) {
 	if !ok {
 		return
 	}
+	cleaned := toolCalls[:0]
 	for _, toolCallValue := range toolCalls {
 		toolCall, ok := toolCallValue.(map[string]interface{})
 		if !ok {
@@ -267,19 +268,24 @@ func sanitizeToolCallDeltas(delta map[string]interface{}) {
 			delete(toolCall, "type")
 		}
 		functionData, ok := toolCall["function"].(map[string]interface{})
-		if !ok {
+		if ok {
+			if strings.TrimSpace(stringValue(functionData["name"])) == "" {
+				delete(functionData, "name")
+			}
+			if len(functionData) == 0 {
+				delete(toolCall, "function")
+			}
+		}
+		if _, hasIndex := toolCall["index"]; hasIndex && len(toolCall) == 1 {
 			continue
 		}
-		if strings.TrimSpace(stringValue(functionData["name"])) == "" {
-			delete(functionData, "name")
-		}
-		if strings.TrimSpace(stringValue(functionData["arguments"])) == "" {
-			delete(functionData, "arguments")
-		}
-		if len(functionData) == 0 {
-			delete(toolCall, "function")
-		}
+		cleaned = append(cleaned, toolCall)
 	}
+	if len(cleaned) == 0 {
+		delete(delta, "tool_calls")
+		return
+	}
+	delta["tool_calls"] = cleaned
 }
 
 func ensureStreamToolCalls(delta map[string]interface{}, choice map[string]interface{}) {
