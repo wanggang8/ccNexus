@@ -15,7 +15,11 @@ type sseItem struct {
 }
 
 func splitSSEBundle(bundle []byte) [][]byte {
-	rawChunks := bytes.Split(bundle, []byte("\n\n"))
+	if len(bundle) == 0 {
+		return nil
+	}
+	normalized := bytes.ReplaceAll(bundle, []byte("\r\n"), []byte("\n"))
+	rawChunks := bytes.Split(normalized, []byte("\n\n"))
 	chunks := make([][]byte, 0, len(rawChunks))
 	for _, raw := range rawChunks {
 		if len(bytes.TrimSpace(raw)) == 0 {
@@ -31,12 +35,20 @@ func splitSSEBundle(bundle []byte) [][]byte {
 }
 
 func parseSSEChunk(chunk []byte) (string, string, bool) {
-	lines := strings.Split(string(chunk), "\n")
+	if len(chunk) == 0 {
+		return "", "", false
+	}
+	lines := strings.Split(strings.ReplaceAll(string(chunk), "\r\n", "\n"), "\n")
 	eventName := ""
 	dataLines := make([]string, 0, len(lines))
 
 	for _, line := range lines {
+		if line == "" {
+			continue
+		}
 		switch {
+		case strings.HasPrefix(line, ":"):
+			continue
 		case strings.HasPrefix(line, "event:"):
 			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):

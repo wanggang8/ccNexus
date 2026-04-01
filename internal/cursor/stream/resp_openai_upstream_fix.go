@@ -19,7 +19,37 @@ func FixRespOpenAIUpstreamChatSSE(eventData []byte) []byte {
 		return eventData
 	}
 
+	fixed := fixChatChunkPayload(payload, "")
+	choices, _ := fixed["choices"].([]interface{})
+	if len(choices) == 0 {
+		var output bytes.Buffer
+		writeSSEChunk(&output, eventName, fixed)
+		return output.Bytes()
+	}
+	firstChoice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		var output bytes.Buffer
+		writeSSEChunk(&output, eventName, fixed)
+		return output.Bytes()
+	}
+	delta, _ := firstChoice["delta"].(map[string]interface{})
+	if delta == nil {
+		var output bytes.Buffer
+		writeSSEChunk(&output, eventName, fixed)
+		return output.Bytes()
+	}
+	content, hasContent := delta["content"].(string)
+	toolCalls, hasToolCalls := delta["tool_calls"].([]interface{})
+	if !hasContent || content == "" || !hasToolCalls || len(toolCalls) == 0 {
+		var output bytes.Buffer
+		writeSSEChunk(&output, eventName, fixed)
+		return output.Bytes()
+	}
+
 	var output bytes.Buffer
-	writeSSEChunk(&output, eventName, fixChatChunkPayload(payload, ""))
+	contentPayload := cloneChatChunk(fixed, map[string]interface{}{"content": content}, nil)
+	writeSSEChunk(&output, eventName, contentPayload)
+	toolPayload := cloneChatChunk(fixed, map[string]interface{}{"tool_calls": toolCalls}, firstChoice["finish_reason"])
+	writeSSEChunk(&output, eventName, toolPayload)
 	return output.Bytes()
 }

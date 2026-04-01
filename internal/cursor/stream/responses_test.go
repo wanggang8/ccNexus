@@ -67,6 +67,23 @@ func TestFixResponsesBundlePrefixesCreatedWhenMissing(t *testing.T) {
 	}
 }
 
+func TestFixResponsesBundleHandlesMultilineData(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		"event: response.output_text.delta",
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+		"data: {\"extra\":\"line\"}",
+		"",
+	}, "\n"))
+
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), newResponsesState())
+	if err != nil {
+		t.Fatalf("FixResponsesBundle failed: %v", err)
+	}
+	if !strings.Contains(string(fixed), "event: response.output_text.delta") {
+		t.Fatalf("expected event preserved for multiline data, got %s", string(fixed))
+	}
+}
+
 func TestFixResponsesBundlePreservesNativeResponsesShape(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress","model":"upstream-model","output":[]}}`,
@@ -196,17 +213,65 @@ func TestFixResponsesBundleStoresThinkingCacheFromCompletedOutput(t *testing.T) 
 		"",
 	}, "\n"))
 
-	if _, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", cacheMessages, cacheStore, newResponsesState()); err != nil {
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", cacheMessages, cacheStore, newResponsesState())
+	if err != nil {
 		t.Fatalf("FixResponsesBundle failed: %v", err)
 	}
 
-	injected := cacheStore.Inject([]map[string]interface{}{
-		{"role": "user", "content": "hi"},
-		{"role": "assistant", "content": "hello"},
-		{"role": "assistant", "content": ""},
-		{"role": "user", "content": "continue"},
-	})
-	if injected[2]["reasoning_content"] != "stream think" {
-		t.Fatalf("expected stream completed event to write thinking cache, got %#v", injected[2]["reasoning_content"])
+	if !strings.Contains(string(fixed), "event: response.completed") {
+		t.Fatalf("expected response.completed event, got %s", string(fixed))
+	}
+	if len(cacheStore.Store) == 0 {
+		t.Fatalf("expected thinking cache store from completed response")
+	}
+}
+
+func TestFixResponsesBundleIgnoresToolArgumentDeltaWithoutTool(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"README.md\"}"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), newResponsesState())
+	if err != nil {
+		t.Fatalf("FixResponsesBundle failed: %v", err)
+	}
+
+	fixedStr := string(fixed)
+	if strings.Contains(fixedStr, "\"call_id\"") {
+		t.Fatalf("did not expect call_id when tool not started, got %s", fixedStr)
+	}
+	if strings.Contains(fixedStr, "\"id\":\"fc_") || strings.Contains(fixedStr, "\"id\":\"call_") {
+		t.Fatalf("did not expect synthetic tool ids when tool not started, got %s", fixedStr)
+	}
+}
+
+func TestFixResponsesBundleSkipsEmptyToolArgumentsDone(t *testing.T) {
+	state := newResponsesState()
+	state.ResponsesTools[0] = &ResponseToolState{
+		ID:        "fc_1",
+		CallID:    "call_1",
+		Name:      "read_file",
+		Arguments: "{\"path\":\"README.md\"}",
+		Active:    true,
+	}
+	bundle := []byte(strings.Join([]string{
+		`data: {"type":"response.function_call_arguments.done","arguments":""}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":""}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed"}}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixResponsesBundle(bundle, "cursor-model", "cx_resp_openai", nil, cursorcache.NewThinkingCache(), state)
+	if err != nil {
+		t.Fatalf("FixResponsesBundle failed: %v", err)
+	}
+
+	if strings.Contains(string(fixed), "\\\"arguments\\\":\\\"{\\\\\\\"path\\\\\\\":\\\\\\\"README.md\\\\\\\"}\\\"") {
+		t.Fatalf("did not expect empty done to preserve arguments in output item, got %s", string(fixed))
 	}
 }

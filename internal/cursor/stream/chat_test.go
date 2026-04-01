@@ -84,6 +84,79 @@ func TestFixChatBundleSplitsContentAndToolCallsFromSameChunk(t *testing.T) {
 	}
 }
 
+func TestFixChatBundleDropsEmptyToolCallFields(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":""}}]},"finish_reason":null}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 1 {
+		t.Fatalf("expected one chunk, got %d in %s", len(payloads), string(fixed))
+	}
+	delta := payloadChoiceDelta(t, payloads[0])
+	toolCalls := delta["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	if _, ok := toolCall["function"]; ok {
+		t.Fatalf("expected empty function object removed, got %#v", toolCall)
+	}
+}
+
+func TestFixChatBundleKeepsToolCallIDWhenPresent(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 1 {
+		t.Fatalf("expected one chunk, got %d in %s", len(payloads), string(fixed))
+	}
+	delta := payloadChoiceDelta(t, payloads[0])
+	toolCalls := delta["tool_calls"].([]interface{})
+	toolCall := toolCalls[0].(map[string]interface{})
+	if toolCall["id"] != "call_1" {
+		t.Fatalf("expected tool call id preserved, got %#v", toolCall)
+	}
+}
+
+func TestFixChatBundleSplitsContentAndToolCallsAtStart(t *testing.T) {
+	bundle := []byte(strings.Join([]string{
+		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"content":"Hello","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		"",
+	}, "\n"))
+
+	fixed, err := FixChatBundle(bundle, "cursor-model", &FinalizeState{})
+	if err != nil {
+		t.Fatalf("FixChatBundle failed: %v", err)
+	}
+
+	payloads := decodeChatChunkPayloads(t, fixed)
+	if len(payloads) != 3 {
+		t.Fatalf("expected split content/newline/tool_calls, got %d in %s", len(payloads), string(fixed))
+	}
+	if payloadChoiceDelta(t, payloads[0])["content"] != "Hello" {
+		t.Fatalf("expected content chunk first, got %#v", payloadChoiceDelta(t, payloads[0]))
+	}
+	if payloadChoiceDelta(t, payloads[1])["content"] != "\n" {
+		t.Fatalf("expected newline chunk second, got %#v", payloadChoiceDelta(t, payloads[1]))
+	}
+	if payloadChoiceDelta(t, payloads[2])["tool_calls"] == nil {
+		t.Fatalf("expected tool_calls chunk third, got %#v", payloadChoiceDelta(t, payloads[2]))
+	}
+}
+
+
 func TestFixChatBundleAddsNewlineBeforeFirstToolCall(t *testing.T) {
 	bundle := []byte(strings.Join([]string{
 		`data: {"id":"cmpl_1","object":"chat.completion.chunk","model":"upstream","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,

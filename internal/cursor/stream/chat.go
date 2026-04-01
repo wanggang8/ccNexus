@@ -103,9 +103,10 @@ func formatChatStreamEvent(eventName string, payload map[string]interface{}, cli
 			}, nil)})
 			state.InThinkingTag = false
 		}
-		results = append(results, sseItem{eventName: eventName, payload: cloneChatChunk(payload, map[string]interface{}{
+		toolPayload := cloneChatChunk(payload, map[string]interface{}{
 			"tool_calls": toolCalls,
-		}, finishReason)})
+		}, finishReason)
+		results = append(results, sseItem{eventName: eventName, payload: toolPayload})
 		delete(delta, "tool_calls")
 	}
 
@@ -271,6 +272,12 @@ func sanitizeToolCallDeltas(delta map[string]interface{}) {
 		}
 		if strings.TrimSpace(stringValue(functionData["name"])) == "" {
 			delete(functionData, "name")
+		}
+		if strings.TrimSpace(stringValue(functionData["arguments"])) == "" {
+			delete(functionData, "arguments")
+		}
+		if len(functionData) == 0 {
+			delete(toolCall, "function")
 		}
 	}
 }

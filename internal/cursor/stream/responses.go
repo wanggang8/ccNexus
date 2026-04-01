@@ -304,16 +304,7 @@ func trackResponsesToolArguments(state *FinalizeState, payload map[string]interf
 	}
 	tool := responsesToolFromPayload(state, payload)
 	if tool == nil {
-		index := len(state.ResponsesTools)
-		tool = &ResponseToolState{
-			ID:     "fc_" + uuid.NewString(),
-			CallID: newToolCallID(),
-			Active: true,
-		}
-		if state.ResponsesTools == nil {
-			state.ResponsesTools = make(map[int]*ResponseToolState)
-		}
-		state.ResponsesTools[index] = tool
+		return
 	}
 	tool.Arguments += delta
 }
