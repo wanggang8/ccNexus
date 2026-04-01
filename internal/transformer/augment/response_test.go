@@ -123,6 +123,66 @@ func TestStreamConvertClaude_ToolUseBufferedAsNodes(t *testing.T) {
 	}
 }
 
+func TestStreamConvertClaude_ErrorEvent(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"error\",\"error\":{\"message\":\"boom\"}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestStreamConvertClaude_ToolUseEOFWithStopReasonFlushes(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"search\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\\\"a\\\"}\"}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "claude", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	foundTool := false
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, n := range nodes {
+			node, _ := n.(map[string]interface{})
+			if node["type"] == float64(augmentNodeTypeToolUse) {
+				tu, _ := node["tool_use"].(map[string]interface{})
+				if tu["tool_use_id"] == "tool_1" && tu["tool_name"] == "search" {
+					foundTool = true
+				}
+			}
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected tool_use nodes flushed on EOF")
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
+	}
+}
+
+func TestStreamConvertOpenAIResponses_EmptyStreamWithCompletedDoesNotError(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai2", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	if len(lines) == 0 {
+		t.Fatalf("expected at least one line")
+	}
+	if _, ok := lines[len(lines)-1]["stop_reason"]; !ok {
+		t.Fatalf("expected final stop_reason, got %#v", lines[len(lines)-1])
+	}
+}
+
+
 func TestStreamConvertOpenAI_ToolCallsFinishEmitNodes(t *testing.T) {
 	sse := "" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"a\\\"\"}}]}}]}\n\n" +
@@ -1135,5 +1195,113 @@ func TestConvertOpenAIJSON_PinsCacheReadUsageToZero(t *testing.T) {
 	}
 	if usage["cache_creation_input_tokens"] != float64(5) {
 		t.Fatalf("expected cache_creation_input_tokens 5, got %#v", usage["cache_creation_input_tokens"])
+	}
+}
+
+
+func TestProcessSSEEvents_CommentsEventDataCRLFAndEOFFlush(t *testing.T) {
+	raw := ": keep-alive\r\n" +
+		"event: response.output_text.delta\r\n" +
+		"data: hello\r\n" +
+		"data: world\r\n" +
+		"\r\n" +
+		"data: tail"
+
+	type sseEvent struct {
+		eventType string
+		data      string
+	}
+	var events []sseEvent
+	if err := processSSEEvents(strings.NewReader(raw), func(eventType string, data string) error {
+		events = append(events, sseEvent{eventType: eventType, data: data})
+		return nil
+	}); err != nil {
+		t.Fatalf("processSSEEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d (%#v)", len(events), events)
+	}
+	if events[0].eventType != "response.output_text.delta" || events[0].data != "hello\nworld" {
+		t.Fatalf("unexpected first event: %#v", events[0])
+	}
+	if events[1].eventType != "" || events[1].data != "tail" {
+		t.Fatalf("unexpected eof-flushed event: %#v", events[1])
+	}
+}
+
+func TestStreamConvertOpenAI_ToolCallsEOFWithoutFinishStillEmitNodes(t *testing.T) {
+	sse := "" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"a\\\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	foundStart := false
+	foundTool := false
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, raw := range nodes {
+			node := raw.(map[string]interface{})
+			switch int(node["type"].(float64)) {
+			case augmentNodeTypeToolUseStart:
+				foundStart = true
+			case augmentNodeTypeToolUse:
+				tu := node["tool_use"].(map[string]interface{})
+				if tu["tool_use_id"] == "call_1" && tu["tool_name"] == "search" && tu["input_json"] == "{\"q\":\"a\"}" {
+					foundTool = true
+				}
+			}
+		}
+	}
+	if !foundStart || !foundTool {
+		t.Fatalf("expected flushed tool_use nodes on EOF, got %v", lines)
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
+	}
+}
+
+func TestStreamConvertOpenAIResponses_MissingOutputIndexFallsBackToCallID(t *testing.T) {
+	sse := "" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"call_1\",\"delta\":\"{\\\"q\\\":\\\"augment\\\"}\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"augment\\\"}\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+
+	var b strings.Builder
+	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai2", nil); err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	lines := readNDJSONLines(t, b.String())
+	foundStart := false
+	foundTool := false
+	foundUsage := false
+	for _, obj := range lines {
+		nodes, _ := obj["nodes"].([]interface{})
+		for _, raw := range nodes {
+			node := raw.(map[string]interface{})
+			switch int(node["type"].(float64)) {
+			case augmentNodeTypeToolUseStart:
+				foundStart = true
+			case augmentNodeTypeToolUse:
+				tu := node["tool_use"].(map[string]interface{})
+				if tu["tool_use_id"] == "call_1" && tu["tool_name"] == "search" && tu["input_json"] == "{\"q\":\"augment\"}" {
+					foundTool = true
+				}
+			case augmentNodeTypeTokenUsage:
+				usage := node["token_usage"].(map[string]interface{})
+				if usage["input_tokens"] == float64(3) && usage["output_tokens"] == float64(2) {
+					foundUsage = true
+				}
+			}
+		}
+	}
+	if !foundStart || !foundTool || !foundUsage {
+		t.Fatalf("expected call_id fallback tool aggregation and usage, got %v", lines)
+	}
+	if lines[len(lines)-1]["stop_reason"] != float64(augmentStopReasonToolUseRequested) {
+		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
 	}
 }

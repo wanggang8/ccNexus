@@ -260,10 +260,7 @@ func trackResponsesAdded(state *FinalizeState, payload map[string]interface{}) {
 	if state == nil {
 		return
 	}
-	item := payload
-	if nested, ok := payload["item"].(map[string]interface{}); ok {
-		item = nested
-	}
+	item := responsesPayloadItem(payload)
 
 	switch stringValue(item["type"]) {
 	case "reasoning":
@@ -279,21 +276,41 @@ func trackResponsesAdded(state *FinalizeState, payload map[string]interface{}) {
 			state.ResponsesMessageText = text
 		}
 	case "function_call":
-		index := responsesOutputIndex(payload)
-		if index < 0 {
-			index = len(state.ResponsesTools)
-		}
-		tool := &ResponseToolState{
-			ID:        firstNonEmptyString(stringValue(item["id"]), "fc_"+uuid.NewString()),
-			CallID:    firstNonEmptyString(stringValue(item["call_id"]), newToolCallID()),
-			Name:      stringValue(item["name"]),
-			Arguments: stringValue(item["arguments"]),
-			Active:    true,
-		}
 		if state.ResponsesTools == nil {
 			state.ResponsesTools = make(map[int]*ResponseToolState)
 		}
+		index := responsesOutputIndex(payload)
+		tool, existingIndex := resolveResponsesToolForPayload(state, payload, true)
+		if tool == nil {
+			tool = &ResponseToolState{Active: true}
+		}
+		if index < 0 {
+			if existingIndex >= 0 {
+				index = existingIndex
+			} else {
+				index = nextResponsesToolIndex(state)
+			}
+		}
+		if current := state.ResponsesTools[index]; current != nil && current != tool {
+			mergeResponsesToolState(tool, current)
+		}
+		if existingIndex >= 0 && existingIndex != index {
+			delete(state.ResponsesTools, existingIndex)
+		}
 		state.ResponsesTools[index] = tool
+		if tool.ID == "" {
+			tool.ID = firstNonEmptyString(stringValue(item["id"]), "fc_"+uuid.NewString())
+		}
+		if tool.CallID == "" {
+			tool.CallID = firstNonEmptyString(responsesPayloadCallID(payload), newToolCallID())
+		}
+		if tool.Name == "" {
+			tool.Name = stringValue(item["name"])
+		}
+		if tool.Arguments == "" {
+			tool.Arguments = stringValue(item["arguments"])
+		}
+		tool.Active = true
 	}
 }
 
@@ -302,11 +319,12 @@ func trackResponsesToolArguments(state *FinalizeState, payload map[string]interf
 	if state == nil || delta == "" {
 		return
 	}
-	tool := responsesToolFromPayload(state, payload)
+	tool, _ := resolveResponsesToolForPayload(state, payload, true)
 	if tool == nil {
 		return
 	}
 	tool.Arguments += delta
+	tool.Active = true
 }
 
 func trackResponsesToolArgumentsDone(state *FinalizeState, payload map[string]interface{}) {
@@ -314,11 +332,12 @@ func trackResponsesToolArgumentsDone(state *FinalizeState, payload map[string]in
 	if state == nil || arguments == "" {
 		return
 	}
-	tool := responsesToolFromPayload(state, payload)
+	tool, _ := resolveResponsesToolForPayload(state, payload, true)
 	if tool == nil {
 		return
 	}
 	tool.Arguments = arguments
+	tool.Active = true
 }
 
 func trackResponsesDone(state *FinalizeState, payload map[string]interface{}) {
@@ -557,7 +576,7 @@ func enrichResponsesFunctionArgumentsDone(state *FinalizeState, payload map[stri
 		}
 		return rewritten
 	}
-	tool := responsesToolFromPayload(state, rewritten)
+	tool, _ := resolveResponsesToolForPayload(state, rewritten, false)
 	if tool == nil || strings.TrimSpace(tool.Arguments) == "" {
 		return rewritten
 	}
@@ -595,33 +614,34 @@ func buildResponsesToolItem(tool *ResponseToolState) map[string]interface{} {
 }
 
 func buildResponsesToolItemFromPayload(state *FinalizeState, payload map[string]interface{}) (map[string]interface{}, *ResponseToolState) {
-	item := payload
-	if nested, ok := payload["item"].(map[string]interface{}); ok {
-		item = nested
-	}
-
+	item := responsesPayloadItem(payload)
 	index := responsesOutputIndex(payload)
-	tool := state.ResponsesTools[index]
-	if tool == nil {
-		tool = findResponsesToolByID(state, stringValue(item["id"]))
-	}
-	if tool == nil {
-		tool = latestActiveResponsesTool(state)
-	}
+	tool, existingIndex := resolveResponsesToolForPayload(state, payload, false)
 	if tool == nil {
 		tool = &ResponseToolState{
-			ID:        firstNonEmptyString(stringValue(item["id"]), "fc_"+uuid.NewString()),
-			CallID:    firstNonEmptyString(stringValue(item["call_id"]), newToolCallID()),
+			ID:        firstNonEmptyString(responsesPayloadToolID(payload), "fc_"+uuid.NewString()),
+			CallID:    firstNonEmptyString(responsesPayloadCallID(payload), newToolCallID()),
 			Name:      stringValue(item["name"]),
 			Arguments: stringValue(item["arguments"]),
+		}
+	} else if state != nil && index >= 0 {
+		if state.ResponsesTools == nil {
+			state.ResponsesTools = make(map[int]*ResponseToolState)
+		}
+		if current := state.ResponsesTools[index]; current != nil && current != tool {
+			mergeResponsesToolState(tool, current)
+		}
+		state.ResponsesTools[index] = tool
+		if existingIndex >= 0 && existingIndex != index {
+			delete(state.ResponsesTools, existingIndex)
 		}
 	}
 
 	if tool.ID == "" {
-		tool.ID = firstNonEmptyString(stringValue(item["id"]), "fc_"+uuid.NewString())
+		tool.ID = firstNonEmptyString(responsesPayloadToolID(payload), "fc_"+uuid.NewString())
 	}
 	if tool.CallID == "" {
-		tool.CallID = firstNonEmptyString(stringValue(item["call_id"]), newToolCallID())
+		tool.CallID = firstNonEmptyString(responsesPayloadCallID(payload), newToolCallID())
 	}
 	if tool.Name == "" {
 		tool.Name = stringValue(item["name"])
@@ -652,6 +672,156 @@ func buildResponsesToolItemFromPayload(state *FinalizeState, payload map[string]
 	return outputItem, tool
 }
 
+func responsesPayloadItem(payload map[string]interface{}) map[string]interface{} {
+	if nested, ok := payload["item"].(map[string]interface{}); ok {
+		return nested
+	}
+	return payload
+}
+
+func responsesPayloadCallID(payload map[string]interface{}) string {
+	item := responsesPayloadItem(payload)
+	return firstNonEmptyString(
+		stringValue(item["call_id"]),
+		stringValue(item["callId"]),
+		stringValue(item["callID"]),
+		stringValue(payload["call_id"]),
+		stringValue(payload["callId"]),
+		stringValue(payload["callID"]),
+	)
+}
+
+func responsesPayloadToolID(payload map[string]interface{}) string {
+	item := responsesPayloadItem(payload)
+	return firstNonEmptyString(
+		stringValue(item["id"]),
+		stringValue(payload["item_id"]),
+		stringValue(payload["itemId"]),
+		stringValue(payload["id"]),
+	)
+}
+
+func mergeResponsesToolState(dst, src *ResponseToolState) {
+	if dst == nil || src == nil || dst == src {
+		return
+	}
+	if dst.ID == "" {
+		dst.ID = src.ID
+	}
+	if dst.CallID == "" {
+		dst.CallID = src.CallID
+	}
+	if dst.Name == "" {
+		dst.Name = src.Name
+	}
+	if src.Arguments != "" {
+		switch {
+		case dst.Arguments == "":
+			dst.Arguments = src.Arguments
+		case strings.HasPrefix(src.Arguments, dst.Arguments):
+			dst.Arguments = src.Arguments
+		}
+	}
+	if src.Active {
+		dst.Active = true
+	}
+}
+
+func nextResponsesToolIndex(state *FinalizeState) int {
+	for index := 0; ; index++ {
+		if state == nil || state.ResponsesTools[index] == nil {
+			return index
+		}
+	}
+}
+
+func uniqueActiveResponsesTool(state *FinalizeState) (*ResponseToolState, int) {
+	if state == nil {
+		return nil, -1
+	}
+	var found *ResponseToolState
+	foundIndex := -1
+	for index, tool := range state.ResponsesTools {
+		if tool == nil || !tool.Active {
+			continue
+		}
+		if found != nil {
+			return nil, -1
+		}
+		found = tool
+		foundIndex = index
+	}
+	return found, foundIndex
+}
+
+func resolveResponsesToolForPayload(state *FinalizeState, payload map[string]interface{}, allowCreate bool) (*ResponseToolState, int) {
+	if state == nil {
+		return nil, -1
+	}
+	if state.ResponsesTools == nil && allowCreate {
+		state.ResponsesTools = make(map[int]*ResponseToolState)
+	}
+
+	index := responsesOutputIndex(payload)
+	callID := responsesPayloadCallID(payload)
+	toolID := responsesPayloadToolID(payload)
+
+	if index >= 0 {
+		if tool := state.ResponsesTools[index]; tool != nil {
+			return tool, index
+		}
+	}
+
+	if tool, foundIndex := findResponsesToolByCallID(state, callID); tool != nil {
+		return tool, foundIndex
+	}
+	if tool, foundIndex := findResponsesToolByID(state, toolID); tool != nil {
+		return tool, foundIndex
+	}
+	if index < 0 && callID == "" && toolID == "" && shouldFallbackToUniqueActiveResponsesTool(payload) {
+		if tool, foundIndex := uniqueActiveResponsesTool(state); tool != nil {
+			return tool, foundIndex
+		}
+	}
+	if !allowCreate {
+		return nil, -1
+	}
+	if index < 0 && callID == "" && toolID == "" {
+		return nil, -1
+	}
+
+	item := responsesPayloadItem(payload)
+	tool := &ResponseToolState{
+		ID:        toolID,
+		CallID:    callID,
+		Name:      stringValue(item["name"]),
+		Arguments: stringValue(item["arguments"]),
+		Active:    true,
+	}
+	if state.ResponsesTools == nil {
+		state.ResponsesTools = make(map[int]*ResponseToolState)
+	}
+	if index < 0 {
+		index = nextResponsesToolIndex(state)
+	}
+	if current := state.ResponsesTools[index]; current != nil && current != tool {
+		mergeResponsesToolState(tool, current)
+	}
+	state.ResponsesTools[index] = tool
+	return tool, index
+}
+
+func shouldFallbackToUniqueActiveResponsesTool(payload map[string]interface{}) bool {
+	switch stringValue(payload["type"]) {
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		return true
+	case "response.output_item.done":
+		return stringValue(responsesPayloadItem(payload)["type"]) == "function_call"
+	default:
+		return false
+	}
+}
+
 func appendResponsesOutput(state *FinalizeState, item map[string]interface{}) {
 	if state == nil || len(item) == 0 {
 		return
@@ -666,38 +836,28 @@ func appendResponsesOutput(state *FinalizeState, item map[string]interface{}) {
 	state.ResponsesOutput = append(state.ResponsesOutput, cloneJSONObject(item))
 }
 
-func latestActiveResponsesTool(state *FinalizeState) *ResponseToolState {
-	for _, index := range reverseResponsesToolIndexes(state) {
-		tool := state.ResponsesTools[index]
-		if tool != nil && tool.Active {
-			return tool
+func findResponsesToolByCallID(state *FinalizeState, callID string) (*ResponseToolState, int) {
+	if state == nil || callID == "" {
+		return nil, -1
+	}
+	for index, tool := range state.ResponsesTools {
+		if tool != nil && tool.CallID == callID {
+			return tool, index
 		}
 	}
-	return nil
+	return nil, -1
 }
 
-func responsesToolFromPayload(state *FinalizeState, payload map[string]interface{}) *ResponseToolState {
-	if state == nil {
-		return nil
-	}
-	if index := responsesOutputIndex(payload); index >= 0 {
-		if tool := state.ResponsesTools[index]; tool != nil {
-			return tool
-		}
-	}
-	return latestActiveResponsesTool(state)
-}
-
-func findResponsesToolByID(state *FinalizeState, id string) *ResponseToolState {
+func findResponsesToolByID(state *FinalizeState, id string) (*ResponseToolState, int) {
 	if state == nil || id == "" {
-		return nil
+		return nil, -1
 	}
-	for _, tool := range state.ResponsesTools {
+	for index, tool := range state.ResponsesTools {
 		if tool != nil && tool.ID == id {
-			return tool
+			return tool, index
 		}
 	}
-	return nil
+	return nil, -1
 }
 
 func responsesOutputAsInterfaces(state *FinalizeState) []interface{} {

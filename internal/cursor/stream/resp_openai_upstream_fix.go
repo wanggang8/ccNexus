@@ -46,10 +46,14 @@ func FixRespOpenAIUpstreamChatSSE(eventData []byte) []byte {
 		return output.Bytes()
 	}
 
+	contentDelta := cloneJSONObject(delta)
+	delete(contentDelta, "tool_calls")
+	toolDelta := map[string]interface{}{"tool_calls": toolCalls}
+
 	var output bytes.Buffer
-	contentPayload := cloneChatChunk(fixed, map[string]interface{}{"content": content}, nil)
+	contentPayload := cloneChatChunk(fixed, contentDelta, nil)
 	writeSSEChunk(&output, eventName, contentPayload)
-	toolPayload := cloneChatChunk(fixed, map[string]interface{}{"tool_calls": toolCalls}, firstChoice["finish_reason"])
+	toolPayload := cloneChatChunk(fixed, toolDelta, firstChoice["finish_reason"])
 	writeSSEChunk(&output, eventName, toolPayload)
 	return output.Bytes()
 }

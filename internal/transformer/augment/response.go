@@ -162,10 +162,25 @@ func processSSEEvents(r io.Reader, handle func(eventType string, data string) er
 			if err := flush(); err != nil {
 				return err
 			}
-		} else if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimLeft(strings.TrimPrefix(line, "data:"), " \t"))
+		} else if strings.HasPrefix(line, ":") {
+			// Comment line - ignore
+		} else {
+			field := ""
+			value := ""
+			if idx := strings.Index(line, ":"); idx >= 0 {
+				field = strings.TrimSpace(line[:idx])
+				value = strings.TrimLeft(line[idx+1:], " \t")
+			} else {
+				field = strings.TrimSpace(line)
+			}
+			switch field {
+			case "event":
+				eventType = value
+			case "data":
+				dataLines = append(dataLines, value)
+			default:
+				// ignore other fields (id, retry, etc.)
+			}
 		}
 		if readErr == io.EOF {
 			break
@@ -672,6 +687,12 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			ev["type"] = lastEventType
 		}
 		typ, _ := ev["type"].(string)
+		if typ == "error" || firstMap(ev, "error") != nil {
+			if msgText := extractUpstreamErrorMessage(ev); msgText != "" {
+				return fmt.Errorf("augment response: claude upstream error: %s", msgText)
+			}
+			return fmt.Errorf("augment response: claude upstream error")
+		}
 
 		switch typ {
 		case "content_block_delta":
@@ -769,11 +790,19 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 	flushThinking()
 
+	if buf.active && (sawMessageStop || stopReasonSeen) {
+		emitToolUseChunks(w, buf.id, buf.name, buf.input.String(), toolCtx, &nextNodeID)
+		buf.active = false
+		hasEmittedToolUse = true
+	}
+
 	if !usageEmitted {
 		usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	}
 	if generatedText.Len() == 0 && !hasEmittedToolUse && !sawThinking && !usageEmitted {
-		return 0, 0, fmt.Errorf("augment response: claude sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+		if dataEvents > 1 {
+			return 0, 0, fmt.Errorf("augment response: claude sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+		}
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, hasEmittedToolUse, sawMessageStop || stopReasonSeen || hasEmittedToolUse)
 
@@ -1239,11 +1268,29 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 
 	flushAllThinking()
 
+	if len(acc) > 0 {
+		indexes := make([]int, 0, len(acc))
+		for idx := range acc {
+			indexes = append(indexes, idx)
+		}
+		sort.Ints(indexes)
+		for _, idx := range indexes {
+			a := acc[idx]
+			if a == nil {
+				continue
+			}
+			if emitToolUseChunks(w, a.id, a.name, a.args.String(), toolCtx, &nextNodeID) {
+				sawToolUse = true
+			}
+		}
+		acc = map[int]*openAIToolCallAccum{}
+	}
+
 	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted && !stopReasonSeen {
 		return 0, 0, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 	}
-	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen)
+	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen || sawToolUse)
 
 	// Extract final token counts using buildTokenUsage to ensure consistency with emitted usage
 	tokenUsage := usageAcc.buildTokenUsage()
@@ -1278,6 +1325,8 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 	var reasoning openAIResponsesReasoningAccum
 	textByIndex := make(map[int]string)
 	toolCallsByIndex := make(map[int]*openAIResponsesToolCallAccum)
+	responsesToolIndexByID := make(map[string]int)
+	fallbackToolIndex := 1000000
 	var finalResponse map[string]interface{}
 	sawToolUse := false
 	stopReasonSeen := false
@@ -1288,14 +1337,74 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 	sawThinking := false
 	sawVisibleText := false
 
-	ensureToolCall := func(idx int) *openAIResponsesToolCallAccum {
-		if idx < 0 {
-			idx = 0
+	extractOutputIndex := func(raw map[string]interface{}) (int, bool) {
+		if raw == nil {
+			return 0, false
 		}
-		if toolCallsByIndex[idx] == nil {
-			toolCallsByIndex[idx] = &openAIResponsesToolCallAccum{}
+		for _, key := range []string{"output_index", "outputIndex", "index"} {
+			if _, ok := raw[key]; ok {
+				return firstInt(raw, key), true
+			}
 		}
-		return toolCallsByIndex[idx]
+		return 0, false
+	}
+
+	mergeToolCallAccum := func(dst, src *openAIResponsesToolCallAccum) {
+		if dst == nil || src == nil || dst == src {
+			return
+		}
+		if dst.callID == "" && src.callID != "" {
+			dst.callID = src.callID
+		}
+		if dst.name == "" && src.name != "" {
+			dst.name = src.name
+		}
+		srcArgs := src.arguments.String()
+		if srcArgs != "" {
+			dstArgs := dst.arguments.String()
+			if dstArgs == "" || len(srcArgs) > len(dstArgs) {
+				dst.arguments.Reset()
+				dst.arguments.WriteString(srcArgs)
+			}
+		}
+	}
+
+	ensureToolCall := func(idx int, hasIndex bool, callID string) *openAIResponsesToolCallAccum {
+		targetIdx := idx
+		if hasIndex && targetIdx < 0 {
+			hasIndex = false
+		}
+		if callID != "" {
+			if mappedIdx, ok := responsesToolIndexByID[callID]; ok {
+				if hasIndex {
+					if mappedIdx != targetIdx {
+						if existing := toolCallsByIndex[mappedIdx]; existing != nil {
+							if toolCallsByIndex[targetIdx] == nil {
+								toolCallsByIndex[targetIdx] = existing
+							} else {
+								mergeToolCallAccum(toolCallsByIndex[targetIdx], existing)
+							}
+							delete(toolCallsByIndex, mappedIdx)
+						}
+					}
+				} else {
+					targetIdx = mappedIdx
+					hasIndex = true
+				}
+			} else if !hasIndex {
+				targetIdx = fallbackToolIndex
+				fallbackToolIndex++
+				hasIndex = true
+			}
+			responsesToolIndexByID[callID] = targetIdx
+		}
+		if !hasIndex {
+			targetIdx = 0
+		}
+		if toolCallsByIndex[targetIdx] == nil {
+			toolCallsByIndex[targetIdx] = &openAIResponsesToolCallAccum{}
+		}
+		return toolCallsByIndex[targetIdx]
 	}
 
 	appendRemainingText := func(idx int, full string) {
@@ -1342,16 +1451,20 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		switch eventType {
 		case "response.output_item.added", "response.output_item.done":
 			item, _ := ev["item"].(map[string]interface{})
-			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
+			outputIndex, hasOutputIndex := extractOutputIndex(ev)
+			if !hasOutputIndex {
+				outputIndex, hasOutputIndex = extractOutputIndex(item)
+			}
 			if itemType, _ := item["type"].(string); itemType == "function_call" {
-				acc := ensureToolCall(outputIndex)
-				if callID, _ := item["call_id"].(string); callID != "" {
+				callID := firstString(item, "call_id", "callId", "callID")
+				acc := ensureToolCall(outputIndex, hasOutputIndex, callID)
+				if callID != "" {
 					acc.callID = callID
 				}
-				if name, _ := item["name"].(string); name != "" {
+				if name := firstString(item, "name"); name != "" {
 					acc.name = name
 				}
-				if args, _ := item["arguments"].(string); args != "" {
+				if args := firstString(item, "arguments"); args != "" {
 					acc.arguments.Reset()
 					acc.arguments.WriteString(args)
 				}
@@ -1365,9 +1478,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			}
 
 		case "response.function_call_arguments.delta":
-			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
-			acc := ensureToolCall(outputIndex)
-			if callID := firstString(ev, "call_id", "callId", "callID"); callID != "" {
+			outputIndex, hasOutputIndex := extractOutputIndex(ev)
+			callID := firstString(ev, "call_id", "callId", "callID", "id")
+			acc := ensureToolCall(outputIndex, hasOutputIndex, callID)
+			if callID != "" {
 				acc.callID = callID
 			}
 			if name := firstString(ev, "name"); name != "" {
@@ -1378,9 +1492,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			}
 
 		case "response.function_call_arguments.done":
-			outputIndex := firstInt(ev, "output_index", "outputIndex", "index")
-			acc := ensureToolCall(outputIndex)
-			if callID := firstString(ev, "call_id", "callId", "callID"); callID != "" {
+			outputIndex, hasOutputIndex := extractOutputIndex(ev)
+			callID := firstString(ev, "call_id", "callId", "callID", "id")
+			acc := ensureToolCall(outputIndex, hasOutputIndex, callID)
+			if callID != "" {
 				acc.callID = callID
 			}
 			if name := firstString(ev, "name"); name != "" {
@@ -1396,6 +1511,7 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			if delta, _ := ev["delta"].(string); delta != "" {
 				textByIndex[idx] += delta
 				generatedText.WriteString(delta)
+				sawVisibleText = true
 				writeChunkLine(w, newBaseChunk(delta))
 			}
 
@@ -1459,8 +1575,19 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		if summary := extractResponsesReasoningSummaryFromOutput(finalResponse["output"]); summary != "" && reasoning.summary.Len() == 0 {
 			reasoning.summary.WriteString(summary)
 		}
-		for idx, tc := range extractResponsesToolCalls(finalResponse["output"]) {
-			acc := ensureToolCall(idx)
+		for seq, tc := range extractResponsesToolCalls(finalResponse["output"]) {
+			idx := tc.index
+			hasIndex := tc.hasIndex
+			if !hasIndex {
+				if mappedIdx, ok := responsesToolIndexByID[tc.callID]; ok {
+					idx = mappedIdx
+					hasIndex = true
+				} else if existing := toolCallsByIndex[seq]; existing != nil && (existing.callID == tc.callID || existing.callID == "") {
+					idx = seq
+					hasIndex = true
+				}
+			}
+			acc := ensureToolCall(idx, hasIndex, tc.callID)
 			if tc.callID != "" {
 				acc.callID = tc.callID
 			}
@@ -1495,7 +1622,9 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 
 	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
-		return 0, 0, fmt.Errorf("augment response: openai responses sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+		if finalResponse == nil && !sawDone && !stopReasonSeen {
+			return 0, 0, fmt.Errorf("augment response: openai responses sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+		}
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || finalResponse != nil || stopReasonSeen)
 
@@ -1664,6 +1793,8 @@ func extractResponsesTextFromOutput(output interface{}) string {
 }
 
 type responsesToolCall struct {
+	index     int
+	hasIndex  bool
 	callID    string
 	name      string
 	arguments string
@@ -1680,16 +1811,26 @@ func extractResponsesToolCalls(output interface{}) []responsesToolCall {
 		if firstString(item, "type") != "function_call" {
 			continue
 		}
-		callID := firstString(item, "call_id", "callId", "callID")
 		name := firstString(item, "name")
-		if callID == "" || name == "" {
+		if name == "" {
 			continue
 		}
-		args := firstString(item, "arguments")
-		if args == "" {
-			args = "{}"
+		tc := responsesToolCall{
+			callID:    firstString(item, "call_id", "callId", "callID"),
+			name:      name,
+			arguments: firstString(item, "arguments"),
 		}
-		out = append(out, responsesToolCall{callID: callID, name: name, arguments: args})
+		if tc.arguments == "" {
+			tc.arguments = "{}"
+		}
+		for _, key := range []string{"output_index", "outputIndex", "index"} {
+			if _, ok := item[key]; ok {
+				tc.index = firstInt(item, key)
+				tc.hasIndex = true
+				break
+			}
+		}
+		out = append(out, tc)
 	}
 	return out
 }
