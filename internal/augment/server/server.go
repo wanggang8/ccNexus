@@ -669,7 +669,7 @@ func (s *Server) proxyToUpstream(
 	recordEnabled := s.trafficRecorder != nil && s.trafficRecorder.IsRecording()
 	// Handle response.
 	if isStreaming {
-		inputTokens, outputTokens, ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, recordEnabled)
+		inputTokens, outputTokens, ndjson, convErr := s.handleStreamingResponse(w, resp, targetType, toolContext, currentRequestBody, recordEnabled)
 		if s.stats != nil && convErr == nil {
 			s.stats.RecordRequest(endpoint.Name)
 			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
@@ -706,7 +706,7 @@ func (s *Server) proxyToUpstream(
 			logger.Error("Augment: SSE conversion error: %v", convErr)
 		}
 	} else {
-		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp, targetType, toolContext)
+		inputTokens, outputTokens, originalResp, transformedResp, convErr := s.handleNonStreamingResponse(w, resp, targetType, toolContext, currentRequestBody)
 		if s.stats != nil && convErr == nil {
 			s.stats.RecordRequest(endpoint.Name)
 			s.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
@@ -751,6 +751,7 @@ func (s *Server) handleStreamingResponse(
 	resp *http.Response,
 	targetType string,
 	toolContext map[string]*augment.ToolContext,
+	requestBody []byte,
 	captureNDJSON bool,
 ) (inputTokens, outputTokens int, outBytes []byte, err error) {
 	if responseLooksLikeJSON(resp.Header.Get("Content-Type")) {
@@ -775,6 +776,7 @@ func (s *Server) handleStreamingResponse(
 		if convErr != nil {
 			return 0, 0, nil, convErr
 		}
+		inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -824,6 +826,7 @@ func (s *Server) handleStreamingResponse(
 	}
 
 	inputTokens, outputTokens, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
+	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
 	flusher.Flush()
 	if capture != nil {
 		outBytes = capture.Bytes()
@@ -839,13 +842,14 @@ func (s *Server) handleStreamingResponse(
 	if convErr != nil {
 		return inputTokens, outputTokens, outBytes, err
 	}
+	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
 	outBytes = converted
 	return inputTokens, outputTokens, outBytes, nil
 }
 
 // handleNonStreamingResponse converts a non-streaming upstream response to Augment NDJSON format.
 // Augment clients expect NDJSON even for non-streaming responses.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, targetType string, toolContext map[string]*augment.ToolContext) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, targetType string, toolContext map[string]*augment.ToolContext, requestBody []byte) (inputTokens, outputTokens int, originalResp []byte, transformedResp []byte, err error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Augment: failed to read upstream response: %v", err)
@@ -870,10 +874,21 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 	if err != nil {
 		return inputTokens, outputTokens, originalResp, nil, err
 	}
+	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	w.Write(transformedResp)
 	return inputTokens, outputTokens, originalResp, transformedResp, nil
+}
+
+func applyEstimatedInputTokensFallback(inputTokens int, requestBody []byte, targetType string) int {
+	if inputTokens > 0 {
+		return inputTokens
+	}
+	if estimated := augment.EstimateInputTokensForTransformedRequest(requestBody, targetType); estimated > 0 {
+		return estimated
+	}
+	return inputTokens
 }
 
 func responseLooksLikeJSON(contentType string) bool {

@@ -1305,3 +1305,150 @@ func TestStreamConvertOpenAIResponses_MissingOutputIndexFallsBackToCallID(t *tes
 		t.Fatalf("expected final stop_reason tool_use_requested, got %#v", lines[len(lines)-1]["stop_reason"])
 	}
 }
+
+
+func TestStreamConvertOpenAI_FallbackOutputUsageWhenMissing(t *testing.T) {
+	text := "Hello from the missing usage fallback path."
+	expected, ok := estimateOutputTokensFallback(text)
+	if !ok {
+		t.Fatalf("expected fallback estimate for %q", text)
+	}
+
+	contentChunk, err := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{{"delta": map[string]interface{}{"content": text}}}})
+	if err != nil {
+		t.Fatalf("marshal content chunk: %v", err)
+	}
+	finishChunk, err := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{{"delta": map[string]interface{}{}, "finish_reason": "stop"}}})
+	if err != nil {
+		t.Fatalf("marshal finish chunk: %v", err)
+	}
+
+	sse := "data: " + string(contentChunk) + "\n\n" + "data: " + string(finishChunk) + "\n\n"
+	var b strings.Builder
+	inputTokens, outputTokens, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai", nil)
+	if err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	if inputTokens != 0 {
+		t.Fatalf("expected inputTokens 0, got %d", inputTokens)
+	}
+	if outputTokens != expected {
+		t.Fatalf("expected outputTokens %d, got %d", expected, outputTokens)
+	}
+	usageNodes := collectTokenUsageNodes(readNDJSONLines(t, b.String()))
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if _, exists := usage["input_tokens"]; exists {
+		t.Fatalf("expected input_tokens to stay absent, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(expected) {
+		t.Fatalf("expected output_tokens %d, got %#v", expected, usage["output_tokens"])
+	}
+}
+
+func TestConvertOpenAIJSON_FallbackOutputUsageWhenMissing(t *testing.T) {
+	text := "Plain JSON fallback output usage for OpenAI."
+	expected, ok := estimateOutputTokensFallback(text)
+	if !ok {
+		t.Fatalf("expected fallback estimate for %q", text)
+	}
+
+	body := []byte(`{"choices":[{"message":{"content":"` + text + `"},"finish_reason":"stop"}]}`)
+	var b strings.Builder
+	inputTokens, outputTokens, err := convertOpenAIJSONToNDJSON(body, &b, nil)
+	if err != nil {
+		t.Fatalf("convertOpenAIJSONToNDJSON: %v", err)
+	}
+	if inputTokens != 0 {
+		t.Fatalf("expected inputTokens 0, got %d", inputTokens)
+	}
+	if outputTokens != expected {
+		t.Fatalf("expected outputTokens %d, got %d", expected, outputTokens)
+	}
+	usageNodes := collectTokenUsageNodes(readNDJSONLines(t, b.String()))
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if _, exists := usage["input_tokens"]; exists {
+		t.Fatalf("expected input_tokens to stay absent, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(expected) {
+		t.Fatalf("expected output_tokens %d, got %#v", expected, usage["output_tokens"])
+	}
+}
+
+func TestStreamConvertOpenAIResponses_FallbackOutputUsageWhenMissing(t *testing.T) {
+	text := "Responses SSE fallback output usage text."
+	expected, ok := estimateOutputTokensFallback(text)
+	if !ok {
+		t.Fatalf("expected fallback estimate for %q", text)
+	}
+
+	deltaEvent, err := json.Marshal(map[string]interface{}{"type": "response.output_text.delta", "output_index": 0, "delta": text})
+	if err != nil {
+		t.Fatalf("marshal delta event: %v", err)
+	}
+	completedEvent, err := json.Marshal(map[string]interface{}{"type": "response.completed", "response": map[string]interface{}{"status": "completed", "output": []map[string]interface{}{{"type": "output_text", "text": text}}}})
+	if err != nil {
+		t.Fatalf("marshal completed event: %v", err)
+	}
+
+	sse := "data: " + string(deltaEvent) + "\n\n" + "data: " + string(completedEvent) + "\n\n"
+	var b strings.Builder
+	inputTokens, outputTokens, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &b, "openai2", nil)
+	if err != nil {
+		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
+	}
+	if inputTokens != 0 {
+		t.Fatalf("expected inputTokens 0, got %d", inputTokens)
+	}
+	if outputTokens != expected {
+		t.Fatalf("expected outputTokens %d, got %d", expected, outputTokens)
+	}
+	usageNodes := collectTokenUsageNodes(readNDJSONLines(t, b.String()))
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if _, exists := usage["input_tokens"]; exists {
+		t.Fatalf("expected input_tokens to stay absent, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(expected) {
+		t.Fatalf("expected output_tokens %d, got %#v", expected, usage["output_tokens"])
+	}
+}
+
+func TestConvertOpenAIResponsesJSON_FallbackOutputUsageWhenMissing(t *testing.T) {
+	text := "Responses JSON fallback output usage text."
+	expected, ok := estimateOutputTokensFallback(text)
+	if !ok {
+		t.Fatalf("expected fallback estimate for %q", text)
+	}
+
+	body := []byte(`{"status":"completed","output":[{"type":"output_text","text":"` + text + `"}]}`)
+	var b strings.Builder
+	inputTokens, outputTokens, err := convertOpenAIResponsesJSONToNDJSON(body, &b, nil)
+	if err != nil {
+		t.Fatalf("convertOpenAIResponsesJSONToNDJSON: %v", err)
+	}
+	if inputTokens != 0 {
+		t.Fatalf("expected inputTokens 0, got %d", inputTokens)
+	}
+	if outputTokens != expected {
+		t.Fatalf("expected outputTokens %d, got %d", expected, outputTokens)
+	}
+	usageNodes := collectTokenUsageNodes(readNDJSONLines(t, b.String()))
+	if len(usageNodes) != 1 {
+		t.Fatalf("expected exactly one TOKEN_USAGE node, got %d", len(usageNodes))
+	}
+	usage := usageNodes[0]
+	if _, exists := usage["input_tokens"]; exists {
+		t.Fatalf("expected input_tokens to stay absent, got %#v", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(expected) {
+		t.Fatalf("expected output_tokens %d, got %#v", expected, usage["output_tokens"])
+	}
+}

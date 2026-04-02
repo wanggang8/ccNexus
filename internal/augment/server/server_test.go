@@ -168,6 +168,7 @@ func TestExtractTokenUsageFromResponse_OpenAIResponses(t *testing.T) {
 
 func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
 	s := &Server{config: config.DefaultConfig()}
+	requestBody := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hi"}],"stream":true}`)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -177,7 +178,7 @@ func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
 	}
 	rr := httptest.NewRecorder()
 
-	inputTokens, outputTokens, ndjson, err := s.handleStreamingResponse(rr, resp, "openai2", nil, false)
+	inputTokens, outputTokens, ndjson, err := s.handleStreamingResponse(rr, resp, "openai2", nil, requestBody, false)
 	if err != nil {
 		t.Fatalf("handleStreamingResponse: %v", err)
 	}
@@ -189,6 +190,94 @@ func TestHandleStreamingResponse_JSONFallback_OpenAIResponses(t *testing.T) {
 	}
 	if rr.Header().Get("Content-Type") != "application/x-ndjson" {
 		t.Fatalf("expected ndjson content type, got %q", rr.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandleStreamingResponse_FallbackInputTokensWhenUsageMissing(t *testing.T) {
+	s := &Server{config: config.DefaultConfig()}
+	requestBody := []byte(`{"model":"gpt-4.1","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"hello from augment"}],"stream":true}`)
+	expected := augment.EstimateInputTokensForTransformedRequest(requestBody, "openai")
+	if expected <= 0 {
+		t.Fatal("expected positive estimated input tokens")
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+		)),
+	}
+	rr := httptest.NewRecorder()
+
+	inputTokens, outputTokens, _, err := s.handleStreamingResponse(rr, resp, "openai", nil, requestBody, true)
+	if err != nil {
+		t.Fatalf("handleStreamingResponse: %v", err)
+	}
+	if inputTokens != expected {
+		t.Fatalf("expected fallback input tokens %d, got %d", expected, inputTokens)
+	}
+	if outputTokens <= 0 {
+		t.Fatalf("expected positive output tokens, got %d", outputTokens)
+	}
+	if !strings.Contains(rr.Body.String(), `"token_usage":{"output_tokens":`) {
+		t.Fatalf("expected token usage payload in ndjson, got %s", rr.Body.String())
+	}
+}
+
+func TestHandleNonStreamingResponse_FallbackInputTokensWhenUsageMissing(t *testing.T) {
+	s := &Server{config: config.DefaultConfig()}
+	requestBody := []byte(`{"model":"gpt-5-codex","instructions":"你是代码助手","input":[{"type":"message","role":"user","content":"请总结这个函数"}],"stream":false}`)
+	expected := augment.EstimateInputTokensForTransformedRequest(requestBody, "openai2")
+	if expected <= 0 {
+		t.Fatal("expected positive estimated input tokens")
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"output":[{"type":"message","content":[{"type":"output_text","text":"好的"}]}]}`,
+		)),
+	}
+	rr := httptest.NewRecorder()
+
+	inputTokens, outputTokens, _, _, err := s.handleNonStreamingResponse(rr, resp, "openai2", nil, requestBody)
+	if err != nil {
+		t.Fatalf("handleNonStreamingResponse: %v", err)
+	}
+	if inputTokens != expected {
+		t.Fatalf("expected fallback input tokens %d, got %d", expected, inputTokens)
+	}
+	if outputTokens <= 0 {
+		t.Fatalf("expected positive output tokens, got %d", outputTokens)
+	}
+}
+
+func TestHandleNonStreamingResponse_PreservesUpstreamInputTokens(t *testing.T) {
+	s := &Server{config: config.DefaultConfig()}
+	requestBody := []byte(`{"model":"gpt-4.1","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"this request is intentionally much longer than seven tokens"}],"stream":false}`)
+	estimated := augment.EstimateInputTokensForTransformedRequest(requestBody, "openai")
+	if estimated <= 7 {
+		t.Fatalf("expected local estimate to differ from upstream token count, got %d", estimated)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":7,"completion_tokens":2}}`,
+		)),
+	}
+	rr := httptest.NewRecorder()
+
+	inputTokens, outputTokens, _, _, err := s.handleNonStreamingResponse(rr, resp, "openai", nil, requestBody)
+	if err != nil {
+		t.Fatalf("handleNonStreamingResponse: %v", err)
+	}
+	if inputTokens != 7 {
+		t.Fatalf("expected upstream input tokens 7, got %d", inputTokens)
+	}
+	if outputTokens != 2 {
+		t.Fatalf("expected upstream output tokens 2, got %d", outputTokens)
 	}
 }
 

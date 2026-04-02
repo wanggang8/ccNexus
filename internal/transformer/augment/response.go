@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 // Augment protocol constants (from augment-protocol.js)
@@ -449,24 +451,17 @@ func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 		}
 	}
 
-	tokenUsage := map[string]interface{}{}
+	var usageAcc usageAccumulator
 	if usage := firstMap(obj, "usage"); usage != nil {
-		if v, ok := usageInt(usage, "prompt_tokens"); ok {
-			inputTokens = v
-			tokenUsage["input_tokens"] = v
-		}
-		if v, ok := usageInt(usage, "completion_tokens"); ok {
-			outputTokens = v
-			tokenUsage["output_tokens"] = v
-		}
-		if details := firstMap(usage, "prompt_tokens_details"); details != nil {
-			if v, ok := usageInt(details, "cached_tokens", "cache_read_input_tokens", "cache_read_tokens"); ok {
-				tokenUsage["cache_read_input_tokens"] = v
-			}
-			if v, ok := usageInt(details, "cache_creation_tokens", "cache_creation_input_tokens"); ok {
-				tokenUsage["cache_creation_input_tokens"] = v
-			}
-		}
+		usageAcc.merge(usage)
+	}
+	applyEstimatedOutputTokens(&usageAcc, text)
+	tokenUsage := usageAcc.buildTokenUsage()
+	if v, ok := tokenUsage["input_tokens"].(int); ok {
+		inputTokens = v
+	}
+	if v, ok := tokenUsage["output_tokens"].(int); ok {
+		outputTokens = v
 	}
 	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
 
@@ -526,21 +521,15 @@ func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[st
 		}
 	}
 
-	tokenUsage := map[string]interface{}{}
-	if usage := extractResponsesUsage(resp); usage != nil {
-		if v, ok := usageInt(usage, "input_tokens"); ok {
-			inputTokens = v
-			tokenUsage["input_tokens"] = v
-		}
-		if v, ok := usageInt(usage, "output_tokens"); ok {
-			outputTokens = v
-			tokenUsage["output_tokens"] = v
-		}
-		if details := firstMap(usage, "input_tokens_details", "inputTokensDetails"); details != nil {
-			if v, ok := usageInt(details, "cached_tokens", "cache_read_input_tokens", "cache_read_tokens"); ok {
-				tokenUsage["cache_read_input_tokens"] = v
-			}
-		}
+	var usageAcc usageAccumulator
+	usageAcc.merge(extractResponsesUsage(resp))
+	applyEstimatedOutputTokens(&usageAcc, text)
+	tokenUsage := usageAcc.buildTokenUsage()
+	if v, ok := tokenUsage["input_tokens"].(int); ok {
+		inputTokens = v
+	}
+	if v, ok := tokenUsage["output_tokens"].(int); ok {
+		outputTokens = v
 	}
 	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
 
@@ -974,6 +963,27 @@ func (a *usageAccumulator) buildTokenUsage() map[string]interface{} {
 	return tokenUsage
 }
 
+func estimateOutputTokensFallback(text string) (int, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, false
+	}
+	estimated := tokencount.EstimateOutputTokens(text)
+	if estimated <= 0 {
+		return 0, false
+	}
+	return estimated, true
+}
+
+func applyEstimatedOutputTokens(usageAcc *usageAccumulator, text string) {
+	if usageAcc == nil || usageAcc.hasOutputTokens {
+		return
+	}
+	if estimated, ok := estimateOutputTokensFallback(text); ok {
+		usageAcc.setOutputTokens(estimated)
+	}
+}
+
 func normalizePluginFacingTokenUsage(tokenUsage map[string]interface{}) map[string]interface{} {
 	if len(tokenUsage) == 0 {
 		return tokenUsage
@@ -1286,6 +1296,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 		acc = map[int]*openAIToolCallAccum{}
 	}
 
+	applyEstimatedOutputTokens(&usageAcc, generatedText.String())
 	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted && !stopReasonSeen {
 		return 0, 0, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
@@ -1620,6 +1631,7 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 		}
 	}
 
+	applyEstimatedOutputTokens(&usageAcc, generatedText.String())
 	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
 		if finalResponse == nil && !sawDone && !stopReasonSeen {
