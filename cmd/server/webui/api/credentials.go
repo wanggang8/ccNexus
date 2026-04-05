@@ -32,6 +32,139 @@ type importCredentialsRequest struct {
 	Remark    string                 `json:"remark"`
 }
 
+func credentialPathIDSegment(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) ensureEndpointExists(name string) (*storage.Endpoint, error) {
+	endpoint, err := h.getEndpointByName(name)
+	if err != nil {
+		return nil, err
+	}
+	if endpoint == nil {
+		return nil, nil
+	}
+	return endpoint, nil
+}
+
+// handleEndpointsCredentialsByQuery: GET list / POST import — name via ?name= (avoids ServeMux path cleaning for URL-like names).
+func (h *Handler) handleEndpointsCredentialsByQuery(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	endpoint, err := h.ensureEndpointExists(name)
+	if err != nil {
+		logger.Error("Failed to get endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+		return
+	}
+	if endpoint == nil {
+		WriteError(w, http.StatusNotFound, "Endpoint not found")
+		return
+	}
+	_ = endpoint
+	switch r.Method {
+	case http.MethodGet:
+		h.listEndpointCredentials(w, r, name)
+	case http.MethodPost:
+		h.importEndpointCredentials(w, r, name)
+	default:
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+func (h *Handler) handleEndpointsCredentialsImportByQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	endpoint, err := h.ensureEndpointExists(name)
+	if err != nil {
+		logger.Error("Failed to get endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+		return
+	}
+	if endpoint == nil {
+		WriteError(w, http.StatusNotFound, "Endpoint not found")
+		return
+	}
+	_ = endpoint
+	// keep dedicated import route semantics aligned with path-based variant
+	h.importEndpointCredentials(w, r, name)
+}
+
+func (h *Handler) handleEndpointsCredentialsStatsByQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	endpoint, err := h.ensureEndpointExists(name)
+	if err != nil {
+		logger.Error("Failed to get endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+		return
+	}
+	if endpoint == nil {
+		WriteError(w, http.StatusNotFound, "Endpoint not found")
+		return
+	}
+	_ = endpoint
+	h.getEndpointCredentialStats(w, r, name)
+}
+
+func (h *Handler) handleEndpointsCredentialIDByQuery(w http.ResponseWriter, r *http.Request, idStr string) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	endpoint, err := h.ensureEndpointExists(name)
+	if err != nil {
+		logger.Error("Failed to get endpoint: %v", err)
+		WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+		return
+	}
+	if endpoint == nil {
+		WriteError(w, http.StatusNotFound, "Endpoint not found")
+		return
+	}
+	_ = endpoint
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		WriteError(w, http.StatusBadRequest, "Invalid credential id")
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		h.updateEndpointCredential(w, r, name, id)
+	case http.MethodDelete:
+		h.deleteEndpointCredential(w, r, name, id)
+	default:
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
 func (h *Handler) handleEndpointCredentials(w http.ResponseWriter, r *http.Request, endpointName string, parts []string) {
 	endpoint, err := h.getEndpointByName(endpointName)
 	if err != nil {

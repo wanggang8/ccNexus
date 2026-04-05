@@ -41,19 +41,21 @@ class APIClient {
     }
 
     async updateEndpoint(name, data) {
-        return this.request('PUT', `/endpoints/${encodeURIComponent(name)}`, data);
+        const q = `name=${encodeURIComponent(name)}`;
+        return this.request('PUT', `/endpoints?${q}`, data);
     }
 
     async deleteEndpoint(name) {
-        return this.request('DELETE', `/endpoints/${encodeURIComponent(name)}`);
+        return this.request('DELETE', `/endpoints?name=${encodeURIComponent(name)}`);
     }
 
     async toggleEndpoint(name, enabled) {
-        return this.request('PATCH', `/endpoints/${encodeURIComponent(name)}/toggle`, { enabled });
+        const q = `name=${encodeURIComponent(name)}`;
+        return this.request('PATCH', `/endpoints/toggle?${q}`, { enabled });
     }
 
     async testEndpoint(name) {
-        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/test`);
+        return this.request('POST', `/endpoints/test?name=${encodeURIComponent(name)}`);
     }
 
     async reorderEndpoints(names) {
@@ -73,23 +75,26 @@ class APIClient {
     }
 
     async revealEndpointKey(name) {
-        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/reveal-key`);
+        return this.request('POST', `/endpoints/reveal-key?name=${encodeURIComponent(name)}`);
     }
 
     async getEndpointCredentials(name) {
-        return this.request('GET', `/endpoints/${encodeURIComponent(name)}/credentials`);
+        return this.request('GET', `/endpoints/credentials?name=${encodeURIComponent(name)}`);
     }
 
     async importEndpointCredentials(name, data) {
-        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/credentials/import`, data);
+        const q = `name=${encodeURIComponent(name)}`;
+        return this.request('POST', `/endpoints/credentials/import?${q}`, data);
     }
 
     async updateEndpointCredential(name, id, data) {
-        return this.request('PATCH', `/endpoints/${encodeURIComponent(name)}/credentials/${id}`, data);
+        const q = `name=${encodeURIComponent(name)}`;
+        return this.request('PATCH', `/endpoints/credentials/${id}?${q}`, data);
     }
 
     async deleteEndpointCredential(name, id) {
-        return this.request('DELETE', `/endpoints/${encodeURIComponent(name)}/credentials/${id}`);
+        const q = `name=${encodeURIComponent(name)}`;
+        return this.request('DELETE', `/endpoints/credentials/${id}?${q}`);
     }
 
     // Statistics

@@ -53,7 +53,7 @@ const (
 // expected by the Augment plugin. Returns the converted bytes and any error.
 func ConvertSSEToNDJSON(sseData []byte, targetType string, toolCtx map[string]*ToolContext) ([]byte, error) {
 	var out strings.Builder
-	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(string(sseData)), &out, targetType, toolCtx); err != nil {
+	if _, _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(string(sseData)), &out, targetType, toolCtx); err != nil {
 		return nil, err
 	}
 	return []byte(out.String()), nil
@@ -62,7 +62,7 @@ func ConvertSSEToNDJSON(sseData []byte, targetType string, toolCtx map[string]*T
 // StreamConvertSSEToNDJSON converts an SSE stream to NDJSON in a streaming fashion.
 // It reads from r and writes converted NDJSON lines to w.
 // Returns inputTokens, outputTokens, and any error.
-func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	switch targetType {
 	case "claude", "cli":
 		return streamConvertClaudeSSE(r, w, toolCtx)
@@ -71,28 +71,28 @@ func StreamConvertSSEToNDJSON(r io.Reader, w io.Writer, targetType string, toolC
 	case "openai2":
 		return streamConvertOpenAIResponsesSSE(r, w, toolCtx)
 	default:
-		return 0, 0, fmt.Errorf("augment response: unsupported target type %q", targetType)
+		return 0, 0, false, fmt.Errorf("augment response: unsupported target type %q", targetType)
 	}
 }
 
 // ConvertJSONToNDJSON converts a non-streaming JSON response body into the
 // NDJSON format expected by the Augment client.
-func ConvertJSONToNDJSON(body []byte, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, data []byte, err error) {
+func ConvertJSONToNDJSON(body []byte, targetType string, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, data []byte, err error) {
 	var out strings.Builder
 	switch targetType {
 	case "claude", "cli":
-		inputTokens, outputTokens, err = convertClaudeJSONToNDJSON(body, &out, toolCtx)
+		inputTokens, outputTokens, usageEmitted, err = convertClaudeJSONToNDJSON(body, &out, toolCtx)
 	case "openai":
-		inputTokens, outputTokens, err = convertOpenAIJSONToNDJSON(body, &out, toolCtx)
+		inputTokens, outputTokens, usageEmitted, err = convertOpenAIJSONToNDJSON(body, &out, toolCtx)
 	case "openai2":
-		inputTokens, outputTokens, err = convertOpenAIResponsesJSONToNDJSON(body, &out, toolCtx)
+		inputTokens, outputTokens, usageEmitted, err = convertOpenAIResponsesJSONToNDJSON(body, &out, toolCtx)
 	default:
 		err = fmt.Errorf("augment response: unsupported target type %q", targetType)
 	}
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, false, nil, err
 	}
-	return inputTokens, outputTokens, []byte(out.String()), nil
+	return inputTokens, outputTokens, usageEmitted, []byte(out.String()), nil
 }
 
 type toolUseBuffer struct {
@@ -337,10 +337,10 @@ func emitTokenUsageChunk(w io.Writer, tokenUsage map[string]interface{}, nextNod
 	return true
 }
 
-func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 
 	msg := obj
@@ -349,9 +349,9 @@ func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 	}
 	if firstString(msg, "type") == "error" || firstMap(msg, "error") != nil {
 		if msgText := extractUpstreamErrorMessage(msg); msgText != "" {
-			return 0, 0, fmt.Errorf("augment response: claude upstream error: %s", msgText)
+			return 0, 0, false, fmt.Errorf("augment response: claude upstream error: %s", msgText)
 		}
-		return 0, 0, fmt.Errorf("augment response: claude upstream error")
+		return 0, 0, false, fmt.Errorf("augment response: claude upstream error")
 	}
 
 	nextNodeID := 1
@@ -416,21 +416,21 @@ func convertClaudeJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 			tokenUsage["cache_creation_input_tokens"] = v
 		}
 	}
-	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+	usageEmitted = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
-	return inputTokens, outputTokens, nil
+	return inputTokens, outputTokens, usageEmitted, nil
 }
 
-func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	if firstMap(obj, "error") != nil {
 		if msgText := extractUpstreamErrorMessage(obj); msgText != "" {
-			return 0, 0, fmt.Errorf("augment response: openai upstream error: %s", msgText)
+			return 0, 0, false, fmt.Errorf("augment response: openai upstream error: %s", msgText)
 		}
-		return 0, 0, fmt.Errorf("augment response: openai upstream error")
+		return 0, 0, false, fmt.Errorf("augment response: openai upstream error")
 	}
 
 	nextNodeID := 1
@@ -463,7 +463,7 @@ func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 	if v, ok := tokenUsage["output_tokens"].(int); ok {
 		outputTokens = v
 	}
-	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+	usageEmitted = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
 
 	stopReasonSeen := false
 	stopReason := augmentStopReasonEndTurn
@@ -476,13 +476,13 @@ func convertOpenAIJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*Too
 		}
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
-	return inputTokens, outputTokens, nil
+	return inputTokens, outputTokens, usageEmitted, nil
 }
 
-func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 
 	resp := obj
@@ -491,12 +491,12 @@ func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[st
 	}
 	if firstMap(resp, "error") != nil || firstMap(obj, "error") != nil {
 		if msgText := extractUpstreamErrorMessage(resp); msgText != "" {
-			return 0, 0, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
+			return 0, 0, false, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
 		}
 		if msgText := extractUpstreamErrorMessage(obj); msgText != "" {
-			return 0, 0, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
+			return 0, 0, false, fmt.Errorf("augment response: openai responses upstream error: %s", msgText)
 		}
-		return 0, 0, fmt.Errorf("augment response: openai responses upstream error")
+		return 0, 0, false, fmt.Errorf("augment response: openai responses upstream error")
 	}
 
 	nextNodeID := 1
@@ -531,11 +531,11 @@ func convertOpenAIResponsesJSONToNDJSON(body []byte, w io.Writer, toolCtx map[st
 	if v, ok := tokenUsage["output_tokens"].(int); ok {
 		outputTokens = v
 	}
-	_ = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
+	usageEmitted = emitTokenUsageChunk(w, tokenUsage, &nextNodeID)
 
 	stopReasonSeen, stopReason := extractResponsesStopReason(resp)
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, true)
-	return inputTokens, outputTokens, nil
+	return inputTokens, outputTokens, usageEmitted, nil
 }
 
 type openAIJSONToolCall struct {
@@ -636,14 +636,14 @@ func extractOpenAIJSONToolCalls(obj map[string]interface{}) []openAIJSONToolCall
 	return out
 }
 
-func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	var buf toolUseBuffer
 	var thinking thinkingBuffer
 	nextNodeID := 1
 	hasEmittedToolUse := false
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
-	usageEmitted := false
+	usageEmitted = false
 	stopReasonSeen := false
 	stopReason := augmentStopReasonEndTurn
 	sawMessageStop := false
@@ -770,8 +770,8 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 				usageAcc.merge(usage)
 			}
 			flushThinking()
-			if !usageEmitted {
-				usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+				if !usageEmitted {
+					usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 			}
 		}
 		return nil
@@ -790,7 +790,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	}
 	if generatedText.Len() == 0 && !hasEmittedToolUse && !sawThinking && !usageEmitted {
 		if dataEvents > 1 {
-			return 0, 0, fmt.Errorf("augment response: claude sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+					return 0, 0, usageEmitted, fmt.Errorf("augment response: claude sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 		}
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, hasEmittedToolUse, sawMessageStop || stopReasonSeen || hasEmittedToolUse)
@@ -805,7 +805,7 @@ func streamConvertClaudeSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, err
+	return inputTokens, outputTokens, usageEmitted, err
 }
 
 // mapClaudeStopReason maps Claude stop_reason to Augment stop_reason constants.
@@ -1081,7 +1081,7 @@ type openAIToolCallAccum struct {
 	started bool // Track if TOOL_USE_START has been emitted
 }
 
-func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	nextNodeID := 1
 
 	// index -> accumulated tool call
@@ -1297,9 +1297,9 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 	}
 
 	applyEstimatedOutputTokens(&usageAcc, generatedText.String())
-	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted && !stopReasonSeen {
-		return 0, 0, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+		return 0, 0, usageEmitted, fmt.Errorf("augment response: openai sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || stopReasonSeen || sawToolUse)
 
@@ -1313,7 +1313,7 @@ func streamConvertOpenAISSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolCo
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, err
+	return inputTokens, outputTokens, usageEmitted, err
 }
 
 type openAIResponsesToolCallAccum struct {
@@ -1329,7 +1329,7 @@ type openAIResponsesReasoningAccum struct {
 	metadata         map[string]interface{}
 }
 
-func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, err error) {
+func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[string]*ToolContext) (inputTokens, outputTokens int, usageEmitted bool, err error) {
 	nextNodeID := 1
 	var usageAcc usageAccumulator
 	var generatedText strings.Builder
@@ -1632,10 +1632,10 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 	}
 
 	applyEstimatedOutputTokens(&usageAcc, generatedText.String())
-	usageEmitted := emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
+	usageEmitted = emitAggregatedTokenUsageNode(w, &usageAcc, &nextNodeID)
 	if !sawVisibleText && !sawThinking && !sawToolUse && !usageEmitted {
 		if finalResponse == nil && !sawDone && !stopReasonSeen {
-			return 0, 0, fmt.Errorf("augment response: openai responses sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
+			return 0, 0, usageEmitted, fmt.Errorf("augment response: openai responses sse produced no parseable content (data_events=%d, parsed_chunks=%d)", dataEvents, parsedChunks)
 		}
 	}
 	emitFinalStopChunk(w, stopReasonSeen, stopReason, sawToolUse, sawDone || finalResponse != nil || stopReasonSeen)
@@ -1649,7 +1649,7 @@ func streamConvertOpenAIResponsesSSE(r io.Reader, w io.Writer, toolCtx map[strin
 			outputTokens = v
 		}
 	}
-	return inputTokens, outputTokens, err
+	return inputTokens, outputTokens, usageEmitted, err
 }
 
 func extractResponsesUsage(resp map[string]interface{}) map[string]interface{} {

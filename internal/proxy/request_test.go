@@ -360,6 +360,28 @@ func TestShouldCloseUpstreamConnectionOnlyForPlainHTTPStreaming(t *testing.T) {
 	}
 }
 
+func TestShouldRetryStreamingTransform(t *testing.T) {
+	streamBody := []byte(`{"stream":true}`)
+	nonStreamBody := []byte(`{"stream":false}`)
+	originalResp := []byte("data: {\"choices\":[{\"delta\":{}}]}\n\n")
+
+	if !shouldRetryStreamingTransform(streamBody, originalResp, ClientFormatClaude, "augment-openai") {
+		t.Fatal("expected augment Claude streaming parse failure to be retryable")
+	}
+	if shouldRetryStreamingTransform(nonStreamBody, originalResp, ClientFormatClaude, "augment-openai") {
+		t.Fatal("did not expect non-stream request to be retryable")
+	}
+	if shouldRetryStreamingTransform(streamBody, originalResp, ClientFormatOpenAIChat, "augment-openai") {
+		t.Fatal("did not expect non-Claude client format to be retryable")
+	}
+	if shouldRetryStreamingTransform(streamBody, originalResp, ClientFormatClaude, "openai") {
+		t.Fatal("did not expect non-augment transformer to be retryable")
+	}
+	if shouldRetryStreamingTransform(streamBody, nil, ClientFormatClaude, "augment-openai") {
+		t.Fatal("did not expect empty upstream response to be retryable")
+	}
+}
+
 func TestGetOrCreateProxyClientReusesClientByProxyURL(t *testing.T) {
 	cfg := &config.Config{}
 	p := New(cfg, nil, nil, "test-device")

@@ -45,6 +45,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authMiddleware(http.HandlerFunc(h.handleReorderEndpoints)).ServeHTTP(w, r)
 	case "/api/endpoints/fetch-models":
 		authMiddleware(http.HandlerFunc(h.handleFetchModels)).ServeHTTP(w, r)
+	case "/api/endpoints/toggle":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsTogglePath)).ServeHTTP(w, r)
+	case "/api/endpoints/test":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsTestPath)).ServeHTTP(w, r)
+	case "/api/endpoints/reveal-key":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsRevealKeyPath)).ServeHTTP(w, r)
+	case "/api/endpoints/credentials":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsCredentialsPath)).ServeHTTP(w, r)
+	case "/api/endpoints/credentials/import":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsCredentialsImportPath)).ServeHTTP(w, r)
+	case "/api/endpoints/credentials/stats":
+		authMiddleware(http.HandlerFunc(h.dispatchEndpointsCredentialsStatsPath)).ServeHTTP(w, r)
 	case "/api/stats/summary":
 		authMiddleware(http.HandlerFunc(h.handleStatsSummary)).ServeHTTP(w, r)
 	case "/api/stats/daily":
@@ -76,6 +88,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/events":
 		authMiddleware(http.HandlerFunc(h.handleEvents)).ServeHTTP(w, r)
 	default:
+		if strings.HasPrefix(path, "/api/endpoints/credentials/") {
+			rest := strings.TrimPrefix(path, "/api/endpoints/credentials/")
+			if credentialPathIDSegment(rest) {
+				idSeg := rest
+				authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					h.handleEndpointsCredentialIDByQuery(w, r, idSeg)
+				})).ServeHTTP(w, r)
+				return
+			}
+		}
 		if strings.HasPrefix(path, "/api/endpoints/") {
 			authMiddleware(http.HandlerFunc(h.handleEndpointByName)).ServeHTTP(w, r)
 			return

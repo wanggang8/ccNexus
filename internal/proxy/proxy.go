@@ -809,6 +809,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
 			inputTokens, outputTokens, outputText, originalResp, transformedResp := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID, requestMeta)
+				if len(originalResp) > 0 && len(transformedResp) == 0 && shouldRetryStreamingTransform(bodyBytes, originalResp, clientFormat, transformerName) {
+					logger.Warn("[%s] Streaming transform produced no parseable content, retrying same endpoint", endpoint.Name)
+					p.closeIdleUpstreamConnections()
+					p.markRequestInactive(endpoint.Name)
+					time.Sleep(transientBackoff)
+					if transientBackoff < 5*time.Second {
+						transientBackoff *= 2
+					}
+					endpointAttempts = 0
+					continue
+				}
 
 			// Fallback: estimate tokens when usage is 0
 			if inputTokens == 0 || outputTokens == 0 {
@@ -1192,4 +1203,18 @@ func isTransientNetworkError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func shouldRetryStreamingTransform(requestBody, originalResp []byte, clientFormat ClientFormat, transformerName string) bool {
+	if len(originalResp) == 0 {
+		return false
+	}
+	if !isStreamingRequest(requestBody) {
+		return false
+	}
+	if clientFormat != ClientFormatClaude {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(transformerName))
+	return strings.Contains(name, "augment")
 }

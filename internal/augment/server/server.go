@@ -772,11 +772,14 @@ func (s *Server) handleStreamingResponse(
 			return 0, 0, ndjson, nil
 		}
 
-		inputTokens, outputTokens, ndjson, convErr := augment.ConvertJSONToNDJSON(body, targetType, toolContext)
+		inputTokens, outputTokens, usageEmitted, ndjson, convErr := augment.ConvertJSONToNDJSON(body, targetType, toolContext)
 		if convErr != nil {
 			return 0, 0, nil, convErr
 		}
 		inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
+		if !usageEmitted {
+			ndjson = injectTokenUsageToNDJSON(ndjson, inputTokens, outputTokens)
+		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -819,14 +822,19 @@ func (s *Server) handleStreamingResponse(
 	writer := io.Writer(w)
 	var capture *limitedBuffer
 	var tee *teeCapture
+	var usageEmitted bool
 	if captureNDJSON {
 		capture = newLimitedBuffer(proxy.MaxBodySize + 1)
 		tee = &teeCapture{w: w, cap: capture}
 		writer = tee
 	}
 
-	inputTokens, outputTokens, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
+	inputTokens, outputTokens, usageEmitted, err = augment.StreamConvertSSEToNDJSON(resp.Body, writer, targetType, toolContext)
 	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
+	if capture != nil && !usageEmitted {
+		injected := injectTokenUsageToNDJSON(capture.Bytes(), inputTokens, outputTokens)
+		capture.data = append(capture.data[:0], injected...)
+	}
 	flusher.Flush()
 	if capture != nil {
 		outBytes = capture.Bytes()
@@ -838,11 +846,14 @@ func (s *Server) handleStreamingResponse(
 	if capture == nil || capture.truncated {
 		return inputTokens, outputTokens, outBytes, err
 	}
-	inputTokens, outputTokens, converted, convErr := augment.ConvertJSONToNDJSON(capture.Bytes(), targetType, toolContext)
+	inputTokens, outputTokens, usageEmitted, converted, convErr := augment.ConvertJSONToNDJSON(capture.Bytes(), targetType, toolContext)
 	if convErr != nil {
 		return inputTokens, outputTokens, outBytes, err
 	}
 	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
+	if !usageEmitted {
+		converted = injectTokenUsageToNDJSON(converted, inputTokens, outputTokens)
+	}
 	outBytes = converted
 	return inputTokens, outputTokens, outBytes, nil
 }
@@ -870,15 +881,91 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Re
 		return inputTokens, outputTokens, originalResp, originalResp, nil
 	}
 
-	inputTokens, outputTokens, transformedResp, err = augment.ConvertJSONToNDJSON(body, targetType, toolContext)
+	inputTokens, outputTokens, usageEmitted, transformedResp, err := augment.ConvertJSONToNDJSON(body, targetType, toolContext)
 	if err != nil {
 		return inputTokens, outputTokens, originalResp, nil, err
 	}
 	inputTokens = applyEstimatedInputTokensFallback(inputTokens, requestBody, targetType)
+	if !usageEmitted {
+		transformedResp = injectTokenUsageToNDJSON(transformedResp, inputTokens, outputTokens)
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	w.Write(transformedResp)
 	return inputTokens, outputTokens, originalResp, transformedResp, nil
+}
+
+func injectTokenUsageToNDJSON(ndjson []byte, inputTokens, outputTokens int) []byte {
+	if len(ndjson) == 0 {
+		return ndjson
+	}
+	if inputTokens <= 0 && outputTokens <= 0 {
+		return ndjson
+	}
+
+	var lines [][]byte
+	for _, rawLine := range bytes.Split(ndjson, []byte("\n")) {
+		line := bytes.TrimSpace(rawLine)
+		if len(line) == 0 {
+			continue
+		}
+		lines = append(lines, append([]byte(nil), line...))
+	}
+	if len(lines) == 0 {
+		return ndjson
+	}
+
+	last := lines[len(lines)-1]
+	var finalChunk map[string]interface{}
+	if err := json.Unmarshal(last, &finalChunk); err != nil {
+		return ndjson
+	}
+
+	tokenUsage := map[string]interface{}{}
+	if inputTokens > 0 {
+		tokenUsage["input_tokens"] = inputTokens
+	}
+	if outputTokens > 0 {
+		tokenUsage["output_tokens"] = outputTokens
+	}
+	if len(tokenUsage) == 0 {
+		return ndjson
+	}
+
+	usageNode := map[string]interface{}{
+		"id":          1,
+		"type":        10,
+		"content":     "",
+		"token_usage": tokenUsage,
+	}
+	usageChunk := map[string]interface{}{
+		"text":                  "",
+		"unknown_blob_names":    []interface{}{},
+		"checkpoint_not_found":  false,
+		"workspace_file_chunks": []interface{}{},
+		"nodes":                 []interface{}{usageNode},
+	}
+	usageLine, err := json.Marshal(usageChunk)
+	if err != nil {
+		return ndjson
+	}
+
+	var out bytes.Buffer
+	for i, line := range lines[:len(lines)-1] {
+		out.Write(line)
+		out.WriteByte('\n')
+		if i == len(lines)-2 {
+			out.Write(usageLine)
+			out.WriteByte('\n')
+		}
+	}
+	if len(lines) == 1 {
+		out.Write(usageLine)
+		out.WriteByte('\n')
+	}
+	out.Write(last)
+	out.WriteByte('\n')
+	return out.Bytes()
 }
 
 func applyEstimatedInputTokensFallback(inputTokens int, requestBody []byte, targetType string) int {

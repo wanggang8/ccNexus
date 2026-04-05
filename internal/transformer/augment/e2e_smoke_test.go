@@ -63,7 +63,7 @@ func TestEndToEndSmoke_Claude(t *testing.T) {
 		"data: {\"type\":\"message_stop\",\"usage\":{\"input_tokens\":12,\"output_tokens\":6}}\n\n"
 
 	var out strings.Builder
-	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &out, "claude", tr.GetToolContext()); err != nil {
+	if _, _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &out, "claude", tr.GetToolContext()); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, out.String())
@@ -124,7 +124,7 @@ func TestEndToEndSmoke_OpenAI(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n"
 
 	var out strings.Builder
-	if _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &out, "openai", tr.GetToolContext()); err != nil {
+	if _, _, _, err := StreamConvertSSEToNDJSON(strings.NewReader(sse), &out, "openai", tr.GetToolContext()); err != nil {
 		t.Fatalf("StreamConvertSSEToNDJSON: %v", err)
 	}
 	lines := readNDJSONLines(t, out.String())
@@ -187,7 +187,7 @@ func TestEndToEndSmoke_OpenAIResponses(t *testing.T) {
 		],
 		"usage":{"input_tokens":15,"output_tokens":9}
 	}`)
-	_, _, ndjson, err := ConvertJSONToNDJSON(jsonResp, "openai2", tr.GetToolContext())
+	_, _, _, ndjson, err := ConvertJSONToNDJSON(jsonResp, "openai2", tr.GetToolContext())
 	if err != nil {
 		t.Fatalf("ConvertJSONToNDJSON: %v", err)
 	}

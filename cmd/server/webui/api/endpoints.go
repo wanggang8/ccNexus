@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,42 +16,222 @@ import (
 func (h *Handler) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if name := r.URL.Query().Get("name"); name != "" {
+			h.getEndpoint(w, r, name)
+			return
+		}
 		h.listEndpoints(w, r)
 	case http.MethodPost:
 		h.createEndpoint(w, r)
+	case http.MethodPut:
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
+			return
+		}
+		h.updateEndpoint(w, r, name)
+	case http.MethodDelete:
+		// Names may contain "http://..."; path segments are unreliable after http.ServeMux path cleaning.
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
+			return
+		}
+		h.deleteEndpoint(w, r, name)
 	default:
 		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 
+func (h *Handler) handleEndpointsToggleByQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	h.toggleEndpoint(w, r, name)
+}
+
+func (h *Handler) handleEndpointsTestByQuery(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	h.testEndpoint(w, r, name)
+}
+
+func (h *Handler) handleEndpointsRevealKeyByQuery(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
+	}
+	h.revealEndpointKey(w, r, name)
+}
+
+// dispatch* avoids shadowing endpoint names that equal reserved path segments (toggle, test, …).
+func (h *Handler) dispatchEndpointsTogglePath(w http.ResponseWriter, r *http.Request) {
+	if (r.Method == http.MethodPatch || r.Method == http.MethodPost) && r.URL.Query().Get("name") != "" {
+		h.handleEndpointsToggleByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
+func (h *Handler) dispatchEndpointsTestPath(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("name") != "" {
+		h.handleEndpointsTestByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
+func (h *Handler) dispatchEndpointsRevealKeyPath(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Query().Get("name") != "" {
+		h.handleEndpointsRevealKeyByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
+func (h *Handler) dispatchEndpointsCredentialsPath(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("name") != "" {
+		h.handleEndpointsCredentialsByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
+func (h *Handler) dispatchEndpointsCredentialsImportPath(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Query().Get("name") != "" {
+		h.handleEndpointsCredentialsImportByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
+func (h *Handler) dispatchEndpointsCredentialsStatsPath(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && r.URL.Query().Get("name") != "" {
+		h.handleEndpointsCredentialsStatsByQuery(w, r)
+		return
+	}
+	h.handleEndpointByName(w, r)
+}
+
 // handleEndpointByName handles GET, PUT, DELETE, PATCH for specific endpoint
 func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
-	// Extract endpoint name from path
 	path := strings.TrimPrefix(r.URL.Path, "/api/endpoints/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
+	if path == "" {
 		WriteError(w, http.StatusBadRequest, "Endpoint name required")
 		return
 	}
 
-	name := parts[0]
+	decode := func(v string) string {
+		if d, err := url.PathUnescape(v); err == nil {
+			return d
+		}
+		return v
+	}
 
-	// Handle /test and /toggle sub-paths
-	if len(parts) > 1 {
-		switch parts[1] {
-		case "test":
-			h.testEndpoint(w, r, name)
-			return
-		case "toggle":
-			h.toggleEndpoint(w, r, name)
-			return
-		case "reveal-key":
-			h.revealEndpointKey(w, r, name)
-			return
-		case "credentials":
-			h.handleEndpointCredentials(w, r, name, parts[2:])
+	dispatchExactEndpoint := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		switch r.Method {
+		case http.MethodGet, http.MethodPut, http.MethodDelete:
+		default:
+			return false
+		}
+
+		endpoint, err := h.getEndpointByName(name)
+		if err != nil {
+			logger.Error("Failed to get endpoint: %v", err)
+			WriteError(w, http.StatusInternalServerError, "Failed to get endpoint")
+			return true
+		}
+		if endpoint == nil {
+			return false
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			h.getEndpoint(w, r, name)
+		case http.MethodPut:
+			h.updateEndpoint(w, r, name)
+		case http.MethodDelete:
+			h.deleteEndpoint(w, r, name)
+		}
+		return true
+	}
+
+	name := decode(path)
+	if dispatchExactEndpoint(name) {
+		return
+	}
+
+	// Prefer exact endpoint matches for resource methods before interpreting reserved suffixes.
+	if strings.HasSuffix(path, "/test") {
+		name = strings.TrimSuffix(path, "/test")
+		name = strings.TrimSuffix(name, "/")
+		name = decode(name)
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
 			return
 		}
+		h.testEndpoint(w, r, name)
+		return
+	}
+
+	if strings.HasSuffix(path, "/toggle") {
+		name = strings.TrimSuffix(path, "/toggle")
+		name = strings.TrimSuffix(name, "/")
+		name = decode(name)
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
+			return
+		}
+		h.toggleEndpoint(w, r, name)
+		return
+	}
+
+	if strings.HasSuffix(path, "/reveal-key") {
+		name = strings.TrimSuffix(path, "/reveal-key")
+		name = strings.TrimSuffix(name, "/")
+		name = decode(name)
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
+			return
+		}
+		h.revealEndpointKey(w, r, name)
+		return
+	}
+
+	if idx := strings.Index(path, "/credentials"); idx >= 0 {
+		name = strings.TrimSuffix(path[:idx], "/")
+		name = decode(name)
+		if name == "" {
+			WriteError(w, http.StatusBadRequest, "Endpoint name required")
+			return
+		}
+
+		rest := strings.TrimPrefix(path[idx:], "/credentials")
+		rest = strings.TrimPrefix(rest, "/")
+		parts := []string{}
+		if rest != "" {
+			parts = strings.Split(rest, "/")
+		}
+		h.handleEndpointCredentials(w, r, name, parts)
+		return
+	}
+
+	if name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
 	}
 
 	switch r.Method {
@@ -540,6 +721,9 @@ func (h *Handler) reloadConfig() error {
 	}
 
 	h.config = cfg
+	if h.proxy == nil {
+		return nil
+	}
 	return h.proxy.UpdateConfig(cfg)
 }
 
